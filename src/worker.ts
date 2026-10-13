@@ -57,7 +57,7 @@ export default {
     } catch (e) {
       // A refused request's body is never read; release it so the runtime does not.
       if (req.body && !req.bodyUsed) req.body.cancel().catch(() => {});
-      if (e instanceof BatonError) return withSecurityHeaders(errorResponse(e.code, e.message));
+      if (e instanceof BatonError) return withSecurityHeaders(errorResponse(e.code, e.message, e.extra));
       return withSecurityHeaders(errorResponse('internal', 'internal error'));
     }
   },

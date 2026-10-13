@@ -59,6 +59,7 @@ export interface Heartbeat {
   skills_version: number;
   last_activity_at?: number;
   test_harness: boolean;
+  fenced?: { claim_id: number };
   transcripts: TranscriptReport[];
   usage: { provider_id: string; model_id: string; hour: number; usd_list: number }[];
   rate_limits: { provider_id: string; model_id?: string; resets_at?: number }[];
@@ -116,6 +117,7 @@ export function checkHeartbeat(body: unknown, transcriptRepos: string[]): Heartb
     skills_version: b.skills_version as number,
     last_activity_at: b.last_activity_at as number | undefined,
     test_harness: b.test_harness === true,
+    fenced: checkFenced(b.fenced),
     // One bad pointer is refused on its own and reported, never the heartbeat (§6.8): a failed
     // heartbeat would stop last_seen_at and get a live worker reaped.
     ...splitTranscripts(transcripts, transcriptRepos),
@@ -315,4 +317,69 @@ export function checkShadowReport(body: unknown) {
     nonce: b.transition === 'claim' ? matches(/^[0-9a-f]{6}$/, 'nonce')(b.nonce) : optional(b.nonce, matches(/^[0-9a-f]{6}$/, 'nonce')),
     at: isTime(b.at) ? (b.at as number) : bad('at', 'must be epoch ms'),
   };
+}
+
+// ── claims (§6.2, §6.5, §6.7; R3-1212) ───────────────────────────────────────────────────
+
+const REQUEST_ID = /^[A-Za-z0-9._:-]{8,128}$/;
+export const GIT_SHA = /^[0-9a-f]{40}$/;
+/** §6.5: the `released:` reasons, exactly. */
+export const RELEASE_END_REASONS = ['stale-board', 'cannot-finish:transient', 'cannot-finish:capability', 'cannot-finish:spec',
+  'lease-lost', 'requested', 'owner-cancel', 'provider-suspended', 'awaiting-review-capacity'] as const;
+const BUFFER = /^[a-z][a-z0-9-]{0,63}$/;
+
+export function checkClaim(body: unknown): { request_id: string; work_item_id: string | null } {
+  if (!isObj(body)) bad('body', 'must be a JSON object');
+  const b = body as Record<string, unknown>;
+  return {
+    request_id: matches(REQUEST_ID, 'request_id')(b.request_id),
+    work_item_id: optional(b.work_item_id, matches(ITEM_ID, 'work_item_id')) ?? null,
+  };
+}
+
+/** §6.5's closed vocabulary; a `completed` end carries the git commit it pushed (R-BTN-8). */
+export function checkEnd(body: unknown): { end_reason: string; status: 'completed' | 'released'; ended_at_sha: string | null } {
+  if (!isObj(body)) bad('body', 'must be a JSON object');
+  const b = body as Record<string, unknown>;
+  const r = b.end_reason;
+  if (typeof r !== 'string') bad('end_reason', 'must be a string');
+  const reason = r as string;
+  let status: 'completed' | 'released';
+  if (reason === 'done' || (reason.startsWith('handed-off:') && BUFFER.test(reason.slice(11))) || (reason.startsWith('remainder:') && ITEM_ID.test(reason.slice(10)))) {
+    status = 'completed';
+  } else if (reason.startsWith('released:') && RELEASE_END_REASONS.includes(reason.slice(9) as never)) {
+    status = 'released';
+  } else {
+    bad('end_reason', 'must be done, handed-off:<buffer>, remainder:<id> or released:<a §6.5 reason>');
+  }
+  const sha = optional(b.ended_at_sha, matches(GIT_SHA, 'ended_at_sha')) ?? null;
+  if (status! === 'completed' && !sha) bad('ended_at_sha', 'a completed end names the commit that pushed it (R-BTN-8)');
+  return { end_reason: reason, status: status!, ended_at_sha: sha };
+}
+
+/** §6.7: the sync's confirmations, `[{claim_id, sha}]`. */
+export function checkConfirmations(v: unknown): { claim_id: number; sha: string }[] {
+  if (v === undefined || v === null) return [];
+  if (!Array.isArray(v) || v.length > 500) bad('confirmations', 'must be a list of at most 500');
+  return (v as unknown[]).map((c, i) => {
+    if (!isObj(c) || !isInt(c.claim_id)) bad(`confirmations[${i}]`, 'must be {claim_id, sha}');
+    return { claim_id: (c as Record<string, unknown>).claim_id as number, sha: matches(GIT_SHA, `confirmations[${i}].sha`)((c as Record<string, unknown>).sha) };
+  });
+}
+
+/** R-BTN-19: the heartbeat's report that the sidecar has fenced a reaped claim. */
+export function checkFenced(v: unknown): { claim_id: number } | undefined {
+  if (v === undefined || v === null) return undefined;
+  if (!isObj(v) || !isInt(v.claim_id) || v.terminated !== true) bad('fenced', 'must be {claim_id, terminated: true}');
+  return { claim_id: (v as Record<string, unknown>).claim_id as number };
+}
+
+/** An owner action that names its own confirmation (§14: force-reap). */
+export function checkConfirm(body: unknown): void {
+  if (!isObj(body) || body.confirm !== true) bad('confirm', 'must be true');
+}
+
+export function checkAccept(body: unknown): { sha: string } {
+  if (!isObj(body)) bad('body', 'must be a JSON object');
+  return { sha: matches(GIT_SHA, 'sha')((body as Record<string, unknown>).sha) };
 }

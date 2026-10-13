@@ -147,7 +147,7 @@ describe('G-BTN-23: transcript pointers', () => {
       expect(await rows('SELECT last_seen_at FROM workers WHERE id = ?', id)).toEqual([{ last_seen_at: T0 + (i + 1) * 1000 }]);
     }
     expect(await rows('SELECT count(*) AS n FROM pending_transcripts WHERE worker_id = ?', id)).toEqual([{ n: 1 }]);
-    // An activity not received yet only loses the link.
+    // An activity not received yet defers the link: the pointer is stored and linked later.
     const early = await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'sub/r.jsonl', role: 'subagent', activity_id: 'not-yet' }] });
     expect([early.json.transcripts_refused, early.json.transcripts_unlinked]).toEqual([undefined, [0]]);
     expect(await rows(`SELECT activity_id FROM pending_transcripts WHERE path = 'sub/r.jsonl'`)).toEqual([{ activity_id: null }]);

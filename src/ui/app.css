@@ -33,3 +33,10 @@ a:hover { text-decoration: underline; }
 .suspend { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: end; margin-top: 0.75rem; }
 .suspend label { display: flex; flex-direction: column; font-size: 0.85rem; }
 td button, li button { margin-left: 0.25rem; }
+.stalled { color: var(--warn); }
+.timeline { display: grid; gap: 8px; }
+.lane { display: grid; grid-template-columns: minmax(90px, 160px) 1fr; gap: 8px; align-items: center; }
+.track { position: relative; height: 28px; background: var(--card); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.bar { position: absolute; top: 3px; bottom: 3px; border: 1px solid var(--accent); border-radius: 3px; }
+.seg { position: absolute; top: 6px; bottom: 6px; background: var(--accent); opacity: 0.6; }
+.seg.failed { background: var(--warn); opacity: 1; }

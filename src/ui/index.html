@@ -13,6 +13,22 @@
   <p id="head" class="muted">Loading the board…</p>
 </header>
 <main>
+  <section aria-labelledby="needs-title" id="needs-section" hidden>
+    <h2 id="needs-title">Needs you</h2>
+    <ul id="needs"></ul>
+  </section>
+  <section aria-labelledby="running-title">
+    <h2 id="running-title">Running</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Item</th><th>Worker</th><th>Claimed</th><th>Reap at</th><th>Last events</th><th>Actions</th></tr></thead>
+      <tbody id="running"></tbody>
+    </table></div>
+  </section>
+  <section aria-labelledby="timeline-title">
+    <h2 id="timeline-title">Timeline</h2>
+    <p class="muted">The last 24 hours, one lane per alive worker: claims as bars, activities inside them.</p>
+    <div id="timeline" class="timeline"></div>
+  </section>
   <section aria-labelledby="ready-title">
     <div class="section-head">
       <h2 id="ready-title">Ready</h2>

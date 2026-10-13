@@ -35,6 +35,8 @@ export interface Ctx {
   storage: DurableObjectStorage;
   env: Env;
   now: () => number;
+  /** R-BTN-19: a heartbeat's `fenced` report, handed to the claims (R3-1212). */
+  fenced?: (workerId: number, incarnation: number, claimId: number) => boolean;
 }
 
 export class WorkerApi {
@@ -210,8 +212,10 @@ export class WorkerApi {
     const unlinked = this.recordTranscripts(w.id, hb, now);
     this.recordUsage(w.id, hb, knownAccounts, now);
 
-    const claim = this.activeClaim(w.id);
     const fresh = this.rows<{ incarnation: number; lease_timeout_ms: number }>('SELECT incarnation, lease_timeout_ms FROM workers WHERE id = ?', w.id)[0];
+    // R-BTN-19: only a heartbeat with the secret (never the hash path) clears a fence.
+    if (hb.fenced && secretSeen) this.c.fenced?.(w.id, fresh.incarnation, hb.fenced.claim_id);
+    const claim = this.activeClaim(w.id);
     return {
       worker_id: w.id,
       incarnation: fresh.incarnation,
@@ -253,7 +257,8 @@ export class WorkerApi {
   }
 
   /** §6.8: a path reported under a claim is linked to it; one reported with none waits for the
-   *  next claim (R3-1212 links it). A repeat report only moves `last_pushed_at`. */
+   *  next claim (`Claims.claim` links it). A repeat report moves `last_pushed_at` and fills a
+   *  missing `activity_id` once that activity has arrived. */
   private recordTranscripts(workerId: number, hb: Heartbeat, now: number) {
     const unlinked: number[] = [];
     if (!hb.transcripts.length) return unlinked;
