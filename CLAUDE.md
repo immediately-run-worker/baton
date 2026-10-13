@@ -16,6 +16,8 @@ sections it cites before changing anything. See `README.md` for the layout.
 - **Migrations are append-only.** A schema change is a new numbered file in `src/migrations/`.
 - **Filter fields only (R-BTN-33).** No item body, note, exit criterion or PR list is ever
   stored.
+- **Validate before you write.** Every worker- or owner-supplied field goes through
+  `src/validate.ts` before any SQL; a heartbeat's writes run in one `transactionSync`.
 - **Every behaviour change names its `S-BTN-n` scenario** (R-BTN-31) and keeps `npm test` green.
 
 ## Commands

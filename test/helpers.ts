@@ -75,3 +75,51 @@ export function payload(
   const { items, state, ready, sha: _s, parent_sha: _p, ...reference } = snap;
   return { ...reference, sha, parent_sha: parent, state: { items: state?.items ?? items ?? [] }, ready, confirmations: [], ...extra };
 }
+
+// ── workers (R3-1211) ─────────────────────────────────────────────────────────────────────
+
+export const TOKENS = { 'vm-a': 'tok-vm-a', 'vm-b': 'tok-vm-b', mac: 'tok-mac', test: 'tok-test' } as const;
+const HOSTS = { 'vm-a': 'vm-a', 'vm-b': 'vm-b', mac: 'owner-mac', test: 'harness' } as const;
+
+export async function sha256(text: string) {
+  const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** A worker call with a credential's token and, after the first heartbeat, the secret. */
+export function workerCall(path: string, { cred = 'vm-a', secret, body, method }: { cred?: keyof typeof TOKENS; secret?: string; body?: unknown; method?: string } = {}) {
+  const headers: Record<string, string> = { Authorization: `Bearer ${TOKENS[cred]}`, 'Content-Type': 'application/json' };
+  if (secret) headers['X-Worker-Secret'] = secret;
+  return call(path, { method: method ?? (body === undefined ? 'GET' : 'POST'), headers, body: body === undefined ? undefined : JSON.stringify(body) });
+}
+
+/** A heartbeat body with sensible defaults for `cred`'s host. */
+export function hbBody(cred: keyof typeof TOKENS, over: Record<string, unknown> = {}) {
+  return {
+    hostname: HOSTS[cred], session_name: `s-${cred}`, harness: 'opencode', kind: 'vm', model_id: 'zai-coding-plan/glm-5.3',
+    model_provider_id: 'zai', billing: { 'zai-coding-plan': 'zai', 'opencode-go': 'opencode_go_plus' }, capabilities: ['agent-venue'],
+    tier_ceiling: 'critical', lease_timeout_s: 900, skills_version: 3, ...over,
+  };
+}
+
+/** Register a worker with a fresh secret; returns its id and secret. */
+export async function register(cred: keyof typeof TOKENS = 'vm-a', over: Record<string, unknown> = {}) {
+  const secret = `secret-${cred}-${Math.random().toString(16).slice(2)}`;
+  const res = await workerCall('/v1/worker/heartbeat', { cred, body: hbBody(cred, { secret_hash: await sha256(secret), ...over }) });
+  const json = (await res.json()) as Record<string, unknown>;
+  if (res.status !== 200) throw new Error(`register ${cred}: ${res.status} ${JSON.stringify(json)}`);
+  return { id: json.worker_id as number, secret, first: json };
+}
+
+/** A later heartbeat, authenticated by the secret. */
+export async function beat(cred: keyof typeof TOKENS, secret: string, over: Record<string, unknown> = {}) {
+  const res = await workerCall('/v1/worker/heartbeat', { cred, secret, body: hbBody(cred, over) });
+  return { status: res.status, json: (await res.json()) as Record<string, any> };
+}
+
+/** An active claim row, seeded directly: claims are R3-1212's; R3-1211 only reads them. */
+export async function seedClaim(workerId: number, item: string, at = 0) {
+  await rows(`INSERT INTO work_item_claims (work_item_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
+              VALUES (?, ?, ?, 'abc123', '', ?, 'active')`, item, workerId, `seed:${workerId}:${item}`, at);
+  return (await rows<{ id: number }>(`SELECT id FROM work_item_claims WHERE work_item_id = ? AND status = 'active'`, item))[0].id;
+}

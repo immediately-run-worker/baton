@@ -10,11 +10,13 @@ export const SECURITY_HEADERS: Record<string, string> = {
 
 export type ErrorCode =
   | 'unauthenticated' | 'forbidden' | 'invalid-params' | 'not-found'
-  | 'head-moved' | 'snapshot-rejected' | 'unavailable' | 'internal';
+  | 'head-moved' | 'snapshot-rejected' | 'unavailable' | 'internal'
+  | 'session-taken' | 'worker-reaped' | 'claim-ended' | 'not-holder';
 
 const STATUS: Record<ErrorCode, number> = {
   unauthenticated: 401, forbidden: 403, 'invalid-params': 400, 'not-found': 404,
   'head-moved': 409, 'snapshot-rejected': 409, unavailable: 503, internal: 500,
+  'session-taken': 409, 'worker-reaped': 409, 'claim-ended': 409, 'not-holder': 409,
 };
 
 /** Thrown anywhere below the router; the router turns it into the §11 error body. */

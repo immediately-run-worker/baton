@@ -26,4 +26,10 @@ a:hover { text-decoration: underline; }
 .card h3 { margin: 0 0 6px; font-size: 14px; }
 .peak { color: var(--warn); }
 .offpeak { color: var(--ok); }
-@media (max-width: 640px) { th:nth-child(5), td:nth-child(5) { display: none; } }
+@media (max-width: 640px) { #ready-table th:nth-child(5), #ready-table td:nth-child(5) { display: none; } }
+.alive { color: var(--ok); }
+.dead { color: var(--warn); }
+.scroll { overflow-x: auto; }
+.suspend { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: end; margin-top: 0.75rem; }
+.suspend label { display: flex; flex-direction: column; font-size: 0.85rem; }
+td button, li button { margin-left: 0.25rem; }

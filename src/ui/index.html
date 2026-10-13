@@ -25,7 +25,7 @@
       </label>
     </div>
     <p class="muted">The order a worker under this ceiling would be offered, by the board's rank.</p>
-    <table>
+    <table id="ready-table">
       <thead><tr><th>#</th><th>Item</th><th>Tier</th><th>Requires</th><th>Why here</th></tr></thead>
       <tbody id="ready"></tbody>
     </table>
@@ -33,6 +33,31 @@
   <section aria-labelledby="providers-title">
     <h2 id="providers-title">Providers</h2>
     <div id="providers" class="cards"></div>
+  </section>
+  <section aria-labelledby="workers-title">
+    <h2 id="workers-title">Workers</h2>
+    <div class="scroll"><table>
+      <thead><tr><th>Worker</th><th>Model</th><th>State</th><th>Claim</th><th>Activity</th><th>Last report</th><th>Actions</th></tr></thead>
+      <tbody id="workers"></tbody>
+    </table></div>
+  </section>
+  <section aria-labelledby="suspensions-title">
+    <h2 id="suspensions-title">Suspensions</h2>
+    <ul id="suspensions"></ul>
+    <form id="suspend" class="suspend">
+      <label>Account <select id="s-provider" required></select></label>
+      <label>Model <input id="s-model" placeholder="every model" autocomplete="off"></label>
+      <label>Mode
+        <select id="s-mode">
+          <option value="no-new-work">no new work</option>
+          <option value="stop">stop (release holders)</option>
+        </select>
+      </label>
+      <label>Starts <input id="s-start" type="datetime-local"></label>
+      <label>Ends <input id="s-end" type="datetime-local"></label>
+      <label>Reason <input id="s-reason" maxlength="500" autocomplete="off"></label>
+      <button type="submit">Suspend</button>
+    </form>
   </section>
   <section aria-labelledby="held-title" id="held-section" hidden>
     <h2 id="held-title">Held histories</h2>
