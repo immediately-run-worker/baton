@@ -12,6 +12,7 @@ import { fitsTier, TIERS } from './shared/vocabulary.mjs';
 import { WorkerApi } from './workerApi';
 import { Claims } from './claims';
 import { Cutover } from './cutover';
+import { dispatchWorkflow, Mirror, type Workflow } from './mirror';
 import { checkConfirmations, ITEM_ID } from './validate';
 
 const HELD_AUTO_ACCEPT_MS = 24 * 3_600_000; // §7.1: a held history is accepted after 24 h (R3-1212)
@@ -25,11 +26,17 @@ export class Baton extends DurableObject<Env> {
   readonly workers: WorkerApi;
   readonly claims: Claims;
   readonly cutover: Cutover;
+  readonly mirror: Mirror;
+  /** §12: workflows to dispatch once the current request or alarm has committed. */
+  private pendingDispatch = new Set<Workflow>();
+  /** The dispatch call; tests replace it (as they replace `now`) to see what would be sent. */
+  dispatcher: (workflow: Workflow) => Promise<unknown> = (wf) => dispatchWorkflow(this.env, wf);
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.claims = new Claims({ storage: ctx.storage, now: () => this.now() });
+    this.claims = new Claims({ storage: ctx.storage, now: () => this.now(), dispatch: (wf) => this.pendingDispatch.add(wf) });
     this.cutover = new Cutover({ storage: ctx.storage, now: () => this.now() });
+    this.mirror = new Mirror({ storage: ctx.storage, now: () => this.now() });
     this.workers = new WorkerApi({ storage: ctx.storage, env, now: () => this.now(), fenced: (w, inc, id) => this.claims.fenced(w, inc, id) });
     // The object refuses to serve until every migration is applied (§3), and keeps one alarm.
     ctx.blockConcurrencyWhile(async () => {
@@ -40,14 +47,29 @@ export class Baton extends DurableObject<Env> {
 
   /** §3: the one alarm, every 60 seconds. R3-1211 gives it suspensions and message expiry;
    *  R3-1212 adds reaping. */
+  /** Send the dispatches a committed transaction asked for — only after cutover, when the
+   *  mirror writes git; before it, claim.sh does. Never awaited by the caller's response. */
+  private flushDispatch() {
+    const due = [...this.pendingDispatch];
+    this.pendingDispatch.clear();
+    if (!due.length || !this.cutover.cutoverAt()) return;
+    this.ctx.waitUntil(Promise.all(due.map((wf) => this.dispatcher(wf).catch(() => false))));
+  }
+
   async alarm(): Promise<void> {
     // Re-armed first, so one failing tick never ends the cycle.
     await this.ctx.storage.setAlarm(this.now() + ALARM_EVERY_MS);
     // Claims first, so a worker reaped this tick has its messages expired in the same tick.
-    this.ctx.storage.transactionSync(() => {
-      this.claims.alarm();
-      this.workers.alarm();
-    });
+    try {
+      this.ctx.storage.transactionSync(() => {
+        this.claims.alarm();
+        this.workers.alarm();
+      });
+    } catch (e) {
+      this.pendingDispatch.clear(); // rolled back: nothing to tell the mirror
+      throw e;
+    }
+    this.flushDispatch();
   }
 
   private sql<T = Record<string, SqlStorageValue>>(query: string, ...params: unknown[]): T[] {
@@ -69,8 +91,32 @@ export class Baton extends DurableObject<Env> {
 
   async fetch(req: Request): Promise<Response> {
     const url = new URL(req.url);
+    this.pendingDispatch.clear();
+    try {
+      const res = await this.route(req, url);
+      // An error answer means its transaction rolled back: nothing changed to mirror.
+      if (res.ok) this.flushDispatch();
+      else this.pendingDispatch.clear();
+      return res;
+    } catch (e) {
+      this.pendingDispatch.clear(); // the transaction rolled back: nothing changed to mirror
+      throw e;
+    }
+  }
+
+  private async route(req: Request, url: URL): Promise<Response> {
     try {
       if (req.method === 'GET' && url.pathname === '/v1/sync/head') return json(this.head());
+      if (req.method === 'GET' && url.pathname === '/v1/sync/events') {
+        const after = Number(url.searchParams.get('after') ?? 0);
+        const limit = Number(url.searchParams.get('limit') ?? 200);
+        if (!Number.isInteger(after) || after < 0 || !Number.isInteger(limit)) throw new BatonError('invalid-params', 'after and limit must be integers');
+        return json(this.mirror.events(after, limit));
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/sync/foreign-claim') {
+        const body = await readJson(req);
+        return json(this.ctx.storage.transactionSync(() => this.mirror.foreignClaim(body)));
+      }
       if (req.method === 'POST' && url.pathname === '/v1/sync/board') return json(await this.board(checkPayload(await readJson(req))));
       if (req.method === 'GET' && url.pathname === '/v1/ui/state') return json(this.uiState());
       const routed = await this.workerRoute(req, url);

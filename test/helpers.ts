@@ -159,3 +159,22 @@ export async function claimRow(id: number) {
 export function tick() {
   return runInDurableObject(stub(), (o: Baton) => o.alarm());
 }
+
+// ── the mirror (R3-1218) ──────────────────────────────────────────────────────────────────
+
+/** A call as the mirror workflow: an OIDC token from baton-mirror.yml on docs main. */
+export async function mirrorCall(path: string, body?: unknown) {
+  return syncCall(path, body, await syncToken({ job_workflow_ref: env.MIRROR_WORKFLOW_REF }));
+}
+
+/** Record the object's workflow dispatches instead of sending them; returns the live list. */
+export async function captureDispatches() {
+  const sent: string[] = [];
+  await runInDurableObject(stub(), (o: Baton) => {
+    o.dispatcher = async (wf) => {
+      sent.push(wf);
+      return true;
+    };
+  });
+  return sent;
+}

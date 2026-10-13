@@ -15,6 +15,8 @@ interface Env {
   OIDC_REPOSITORY: string;
   OIDC_REF: string;
   SYNC_WORKFLOW_REF: string;
+  /** §10.3: the mirror's OIDC principal, for `/v1/sync/events` and `/v1/sync/foreign-claim`. */
+  MIRROR_WORKFLOW_REF: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
   OWNER_EMAILS: string;
@@ -22,6 +24,9 @@ interface Env {
    *  `{credential id: {hostname, allowed_capabilities}}`. */
   TOKEN_HASHES?: string;
   CREDENTIALS?: string;
+  /** §10.3: a fine-grained token, Actions: write on docs only, for workflow_dispatch. Absent,
+   *  the two workflows run on their 15-minute schedules. */
+  GITHUB_DISPATCH_TOKEN?: string;
   /** Test bindings only (vitest.config.ts, §13a): never set in wrangler.toml or by a deploy. */
   BATON_TEST_BINDINGS?: string;
   TEST_OIDC_JWKS?: string;
