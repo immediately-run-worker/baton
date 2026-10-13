@@ -1,9 +1,9 @@
 {
   "shas": {
-    "A": "a8ccae5da79f4067ec0f086181dc5b8b8ff961e3",
-    "B": "c5c7a522e8cbd2b130c16d2a3499a7eb68b6263a",
-    "C": "571762947ffc714c10640406e598eada5d1dd191",
-    "D": "557fe6c4aa722a0994c63ae1b1d885dd37451200"
+    "A": "d42f6e5c3663afbe2baf60ee878b7fdccb7a419a",
+    "B": "2184dd246acbef669df3d11bb1d11480a381159d",
+    "C": "53952e616932650bf24efb0c926237687505d6a2",
+    "D": "c464d7133845fb86786d46784581e21bcdf74b35"
   },
   "states": {
     "A": {
@@ -97,7 +97,7 @@
             "timeoutDays": 14,
             "overdue": false,
             "repos": [
-              "provisioning"
+              "deploy"
             ]
           },
           {
@@ -386,7 +386,7 @@
             "timeoutDays": 14,
             "overdue": false,
             "repos": [
-              "provisioning"
+              "deploy"
             ]
           },
           {
@@ -674,7 +674,7 @@
             "timeoutDays": 14,
             "overdue": false,
             "repos": [
-              "provisioning"
+              "deploy"
             ]
           },
           {
