@@ -1,0 +1,64 @@
+name: baton-deploy
+
+# Deploy Baton (BATON_SPEC §3, R3-1207): on every push to main, the suite runs, then the
+# production Worker deploys and the staging Worker beside it. The test job is the same gate as
+# ci.yml; nothing deploys from a red head. A vendored-library change (src/shared/) is a change
+# here like any other, so a docs change reaches the Worker only through a re-vendoring PR
+# (R-BTN-37).
+#
+# The one secret is CLOUDFLARE_API_TOKEN (Workers Scripts edit on one account), set by the
+# owner in R3-1208. Until it exists the deploy job fails at its first step, naming it.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baton-deploy
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    steps:
+      - name: The deploy secret is set
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ]; then
+            echo "::error::CLOUDFLARE_API_TOKEN is not set — the owner adds it to this repository's production environment (R3-1208)."
+            exit 1
+          fi
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Deploy production
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy
+      - name: Deploy staging
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy --env staging

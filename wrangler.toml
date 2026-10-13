@@ -32,3 +32,27 @@ SYNC_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-sync.yml@refs/
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
 OWNER_EMAILS = ""
+
+# The staging Worker (BATON_SPEC §13a): its own Durable Object namespace and no production
+# route, deployed beside production by baton-deploy.yml. Bindings and vars are not inherited
+# from the top level, so they are repeated here.
+[env.staging]
+name = "baton-staging"
+routes = []
+workers_dev = true
+
+[[env.staging.durable_objects.bindings]]
+name = "BATON"
+class_name = "Baton"
+
+[env.staging.vars]
+PUBLIC_ORIGIN = "https://baton-staging.workers.dev" # the account's workers.dev subdomain goes here once known (R3-1208)
+OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+OIDC_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks"
+OIDC_AUDIENCE = "workitems.immediately.run"
+OIDC_REPOSITORY = "immediately-run/docs"
+OIDC_REF = "refs/heads/main"
+SYNC_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-sync.yml@refs/heads/main"
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""
+OWNER_EMAILS = ""

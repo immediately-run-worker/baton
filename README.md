@@ -18,7 +18,7 @@ an item says `infra/baton/<path>`, it means `<path>` in this repository (BATON_S
 | `src/auth.ts` | JWT verification (R-BTN-15, R-BTN-16) |
 | `src/migrations/` | Numbered schema migrations, applied before the object serves |
 | `src/ui/` | The dashboard: one HTML page, one stylesheet, one ES module (`textContent` only) |
-| `src/shared/` | **Vendored** from docs `scripts/lib/` — never edit here (R-BTN-37) |
+| `src/shared/` | **Vendored** from docs `scripts/lib/` — never edit here (R-BTN-37); `batonSync.mjs` is the board sync's own decision code, which S-BTN-13 drives |
 | `test/unit/`, `test/integration/` | Vitest in the Workers runtime; `S-BTN-n` scenarios in `integration/` |
 | `test/lib/fixtureRepo.mjs` | The harness's stand-in for `docs/main`: a real bare git repo |
 
@@ -31,6 +31,12 @@ an item says `infra/baton/<path>`, it means `<path>` in this repository (BATON_S
   docs changes any of them.
 - `npm run fixtures` — regenerate `test/fixtures/boards.json` with the real docs
   `factory-state` code.
+
+## Deploying
+
+`.github/workflows/baton-deploy.yml` runs the suite and then `wrangler deploy` (production,
+`workitems.immediately.run`) and `wrangler deploy --env staging` on every push to `main`. It
+needs the `CLOUDFLARE_API_TOKEN` secret in the `production` environment (R3-1208).
 
 With a sibling docs checkout present, the suite also fails when `src/shared/` or the board
 fixtures have drifted from docs.
