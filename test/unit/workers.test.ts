@@ -1,10 +1,10 @@
 // R3-1211 — workers (BATON_SPEC §5, §6.8, §6.9, §9, §10.1–10.4, §11): G-BTN-5, -13, -17, -23,
 // -24, messages, mode and shadow reports.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import { WorkerApi } from '../../src/workerApi';
 import type { Baton } from '../../src/baton';
-import { beat, call, hbBody, ORIGIN, ownerCall, payload, register, rows, seedClaim, setClock, sha256, stub, syncCall, workerCall } from '../helpers';
+import { beat, call, hbBody, ORIGIN, ownerCall, payload, register, rows, seedClaim, setClock, sha256, stub, syncCall, workerCall , tick } from '../helpers';
 
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');
@@ -147,7 +147,7 @@ describe('G-BTN-23: transcript pointers', () => {
       expect(await rows('SELECT last_seen_at FROM workers WHERE id = ?', id)).toEqual([{ last_seen_at: T0 + (i + 1) * 1000 }]);
     }
     expect(await rows('SELECT count(*) AS n FROM pending_transcripts WHERE worker_id = ?', id)).toEqual([{ n: 1 }]);
-    // An activity not received yet only loses the link.
+    // An activity not received yet defers the link: the pointer is stored and linked later.
     const early = await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'sub/r.jsonl', role: 'subagent', activity_id: 'not-yet' }] });
     expect([early.json.transcripts_refused, early.json.transcripts_unlinked]).toEqual([undefined, [0]]);
     expect(await rows(`SELECT activity_id FROM pending_transcripts WHERE path = 'sub/r.jsonl'`)).toEqual([{ activity_id: null }]);
@@ -222,7 +222,7 @@ describe('messages (§9)', () => {
     const { id } = await register('vm-a');
     await owner('/v1/ui/messages', { to_worker_id: id, kind: 'status_request' });
     await rows('UPDATE workers SET reaped_at = 1 WHERE id = ?', id);
-    await runDurableObjectAlarm(stub());
+    await tick();
     expect(await rows('SELECT status FROM messages')).toEqual([{ status: 'expired' }]);
   });
 });
@@ -354,7 +354,7 @@ describe('round-one review fixes (baton#4)', () => {
     const { id } = (await (await owner('/v1/ui/suspensions', { provider_id: 'zai', mode: 'no-new-work', ends_at: T0 + 3_600_000 })).json()) as { id: number };
     await owner(`/v1/ui/suspensions/${id}/lift`, {});
     await setClock(T0 + 2 * 3_600_000);
-    await runDurableObjectAlarm(stub());
+    await tick();
     expect((await rows<{ a: string }>(`SELECT json_extract(detail_json, '$.action') AS a FROM events WHERE kind = 'suspension' ORDER BY seq`)).map((r) => r.a)).toEqual(['set', 'started', 'lifted']);
   });
 });

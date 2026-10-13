@@ -123,3 +123,39 @@ export async function seedClaim(workerId: number, item: string, at = 0) {
               VALUES (?, ?, ?, 'abc123', '', ?, 'active')`, item, workerId, `seed:${workerId}:${item}`, at);
   return (await rows<{ id: number }>(`SELECT id FROM work_item_claims WHERE work_item_id = ? AND status = 'active'`, item))[0].id;
 }
+
+// ── claims (R3-1212) ──────────────────────────────────────────────────────────────────────
+
+/** The one-way cutover, set directly as the harness does (R-BTN-28; R3-1217 adds the call). */
+export function cutover(at = 1) {
+  return rows(`INSERT INTO baton_settings (key, value) VALUES ('cutover_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, String(at));
+}
+
+let requests = 0;
+/** A fresh client-generated `request_id`. */
+export const requestId = () => `req-${++requests}-${Math.random().toString(16).slice(2, 10)}`;
+
+/** `POST /v1/worker/claim`; returns the status and the body. */
+export async function claimItem(cred: keyof typeof TOKENS, secret: string, body: Record<string, unknown> = {}) {
+  const res = await workerCall('/v1/worker/claim', { cred, secret, body: { request_id: requestId(), ...body } });
+  return { status: res.status, json: (await res.json()) as Record<string, any> };
+}
+
+/** `POST /v1/worker/claims/{id}/end`. */
+export async function endClaim(cred: keyof typeof TOKENS, secret: string, claimId: number, body: Record<string, unknown>) {
+  const res = await workerCall(`/v1/worker/claims/${claimId}/end`, { cred, secret, body });
+  return { status: res.status, json: (await res.json()) as Record<string, any> };
+}
+
+/** A claim's row, for assertions. */
+export async function claimRow(id: number) {
+  return (await rows<{ status: string; end_reason: string | null; fence_pending: number; confirmed_at: number | null; work_item_id: string }>(
+    'SELECT status, end_reason, fence_pending, confirmed_at, work_item_id FROM work_item_claims WHERE id = ?', id))[0];
+}
+
+/** One alarm tick, run directly. Not `runDurableObjectAlarm`: the fake clock sits behind the
+ *  real one, so every alarm the object arms is already overdue and workerd may be running it in
+ *  the background — when it is, nothing is scheduled and `runDurableObjectAlarm` runs nothing. */
+export function tick() {
+  return runInDurableObject(stub(), (o: Baton) => o.alarm());
+}

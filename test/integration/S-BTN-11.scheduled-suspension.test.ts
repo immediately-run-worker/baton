@@ -4,8 +4,7 @@
 // only `stop` sends a `release` with reason `provider-suspended`, and only to that account's
 // holders. Holders are seeded claim rows here — R3-1212 makes them real.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { runDurableObjectAlarm } from 'cloudflare:test';
-import { beat, ORIGIN, ownerCall, payload, register, rows, seedClaim, setClock, stub, syncCall } from '../helpers';
+import { beat, ORIGIN, ownerCall, payload, register, rows, seedClaim, setClock, stub, syncCall , tick } from '../helpers';
 
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');
@@ -37,18 +36,18 @@ describe('S-BTN-11 scheduled and timed suspension', () => {
     expect((await beat('vm-a', secret)).json.suspensions).toEqual([expect.objectContaining({ id, provider_id: 'zai', starts_at: T0 + H })]);
 
     await setClock(T0 + H - 1);
-    await runDurableObjectAlarm(stub());
+    await tick();
     expect((await events()).map((e) => e.action)).toEqual(['set']);
 
     await setClock(T0 + H);
-    await runDurableObjectAlarm(stub());
+    await tick();
     await setClock(T0 + 2 * H);
-    await runDurableObjectAlarm(stub());
+    await tick();
     expect(await events()).toEqual([expect.objectContaining({ action: 'set' }), { actor: 'alarm', action: 'started', id }]);
 
     await setClock(T0 + 3 * H);
-    await runDurableObjectAlarm(stub());
-    await runDurableObjectAlarm(stub());
+    await tick();
+    await tick();
     expect((await events()).map((e) => e.action)).toEqual(['set', 'started', 'ended']);
     expect((await beat('vm-a', secret)).json.suspensions).toEqual([]);
   });
@@ -58,7 +57,7 @@ describe('S-BTN-11 scheduled and timed suspension', () => {
     const { id } = (await set.json()) as { id: number };
     expect((await owner(`/v1/ui/suspensions/${id}/lift`)).status).toBe(200);
     await setClock(T0 + 2 * H);
-    await runDurableObjectAlarm(stub());
+    await tick();
     expect((await events()).map((e) => e.action)).toEqual(['set', 'lifted']);
   });
 });
@@ -89,7 +88,7 @@ describe('S-BTN-8 / S-BTN-9 server halves', () => {
     expect(await releases(zai.id)).toEqual([]);
 
     // The alarm does not send it twice.
-    await runDurableObjectAlarm(stub());
+    await tick();
     expect(await releases(go.id)).toHaveLength(1);
   });
 });

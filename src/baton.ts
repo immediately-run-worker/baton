@@ -10,6 +10,8 @@ import { priceFor } from './shared/sessionUsage.mjs';
 import { familyOf } from './shared/baton.mjs';
 import { fitsTier, TIERS } from './shared/vocabulary.mjs';
 import { WorkerApi } from './workerApi';
+import { Claims } from './claims';
+import { checkConfirmations, ITEM_ID } from './validate';
 
 const HELD_AUTO_ACCEPT_MS = 24 * 3_600_000; // §7.1: a held history is accepted after 24 h (R3-1212)
 const ALARM_EVERY_MS = 60_000; // §3: one alarm, every 60 seconds
@@ -20,10 +22,12 @@ export class Baton extends DurableObject<Env> {
   now: () => number = () => Date.now();
 
   readonly workers: WorkerApi;
+  readonly claims: Claims;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    this.workers = new WorkerApi({ storage: ctx.storage, env, now: () => this.now() });
+    this.claims = new Claims({ storage: ctx.storage, now: () => this.now() });
+    this.workers = new WorkerApi({ storage: ctx.storage, env, now: () => this.now(), fenced: (w, inc, id) => this.claims.fenced(w, inc, id) });
     // The object refuses to serve until every migration is applied (§3), and keeps one alarm.
     ctx.blockConcurrencyWhile(async () => {
       this.migrate();
@@ -36,7 +40,11 @@ export class Baton extends DurableObject<Env> {
   async alarm(): Promise<void> {
     // Re-armed first, so one failing tick never ends the cycle.
     await this.ctx.storage.setAlarm(this.now() + ALARM_EVERY_MS);
-    this.ctx.storage.transactionSync(() => this.workers.alarm());
+    // Claims first, so a worker reaped this tick has its messages expired in the same tick.
+    this.ctx.storage.transactionSync(() => {
+      this.claims.alarm();
+      this.workers.alarm();
+    });
   }
 
   private sql<T = Record<string, SqlStorageValue>>(query: string, ...params: unknown[]): T[] {
@@ -68,7 +76,7 @@ export class Baton extends DurableObject<Env> {
     } catch (e) {
       // Drain an unread body so the forwarded stream completes before the response does.
       if (req.body && !req.bodyUsed) await req.arrayBuffer().catch(() => {});
-      if (e instanceof BatonError) return errorResponse(e.code, e.message);
+      if (e instanceof BatonError) return errorResponse(e.code, e.message, e.extra);
       throw e;
     }
   }
@@ -94,7 +102,31 @@ export class Baton extends DurableObject<Env> {
         await this.workers.authWorker(cred, secret);
         return json(this.workers.mode());
       }
+      const holder = /^\/v1\/worker\/items\/([^/]+)\/holder$/.exec(p);
+      if (m === 'GET' && holder) {
+        // R-BTN-7: callable with the token alone (the witness has no sidecar); with a secret, the
+        // caller's own claim is not "another".
+        let item = '';
+        try {
+          item = decodeURIComponent(holder[1]);
+        } catch {
+          // a malformed escape is the caller's error, never a 500
+        }
+        if (!ITEM_ID.test(item)) throw new BatonError('invalid-params', 'item: must be a work item id');
+        const caller = secret ? await this.workers.authWorker(cred, secret) : null;
+        return json(this.claims.holder(caller, item));
+      }
       const workerId = await this.workers.authWorker(cred, secret);
+      if (m === 'POST' && p === '/v1/worker/claim') {
+        const body = await readJson(req);
+        return json(tx(() => this.claims.claim(workerId, body)));
+      }
+      if (m === 'GET' && p === '/v1/worker/next') return json(this.claims.next(workerId));
+      const end = /^\/v1\/worker\/claims\/(\d+)\/end$/.exec(p);
+      if (m === 'POST' && end) {
+        const body = await readJson(req);
+        return json(tx(() => this.claims.end(workerId, Number(end[1]), body)));
+      }
       if (m === 'POST' && p === '/v1/worker/activities') {
         const body = await readJson(req);
         return json(this.workers.activities(workerId, body));
@@ -123,6 +155,20 @@ export class Baton extends DurableObject<Env> {
       }
       const lift = /^\/v1\/ui\/suspensions\/(\d+)\/lift$/.exec(p);
       if (lift) return json(tx(() => this.workers.liftSuspension(owner, Number(lift[1]))));
+      const reap = /^\/v1\/ui\/claims\/(\d+)\/reap$/.exec(p);
+      if (reap) {
+        const body = await readJson(req);
+        return json(tx(() => this.claims.forceReap(owner, Number(reap[1]), body)));
+      }
+      const resolve = /^\/v1\/ui\/claims\/(\d+)\/resolve$/.exec(p);
+      if (resolve) {
+        const body = await readJson(req);
+        return json(tx(() => this.claims.resolve(owner, Number(resolve[1]), body)));
+      }
+      if (p === '/v1/ui/board/accept') {
+        const body = await readJson(req);
+        return json(tx(() => this.claims.acceptHeld(owner, body)));
+      }
     }
     return null;
   }
@@ -147,7 +193,13 @@ export class Baton extends DurableObject<Env> {
   async board(p: BoardPayload) {
     const head = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? null;
     const at = this.now();
-    if (p.force) {
+    const confirmations = checkConfirmations(p.confirmations);
+    // A held history the owner (or the 24-hour clock) accepted becomes the head on its next post.
+    const accepted = !!p.force && this.claims.acceptedLine(head);
+    if (p.force && !accepted) {
+      // A held post still carries the sync's confirmations: git carries those completions
+      // whichever history the owner keeps, and dropping them would leave their items blocked.
+      this.ctx.storage.transactionSync(() => this.claims.confirm(confirmations));
       // Held once per sha: a repeat (the sync re-posts every 15 minutes) changes nothing,
       // so the first deadline stands and the dashboard lists it once.
       const known = this.sql<{ auto_accept_at: number }>('SELECT auto_accept_at FROM held_snapshots WHERE sha = ?', p.sha)[0];
@@ -161,8 +213,12 @@ export class Baton extends DurableObject<Env> {
       }
       throw new BatonError('snapshot-rejected', `a rewritten history is held for the owner until ${new Date(deadline).toISOString()}; claims continue on the current head`);
     }
-    if (p.sha === head) return { ok: true, unchanged: true };
-    if (p.parent_sha !== head) throw new BatonError('head-moved', `the head is ${head ?? 'unset'}; re-read it and retry`);
+    if (p.sha === head) {
+      // §6.7: the sync's confirm-only post re-sends the head with its confirmations.
+      const confirmed = this.ctx.storage.transactionSync(() => this.claims.confirm(confirmations));
+      return { ok: true, unchanged: true, confirmed };
+    }
+    if (!accepted && p.parent_sha !== head) throw new BatonError('head-moved', `the head is ${head ?? 'unset'}; re-read it and retry`);
 
     // Hash every row before the transaction: the digest is async, the transaction is not.
     const rankOf = new Map(p.ready.map((id, i) => [id, i]));
@@ -201,7 +257,10 @@ export class Baton extends DurableObject<Env> {
       this.reference(p);
       this.ctx.storage.sql.exec('INSERT INTO board_snapshots (sha, parent_sha, received_at, item_count) VALUES (?, ?, ?, ?) ON CONFLICT (sha) DO NOTHING', p.sha, p.parent_sha, at, p.state.items.length);
       this.ctx.storage.sql.exec('INSERT INTO board_head (id, sha) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET sha = excluded.sha', p.sha);
-      this.event('snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, item_count: p.state.items.length, ...changed }, at);
+      this.event('snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, item_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
+      (changed as Record<string, number>).confirmed = this.claims.confirm(confirmations);
+      // R-BTN-35: git wins over a claim it has overtaken.
+      (changed as Record<string, number>).stale_released = this.claims.staleBoard();
     });
     return { ok: true, ...changed };
   }
@@ -239,6 +298,9 @@ export class Baton extends DurableObject<Env> {
           name, a.reviews_on, familyOf(a.reviews_on, p.matrix) ?? 'unknown', JSON.stringify(a.bills), a.models ? JSON.stringify(a.models) : null);
       }
     }
+    // Rule 8 (R-BTN-27) reads the whole matrix (rows, seats, costs) and the posted catalog.
+    if (p.matrix) exec(`INSERT INTO baton_settings (key, value) VALUES ('reviewer_matrix', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(p.matrix));
+    if (p.reviewers) exec(`INSERT INTO baton_settings (key, value) VALUES ('reviewer_catalog', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(p.reviewers));
     if (p.transcript_repos) {
       exec(`INSERT INTO baton_settings (key, value) VALUES ('transcript_repos', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(p.transcript_repos));
     }
@@ -299,7 +361,10 @@ export class Baton extends DurableObject<Env> {
        WHERE accepted_at IS NULL ORDER BY received_at`);
     const suspensions = this.sql(`SELECT id, provider_id, model_id, mode, starts_at, ends_at, reason, set_by, lifted_at FROM provider_suspensions
                                   WHERE lifted_at IS NULL AND (ends_at IS NULL OR ends_at > ?) ORDER BY starts_at`, now);
-    return { server_time: now, head: snap, ready, ready_by_tier: byTier, providers, held, workers: this.workers.workersView(now), suspensions };
+    return {
+      server_time: now, head: snap, ready, ready_by_tier: byTier, providers, held, workers: this.workers.workersView(now), suspensions,
+      running: this.claims.running(now), timeline: this.claims.timeline(now), needs_you: this.claims.needsYou(now),
+    };
   }
 }
 

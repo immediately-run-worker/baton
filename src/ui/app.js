@@ -1,5 +1,6 @@
-// app.js — the dashboard (BATON_SPEC §14; Ready and Providers, and from R3-1211 Workers and
-// Suspensions with the owner's actions: status request, release, suspend and lift). It polls
+// app.js — the dashboard (BATON_SPEC §14): Needs you, Running, Timeline, Ready, Providers,
+// Workers and Suspensions, with the owner's actions (status request, release, force-reap,
+// accept a held history, suspend and lift). It polls
 // GET /v1/ui/state every 10 seconds and renders with textContent only (§10.4): no markup is
 // ever built from server text.
 
@@ -178,23 +179,133 @@ document.getElementById('suspend').addEventListener('submit', (e) => {
   act('/v1/ui/suspensions', body);
 });
 
-function renderHeld() {
-  const section = document.getElementById('held-section');
-  const list = document.getElementById('held');
-  list.replaceChildren();
-  for (const h of state.held) {
-    list.append(el('li', { text: `docs@${short(h.sha)} (parent ${short(h.parent_sha)}) held ${fmtTime(h.received_at)}; accepted automatically from ${fmtTime(h.auto_accept_at)}` }));
+const minutes = (ms) => `${Math.round(ms / 60_000)} min`;
+
+function renderRunning() {
+  const body = document.getElementById('running');
+  body.replaceChildren();
+  for (const c of state.running) {
+    const item = el('td', {}, el('div', { text: c.work_item_id }), el('div', { text: c.title ?? '', cls: 'muted' }));
+    if (c.stalled) item.append(el('div', { text: 'stalled: no activity for 2 h', cls: 'stalled' }));
+    const worker = el('td', {}, el('div', { text: `${c.hostname} · #${c.worker_id}` }), el('div', { text: c.alive ? 'alive' : 'silent', cls: c.alive ? 'alive' : 'dead' }));
+    const events = el('td', { cls: 'muted' });
+    for (const e of c.events.slice(-3)) events.append(el('div', { text: `${fmtTime(e.at)} ${e.kind}` }));
+    const open = c.activities.filter((a) => a.ended_at == null).at(-1);
+    if (open) events.append(el('div', { text: `now: ${[open.kind, open.label].filter(Boolean).join(': ')}` }));
+    const actions = el('td');
+    actions.append(button('Force-reap', () => {
+      // §14: the confirmation names the worker's last-seen and last-activity times.
+      const msg = `Reap ${c.work_item_id} from ${c.hostname} #${c.worker_id}?\nLast seen ${fmtTime(c.last_seen_at)}; last activity ${fmtTime(c.last_activity_at)}.` +
+        (c.alive ? `\nThe worker is alive: the item waits until its sidecar confirms the fence (or ${minutes(c.lease_timeout_ms)} of silence).` : '');
+      if (confirm(msg)) act(`/v1/ui/claims/${c.id}/reap`, { confirm: true });
+    }));
+    body.append(el('tr', {}, item, worker, el('td', { text: fmtTime(c.claimed_at) }), el('td', { text: c.reap_at == null ? '—' : fmtTime(c.reap_at) }), events, actions));
   }
-  section.hidden = !state.held.length;
+  if (!state.running.length) body.append(el('tr', {}, el('td', { text: 'No active claims.', attrs: { colspan: '6' }, cls: 'muted' })));
+}
+
+/** §14: segments coloured by kind group. */
+const KIND_GROUP = {
+  implement: 'build', 'local-verify': 'build', push: 'build', 'open-pr': 'build', merge: 'build', reconcile: 'build', 'status-write': 'build',
+  'review-round': 'review', reviewer: 'review', 'fix-findings': 'review', adjudicate: 'review', 'decision-packet': 'review',
+  'ci-wait': 'wait',
+};
+
+/** The clicked segment's label, detail and transcript (§14), drawn as text. */
+function showActivity(a) {
+  const box = document.getElementById('timeline-detail');
+  box.replaceChildren(el('div', { text: `${a.kind}${a.seq != null ? ` #${a.seq}` : ''}${a.label ? ` — ${a.label}` : ''}` }),
+    el('div', { text: `${fmtTime(a.started_at)} → ${a.ended_at ? fmtTime(a.ended_at) : 'running'}${a.outcome ? ` · ${a.outcome}` : ''}`, cls: 'muted' }));
+  if (a.detail_json) {
+    try {
+      for (const [k, v] of Object.entries(JSON.parse(a.detail_json))) {
+        if (k === 'pr') box.append(el('div', {}, githubLink(String(v), v)));
+        else box.append(el('div', { text: `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`, cls: 'muted' }));
+      }
+    } catch {
+      box.append(el('div', { text: 'detail unreadable', cls: 'muted' }));
+    }
+  }
+  if (a.transcript_url) box.append(el('div', {}, githubLink('transcript', a.transcript_url)));
+  box.hidden = false;
+}
+
+function renderTimeline() {
+  const box = document.getElementById('timeline');
+  box.replaceChildren();
+  const { from, to, lanes } = state.timeline;
+  const span = to - from;
+  const pct = (t) => `${Math.max(0, Math.min(100, ((t - from) / span) * 100))}%`;
+  const width = (a, b) => `${Math.max(0.5, ((Math.min(b ?? to, to) - Math.max(a, from)) / span) * 100)}%`;
+  for (const lane of lanes) {
+    const track = el('div', { cls: 'track' });
+    for (const c of lane.claims) {
+      const bar = el('div', { cls: 'bar', attrs: { title: `${c.work_item_id} · ${c.status}${c.end_reason ? ` (${c.end_reason})` : ''}` } });
+      // Positions go through the CSSOM: no markup is built and no style attribute is parsed (§10.4).
+      bar.style.left = pct(c.claimed_at);
+      bar.style.width = width(c.claimed_at, c.ended_at);
+      track.append(bar);
+      // A review round's reviewers are nested: drawn on a lower band beneath their round.
+      for (const a of c.activities) {
+        const cls = ['seg', `k-${KIND_GROUP[a.kind] ?? 'other'}`, a.parent_id ? 'child' : '', a.outcome === 'failed' ? 'failed' : ''].filter(Boolean).join(' ');
+        const seg = el('button', { cls, attrs: { type: 'button', title: `${a.kind}${a.label ? `: ${a.label}` : ''}${a.outcome ? ` · ${a.outcome}` : ''}`, 'aria-label': `${a.kind} ${a.label ?? ''}` } });
+        seg.style.left = pct(a.started_at);
+        seg.style.width = width(a.started_at, a.ended_at);
+        seg.addEventListener('click', () => showActivity(a));
+        track.append(seg);
+      }
+    }
+    box.append(el('div', { cls: 'lane' }, el('div', { text: `${lane.hostname} · ${lane.session_name}`, cls: 'muted' }), track));
+  }
+  if (!lanes.length) box.append(el('p', { text: 'No alive workers.', cls: 'muted' }));
+}
+
+function renderNeeds() {
+  const n = state.needs_you;
+  const list = document.getElementById('needs');
+  list.replaceChildren();
+  for (const c of n.unconfirmed) {
+    // §6.7: never confirmed automatically; the owner confirms it or releases it.
+    const li = el('li', { text: `${c.work_item_id}: completed ${fmtTime(c.ended_at)} (${c.end_reason}) at ${short(c.ended_at_sha)}, not confirmed by git after 6 h` });
+    li.append(button('Confirm', () => {
+      if (confirm(`Confirm ${c.work_item_id}: git carries docs@${short(c.ended_at_sha)}?`)) act(`/v1/ui/claims/${c.id}/resolve`, { action: 'confirm', confirm: true });
+    }));
+    li.append(button('Release', () => {
+      if (confirm(`Release ${c.work_item_id}: its push never landed, and the item becomes claimable again?`)) act(`/v1/ui/claims/${c.id}/resolve`, { action: 'release', confirm: true });
+    }));
+    list.append(li);
+  }
+  for (const m of n.unacknowledged_releases) {
+    let item = '?';
+    try {
+      item = JSON.parse(m.payload_json).work_item_id;
+    } catch {
+      // shown without the item
+    }
+    list.append(el('li', { text: `Release of ${item} to worker #${m.to_worker_id}: ${m.delivered_at ? `delivered ${fmtTime(m.delivered_at)}` : 'not yet delivered'}, unacknowledged` }));
+  }
+  for (const c of n.fence_pending) list.append(el('li', { text: `${c.work_item_id}: reaped ${fmtTime(c.ended_at)}, waiting for worker #${c.worker_id} to confirm its fence` }));
+  for (const w of n.stale_skills) list.append(el('li', { text: `${w.hostname} · ${w.session_name}: skills version ${w.skills_version}, below the minimum` }));
+  for (const h of n.held_items) list.append(el('li', { text: `${h.work_item_id}: held (${h.hold_reason ?? 'owner'})` }));
+  for (const h of state.held) {
+    const li = el('li', { text: `Rewritten history docs@${short(h.sha)} held; accepted automatically ${fmtTime(h.auto_accept_at)}` });
+    li.append(button('Accept now', () => {
+      if (confirm(`Accept docs@${short(h.sha)} as the board?`)) act('/v1/ui/board/accept', { sha: h.sha });
+    }));
+    list.append(li);
+  }
+  document.getElementById('needs-section').hidden = !list.children.length;
 }
 
 function render() {
   renderHead();
   renderReady();
   renderProviders();
+  renderNeeds();
+  renderRunning();
+  renderTimeline();
   renderWorkers();
   renderSuspensions();
-  renderHeld();
   document.getElementById('status').textContent = `Updated ${fmtTime(state.server_time)}`;
 }
 
