@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Baton</title>
+<link rel="stylesheet" href="/ui/app.css">
+<script type="module" src="/ui/app.js"></script>
+</head>
+<body>
+<header>
+  <h1>Baton</h1>
+  <p id="head" class="muted">Loading the board…</p>
+</header>
+<main>
+  <section aria-labelledby="ready-title">
+    <div class="section-head">
+      <h2 id="ready-title">Ready</h2>
+      <label>Tier ceiling
+        <select id="tier">
+          <option value="critical">critical (every tier)</option>
+          <option value="judgement">judgement</option>
+          <option value="routine">routine</option>
+        </select>
+      </label>
+    </div>
+    <p class="muted">The order a worker under this ceiling would be offered, by the board's rank.</p>
+    <table>
+      <thead><tr><th>#</th><th>Item</th><th>Tier</th><th>Requires</th><th>Why here</th></tr></thead>
+      <tbody id="ready"></tbody>
+    </table>
+  </section>
+  <section aria-labelledby="providers-title">
+    <h2 id="providers-title">Providers</h2>
+    <div id="providers" class="cards"></div>
+  </section>
+  <section aria-labelledby="held-title" id="held-section" hidden>
+    <h2 id="held-title">Held histories</h2>
+    <ul id="held"></ul>
+  </section>
+</main>
+<footer class="muted" id="status"></footer>
+</body>
+</html>

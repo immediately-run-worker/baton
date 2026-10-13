@@ -1,0 +1,32 @@
+name: ci
+
+# Baton's gate: the type check and the whole suite (unit tests and the S-BTN integration
+# scenarios, BATON_SPEC §13a) on every pull request and on main. docs is private, so this job
+# cannot see it: the vendored library and the board fixtures are checked against their
+# manifest and recorded shas here, and against docs itself wherever an agent runs the suite
+# beside a docs checkout (R-BTN-37). Deploying is R3-1207's workflow, not this one.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
