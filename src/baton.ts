@@ -259,11 +259,10 @@ export class Baton extends DurableObject<Env> {
    * held for the owner as a `snapshot-rejected` event and moves nothing else; accepting it
    * is the alarm's and the dashboard's job (R3-1212). A repeat of the head is a no-op.
    *
-   * `held_snapshots` keeps one row per sha, written once PER HOLD (R3-1223): a force post of a
-   * sha whose row was accepted, or held against another head, is a new hold that resets the
-   * row's head, received_at and 24-hour deadline — the 0001 schema's "written once" and "the
-   * first force post" describe a single hold. Rows held against a head are deleted when the
-   * head moves, so every row is a hold against the current head.
+   * `held_snapshots` holds one row per hold, against the current head (R3-1223): rows held
+   * against a head are deleted when the head moves, so a later force post of the same sha —
+   * a rewind to a once-accepted history included — is a fresh hold with a fresh row. The 0001
+   * schema's "written once" and "the first force post" describe that one hold.
    */
   async board(p: BoardPayload) {
     const head = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? null;
@@ -275,25 +274,18 @@ export class Baton extends DurableObject<Env> {
       // A held post still carries the sync's confirmations: git carries those completions
       // whichever history the owner keeps, and dropping them would leave their items blocked.
       this.ctx.storage.transactionSync(() => this.claims.confirm(confirmations));
-      // Held once per sha and head: a repeat (the sync re-posts every 15 minutes) changes
-      // nothing, so the first deadline stands and the dashboard lists it once. A row that was
-      // accepted, or held against another head, is a NEW hold (R3-1223): a rewind to a sha the
-      // owner once accepted is held with a fresh row — held list, 24-hour clock, the owner's
-      // Accept — never a silent 409. `held_snapshots` keeps one row per sha; the hold reuses it.
-      const known = this.sql<{ auto_accept_at: number; accepted_at: number | null; head_sha: string | null }>(
-        'SELECT auto_accept_at, accepted_at, head_sha FROM held_snapshots WHERE sha = ?', p.sha)[0];
-      const held = !!known && known.accepted_at == null && known.head_sha === head;
-      const deadline = held ? known.auto_accept_at : at + HELD_AUTO_ACCEPT_MS;
-      if (!held) {
+      // Held once per sha: a repeat (the sync re-posts every 15 minutes) changes nothing, so
+      // the first deadline stands and the dashboard lists it once. Every row is a hold against
+      // the current head (rows held against a head are deleted when it moves, below), so a row
+      // for this sha is this hold; with none, this is a new one — including a rewind to a sha
+      // the owner once accepted, whose old row went when its line became the head (R3-1223).
+      const known = this.sql<{ auto_accept_at: number }>('SELECT auto_accept_at FROM held_snapshots WHERE sha = ?', p.sha)[0];
+      const deadline = known?.auto_accept_at ?? at + HELD_AUTO_ACCEPT_MS;
+      if (!known) {
         this.ctx.storage.transactionSync(() => {
-          if (known) {
-            this.ctx.storage.sql.exec(`UPDATE held_snapshots SET parent_sha = ?, head_sha = ?, item_count = ?, received_at = ?, auto_accept_at = ?, accepted_at = NULL
-                                       WHERE sha = ?`, p.parent_sha, head, p.state.items.length, at, deadline, p.sha);
-          } else {
-            this.ctx.storage.sql.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, item_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
-              p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
-          }
-          this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, item_count: p.state.items.length, auto_accept_at: deadline, ...(known ? { again: true } : {}) }, at);
+          this.ctx.storage.sql.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, item_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
+            p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
+          this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, item_count: p.state.items.length, auto_accept_at: deadline }, at);
         });
       }
       throw new BatonError('snapshot-rejected', `a rewritten history is held for the owner until ${new Date(deadline).toISOString()}; claims continue on the current head`);
