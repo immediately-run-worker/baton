@@ -290,7 +290,7 @@ export class Claims {
       // R-BTN-8 pushes git first, so a sync can see the item done and release the claim
       // stale-board (R-BTN-35) before the worker's own end arrives: that completion is the
       // truth, recorded as such, and the release it no longer needs is withdrawn.
-      if (c.status === 'released' && c.end_reason === 'released:stale-board' && e.status === 'completed') {
+      if (c.status === 'released' && c.end_reason === 'released:stale-board' && e.status === 'completed' && this.gitEnded(c.work_item_id, c.id)) {
         this.exec(`UPDATE work_item_claims SET status = 'completed', end_reason = ?, ended_at_sha = ? WHERE id = ?`, e.end_reason, e.ended_at_sha, c.id);
         this.exec(`UPDATE messages SET status = 'expired' WHERE to_worker_id = ? AND kind = 'release' AND status IN ('pending','delivered')
                    AND json_extract(payload_json, '$.work_item_id') = ? AND json_extract(payload_json, '$.reason') = 'stale-board'`, workerId, c.work_item_id);
@@ -311,6 +311,15 @@ export class Claims {
       status, now, reason, opts.ended_at_sha ?? null, opts.fence ? 1 : 0, opts.fence?.incarnation ?? null, claimId);
     this.exec(`UPDATE activities SET ended_at = ?, outcome = 'abandoned' WHERE claim_id = ? AND ended_at IS NULL`, now, claimId);
     this.event(status, actor, { end_reason: reason, ...(opts.ended_at_sha ? { ended_at_sha: opts.ended_at_sha } : {}), ...(opts.fence ? { fence_pending: true } : {}) }, item, claimId);
+  }
+
+  /** Whether a stale-board release still reads as the worker's own git-first completion: git
+   *  shows the item ended (done, superseded, deferred, deprioritized, archived or gone — not a
+   *  re-tier) and nobody has claimed it since. */
+  private gitEnded(item: string, claimId: number) {
+    if (this.rows('SELECT 1 FROM work_item_claims WHERE work_item_id = ? AND id > ?', item, claimId).length) return false;
+    const it = this.rows<{ status: string }>('SELECT status FROM work_items WHERE id = ?', item)[0];
+    return !it || GIT_ENDS.has(it.status);
   }
 
   /** `GET /v1/worker/items/{item}/holder` (R-BTN-7): whether another live, non-legacy worker
@@ -390,8 +399,10 @@ export class Claims {
    *  accepts the line, not one sha: main keeps moving while it is held, and the sync always
    *  posts the newest main (§7.1 step 2), so a force post against the head an accepted row
    *  was held against is accepted too. */
-  acceptedLine(sha: string, head: string | null) {
-    return this.rows('SELECT 1 FROM held_snapshots WHERE accepted_at IS NOT NULL AND (sha = ? OR head_sha IS ?)', sha, head).length > 0;
+  acceptedLine(head: string | null) {
+    // Only against the head it was held against: an accepted sha re-posted later, once the head
+    // has moved past it, is a rewind and is held like any other force post (R-BTN-11).
+    return this.rows('SELECT 1 FROM held_snapshots WHERE accepted_at IS NOT NULL AND head_sha IS ?', head).length > 0;
   }
 
   /** §6.7: the sync confirms a completion once git carries it (it checked the ancestry and the

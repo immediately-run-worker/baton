@@ -3,8 +3,7 @@
 // re-issued; the dead session can no longer act on it (its heartbeat is worker-reaped, and the
 // holder query its pre-push hook asks names another holder). The client half is R3-1213's.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { runDurableObjectAlarm } from 'cloudflare:test';
-import { beat, claimItem, claimRow, cutover, payload, register, rows, setClock, stub, syncCall, workerCall } from '../helpers';
+import { beat, claimItem, claimRow, cutover, payload, register, rows, setClock, stub, syncCall, workerCall , tick } from '../helpers';
 
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');
@@ -25,12 +24,12 @@ describe('S-BTN-2 silent worker reaped (server half)', () => {
     const live = await register('vm-b');
 
     await setClock(T0 + 120_000 + 900_000 - 1);
-    await runDurableObjectAlarm(stub());
+    await tick();
     expect((await claimRow(c.claim_id)).status).toBe('active');
     expect((await claimItem('vm-b', live.secret, { work_item_id: 'R3-9001' })).json.rule).toBe(3);
 
     await setClock(T0 + 120_000 + 900_000);
-    await runDurableObjectAlarm(stub());
+    await tick();
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'reaped', end_reason: 'reaped:silent', fence_pending: 0 });
     expect(await rows(`SELECT kind, actor FROM events WHERE claim_id = ? ORDER BY seq`, c.claim_id)).toEqual([{ kind: 'claimed', actor: `worker:${dead.id}` }, { kind: 'reaped', actor: 'alarm' }]);
 

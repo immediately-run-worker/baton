@@ -152,3 +152,10 @@ export async function claimRow(id: number) {
   return (await rows<{ status: string; end_reason: string | null; fence_pending: number; confirmed_at: number | null; work_item_id: string }>(
     'SELECT status, end_reason, fence_pending, confirmed_at, work_item_id FROM work_item_claims WHERE id = ?', id))[0];
 }
+
+/** One alarm tick, run directly. Not `runDurableObjectAlarm`: the fake clock sits behind the
+ *  real one, so every alarm the object arms is already overdue and workerd may be running it in
+ *  the background — when it is, nothing is scheduled and `runDurableObjectAlarm` runs nothing. */
+export function tick() {
+  return runInDurableObject(stub(), (o: Baton) => o.alarm());
+}

@@ -3,9 +3,8 @@
 // the never-landed one is flagged at 6 h and never re-issued. The sync is the real decision code
 // (scripts/lib/batonSync.mjs, vendored) over the fixture repository's real ancestry.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { runDurableObjectAlarm } from 'cloudflare:test';
 import { syncOnce } from '../../src/shared/batonSync.mjs';
-import { claimItem, claimRow, cutover, endClaim, ownerCall, payload, register, setClock, stub, syncCall } from '../helpers';
+import { claimItem, claimRow, cutover, endClaim, ownerCall, payload, register, setClock, stub, syncCall , tick } from '../helpers';
 
 const board = inject('board');
 const sha = board.shas;
@@ -65,7 +64,7 @@ describe('S-BTN-12 completion confirmation', () => {
     expect(await needs()).toEqual([expect.objectContaining({ id: c.claim_id, work_item_id: 'R3-9001', ended_at_sha: sha.C })]);
     // Days later, the alarm has run and nothing confirmed or re-issued it.
     await setClock(T0 + 3 * 86_400_000);
-    await runDurableObjectAlarm(stub());
+    await tick();
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'completed', confirmed_at: null });
     expect((await claimItem('vm-b', b.secret, { work_item_id: 'R3-9001' })).json).toMatchObject({ code: 'not-eligible', rule: 3 });
   });

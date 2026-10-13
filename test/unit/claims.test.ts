@@ -1,12 +1,12 @@
 // R3-1212 — claims (BATON_SPEC §6.1–6.7, §7.2, §11): G-BTN-1, -2, -3, -6, -14 and -40, plus the
 // claim and end contracts, the holder query, matching's worker rules, and the held history.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
+import { runInDurableObject } from 'cloudflare:test';
 import { confirmations } from '../../src/shared/batonSync.mjs';
 import { isEligible } from '../../src/shared/baton.mjs';
 import type { Baton } from '../../src/baton';
 import {
-  beat, claimItem, claimRow, cutover, endClaim, hbBody, ORIGIN, ownerCall, payload, register, requestId, rows, setClock, sha256, stub, syncCall, workerCall,
+  beat, claimItem, claimRow, cutover, endClaim, hbBody, ORIGIN, ownerCall, payload, register, requestId, rows, setClock, sha256, stub, syncCall, workerCall, tick,
 } from '../helpers';
 
 const board = inject('board');
@@ -20,7 +20,7 @@ const owner = (path: string, body: unknown) =>
   ownerCall(path, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: ORIGIN }, body: JSON.stringify(body) });
 const alarmAt = async (ms: number) => {
   await setClock(ms);
-  await runDurableObjectAlarm(stub());
+  await tick();
 };
 
 beforeEach(async () => {

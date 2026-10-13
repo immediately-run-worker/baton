@@ -2,10 +2,10 @@
 // unconfirmed completion, the reap's dedupe, the stale-board race, rules 2 and 8 through the
 // server, the hold and legacy branches, and the dashboard's Running / Timeline / Needs you data.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
+import { runInDurableObject } from 'cloudflare:test';
 import type { Baton } from '../../src/baton';
 import {
-  beat, claimItem, claimRow, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, stub, syncCall, workerCall,
+  beat, claimItem, claimRow, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, stub, syncCall, workerCall, tick,
 } from '../helpers';
 
 const board = inject('board');
@@ -16,7 +16,7 @@ const owner = (path: string, body: unknown) =>
   ownerCall(path, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: ORIGIN }, body: JSON.stringify(body) });
 const alarmAt = async (ms: number) => {
   await setClock(ms);
-  await runDurableObjectAlarm(stub());
+  await tick();
 };
 const uiState = async () => (await (await ownerCall('/v1/ui/state')).json()) as Record<string, any>;
 const items = () => structuredClone(board.states.A.state.items) as Record<string, any>[];
@@ -39,6 +39,16 @@ describe('§7.1: accepting a held history accepts the line', () => {
     expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(fake('d'));
     // The line is accepted once: a later rewrite of the new head is held again.
     expect((await syncCall('/v1/sync/board', payload(fake('c'), fake('d'), board.states.D, { force: true }))).status).toBe(409);
+  });
+
+  it('a rewind to a once-accepted sha is held, never a backwards move', async () => {
+    await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B));
+    await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }));
+    await owner('/v1/ui/board/accept', { sha: sha.D });
+    expect((await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }))).status).toBe(200);
+    await syncCall('/v1/sync/board', payload(fake('7'), sha.D, board.states.D));
+    expect((await syncCall('/v1/sync/board', payload(sha.D, fake('7'), board.states.D, { force: true }))).status).toBe(409);
+    expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(fake('7'));
   });
 
   it('a held post still applies its confirmations', async () => {
@@ -72,6 +82,23 @@ describe('§6.5 ends', () => {
     expect((await beat('vm-a', secret)).json.messages).toEqual([]); // the withdrawn release
     // A released end after stale-board is still claim-ended.
     expect((await endClaim('vm-a', secret, c.claim_id, { end_reason: 'released:requested' })).json.code).toBe('claim-ended');
+  });
+
+  it('…but not after a re-tier, nor once someone else has claimed the item', async () => {
+    const a = await register('vm-a', { tier_ceiling: 'judgement' });
+    const b = await register('vm-b');
+    const { json: c } = await claimItem('vm-a', a.secret, { work_item_id: 'R3-9001' });
+    const retiered = items().map((i) => (i.id === 'R3-9001' ? { ...i, tier: 'critical' } : i));
+    await syncCall('/v1/sync/board', payload(fake('b'), sha.A, { ...board.states.A, state: { items: retiered }, ready: board.states.A.ready }));
+    expect((await claimRow(c.claim_id)).end_reason).toBe('released:stale-board');
+    expect((await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'done', ended_at_sha: fake('b') })).json.code).toBe('claim-ended');
+    // Gone from git, but another worker claimed it in between: still claim-ended.
+    const { json: c2 } = await claimItem('vm-b', b.secret, { work_item_id: 'R3-9001' });
+    expect(c2.claim_id).toBeGreaterThan(c.claim_id);
+    const gone = retiered.filter((i) => i.id !== 'R3-9001');
+    await syncCall('/v1/sync/board', payload(fake('c'), fake('b'), { ...board.states.A, state: { items: gone }, ready: ['R3-9002'] }));
+    expect((await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'done', ended_at_sha: fake('c') })).json.code).toBe('claim-ended');
+    expect(await claimRow(c.claim_id)).toMatchObject({ status: 'released', end_reason: 'released:stale-board' });
   });
 });
 

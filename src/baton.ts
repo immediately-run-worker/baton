@@ -195,7 +195,7 @@ export class Baton extends DurableObject<Env> {
     const at = this.now();
     const confirmations = checkConfirmations(p.confirmations);
     // A held history the owner (or the 24-hour clock) accepted becomes the head on its next post.
-    const accepted = !!p.force && this.claims.acceptedLine(p.sha, head);
+    const accepted = !!p.force && this.claims.acceptedLine(head);
     if (p.force && !accepted) {
       // A held post still carries the sync's confirmations: git carries those completions
       // whichever history the owner keeps, and dropping them would leave their items blocked.
