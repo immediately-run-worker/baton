@@ -256,8 +256,14 @@ export class Baton extends DurableObject<Env> {
   /**
    * `POST /v1/sync/board` (R-BTN-11): accepted only when `parent_sha` is the current head (or
    * null while there is none); a lost race is `head-moved`. `force` — a rewritten `main` — is
-   * held for the owner as a `snapshot-rejected` event and changes nothing else; accepting it
+   * held for the owner as a `snapshot-rejected` event and moves nothing else; accepting it
    * is the alarm's and the dashboard's job (R3-1212). A repeat of the head is a no-op.
+   *
+   * `held_snapshots` keeps one row per sha, written once PER HOLD (R3-1223): a force post of a
+   * sha whose row was accepted, or held against another head, is a new hold that resets the
+   * row's head, received_at and 24-hour deadline — the 0001 schema's "written once" and "the
+   * first force post" describe a single hold. An accepted row is deleted once its line
+   * becomes the head.
    */
   async board(p: BoardPayload) {
     const head = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? null;
@@ -337,6 +343,10 @@ export class Baton extends DurableObject<Env> {
       this.reference(p);
       this.ctx.storage.sql.exec('INSERT INTO board_snapshots (sha, parent_sha, received_at, item_count) VALUES (?, ?, ?, ?) ON CONFLICT (sha) DO NOTHING', p.sha, p.parent_sha, at, p.state.items.length);
       this.ctx.storage.sql.exec('INSERT INTO board_head (id, sha) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET sha = excluded.sha', p.sha);
+      // The accepted line is consumed once it becomes the head (R3-1223): left in place, an old
+      // accepted row would accept a NEW rewrite silently whenever the head came back to the
+      // sha it was held against. Its history stays in the events.
+      if (accepted) this.ctx.storage.sql.exec('DELETE FROM held_snapshots WHERE accepted_at IS NOT NULL AND head_sha IS ?', head);
       this.event('snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, item_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
       (changed as Record<string, number>).confirmed = this.claims.confirm(confirmations);
       // R-BTN-35: git wins over a claim it has overtaken.
