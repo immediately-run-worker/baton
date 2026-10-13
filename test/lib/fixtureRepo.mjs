@@ -3,8 +3,8 @@
 // only; test/integration/global-setup.ts and scripts/board-fixtures.mjs use it.
 //
 // The history (commit dates and identity fixed, so every run produces the same shas):
-//   A  R3-9001..9004 filed (R3-9004 blocked on R3-9001; R3-9003's repos entry is annotated,
-//      `deploy (provisioning)`, as real items' are), plus scripts/data/ (test/fixtures/data)
+//   A  R3-9001..9004 filed (R3-9004 blocked on R3-9001; R3-9003's repos entry is the
+//      bracketed app shape real items use, `app (deploy)`), plus scripts/data/ (test/fixtures/data)
 //   B  R3-9001 claimed: status in-progress, body edited               (child of A)
 //   C  R3-9005 filed with the EXPEDITE tag                            (child of B)
 //   D  a rewritten main: from A, R3-9003 archived; force-pushed over C (child of A only)
