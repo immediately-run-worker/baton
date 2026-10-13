@@ -256,8 +256,14 @@ export class Baton extends DurableObject<Env> {
   /**
    * `POST /v1/sync/board` (R-BTN-11): accepted only when `parent_sha` is the current head (or
    * null while there is none); a lost race is `head-moved`. `force` — a rewritten `main` — is
-   * held for the owner as a `snapshot-rejected` event and changes nothing else; accepting it
+   * held for the owner as a `snapshot-rejected` event and moves nothing else; accepting it
    * is the alarm's and the dashboard's job (R3-1212). A repeat of the head is a no-op.
+   *
+   * `held_snapshots` keeps one row per sha, written once PER HOLD (R3-1223): a force post of a
+   * sha whose row was accepted, or held against another head, is a new hold that resets the
+   * row's head, received_at and 24-hour deadline — the 0001 schema's "written once" and "the
+   * first force post" describe a single hold. Rows held against a head are deleted when the
+   * head moves, so every row is a hold against the current head.
    */
   async board(p: BoardPayload) {
     const head = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? null;
@@ -269,15 +275,25 @@ export class Baton extends DurableObject<Env> {
       // A held post still carries the sync's confirmations: git carries those completions
       // whichever history the owner keeps, and dropping them would leave their items blocked.
       this.ctx.storage.transactionSync(() => this.claims.confirm(confirmations));
-      // Held once per sha: a repeat (the sync re-posts every 15 minutes) changes nothing,
-      // so the first deadline stands and the dashboard lists it once.
-      const known = this.sql<{ auto_accept_at: number }>('SELECT auto_accept_at FROM held_snapshots WHERE sha = ?', p.sha)[0];
-      const deadline = known?.auto_accept_at ?? at + HELD_AUTO_ACCEPT_MS;
-      if (!known) {
+      // Held once per sha and head: a repeat (the sync re-posts every 15 minutes) changes
+      // nothing, so the first deadline stands and the dashboard lists it once. A row that was
+      // accepted, or held against another head, is a NEW hold (R3-1223): a rewind to a sha the
+      // owner once accepted is held with a fresh row — held list, 24-hour clock, the owner's
+      // Accept — never a silent 409. `held_snapshots` keeps one row per sha; the hold reuses it.
+      const known = this.sql<{ auto_accept_at: number; accepted_at: number | null; head_sha: string | null }>(
+        'SELECT auto_accept_at, accepted_at, head_sha FROM held_snapshots WHERE sha = ?', p.sha)[0];
+      const held = !!known && known.accepted_at == null && known.head_sha === head;
+      const deadline = held ? known.auto_accept_at : at + HELD_AUTO_ACCEPT_MS;
+      if (!held) {
         this.ctx.storage.transactionSync(() => {
-          this.ctx.storage.sql.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, item_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
-            p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
-          this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, item_count: p.state.items.length, auto_accept_at: deadline }, at);
+          if (known) {
+            this.ctx.storage.sql.exec(`UPDATE held_snapshots SET parent_sha = ?, head_sha = ?, item_count = ?, received_at = ?, auto_accept_at = ?, accepted_at = NULL
+                                       WHERE sha = ?`, p.parent_sha, head, p.state.items.length, at, deadline, p.sha);
+          } else {
+            this.ctx.storage.sql.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, item_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
+              p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
+          }
+          this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, item_count: p.state.items.length, auto_accept_at: deadline, ...(known ? { again: true } : {}) }, at);
         });
       }
       throw new BatonError('snapshot-rejected', `a rewritten history is held for the owner until ${new Date(deadline).toISOString()}; claims continue on the current head`);
@@ -327,6 +343,13 @@ export class Baton extends DurableObject<Env> {
       this.reference(p);
       this.ctx.storage.sql.exec('INSERT INTO board_snapshots (sha, parent_sha, received_at, item_count) VALUES (?, ?, ?, ?) ON CONFLICT (sha) DO NOTHING', p.sha, p.parent_sha, at, p.state.items.length);
       this.ctx.storage.sql.exec('INSERT INTO board_head (id, sha) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET sha = excluded.sha', p.sha);
+      // A hold is against one head (R3-1223): when the head moves — an accepted rewrite or a
+      // plain fast-forward — every row held against the head it leaves is retired, answered or
+      // not. Left in place, an accepted row would accept a NEW rewrite silently whenever the
+      // head came back to that sha; an unanswered one is moot (main moved on), and a re-post of
+      // its sha is held afresh. So every row left is a hold against the current head. Their
+      // history stays in the events.
+      this.ctx.storage.sql.exec('DELETE FROM held_snapshots WHERE head_sha IS ?', head);
       this.event('snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, item_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
       (changed as Record<string, number>).confirmed = this.claims.confirm(confirmations);
       // R-BTN-35: git wins over a claim it has overtaken.

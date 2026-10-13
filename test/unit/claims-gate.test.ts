@@ -51,6 +51,95 @@ describe('§7.1: accepting a held history accepts the line', () => {
     expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(fake('7'));
   });
 
+  // R3-1223 (S-BTN-13 re-run): the rewind is held like any rewritten history — a fresh row, a
+  // snapshot-rejected event, a Needs you entry, the owner's Accept and the 24-hour clock.
+  const rewound = async () => {
+    await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B));
+    await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }));
+    await owner('/v1/ui/board/accept', { sha: sha.D });
+    await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }));
+    await setClock(T0 + H);
+    await syncCall('/v1/sync/board', payload(fake('7'), sha.D, board.states.D));
+    expect((await syncCall('/v1/sync/board', payload(sha.D, fake('7'), board.states.D, { force: true }))).status).toBe(409);
+  };
+  const rejected = () => rows<{ detail_json: string }>(`SELECT detail_json FROM events WHERE kind = 'snapshot-rejected' ORDER BY seq`);
+
+  it('a rewind is held with a fresh row and event, listed under held; a repeat changes nothing', async () => {
+    await rewound();
+    const ev = await rejected();
+    expect(ev).toHaveLength(2);
+    expect(JSON.parse(ev[1].detail_json)).toMatchObject({ sha: sha.D, parent_sha: fake('7'), head: fake('7'), auto_accept_at: T0 + 25 * H });
+    expect(await rows(`SELECT head_sha, accepted_at, received_at, auto_accept_at FROM held_snapshots WHERE sha = ?`, sha.D)).toEqual([
+      { head_sha: fake('7'), accepted_at: null, received_at: T0 + H, auto_accept_at: T0 + 25 * H }]);
+    expect((await uiState()).held).toEqual([expect.objectContaining({ sha: sha.D, head_sha: fake('7'), auto_accept_at: T0 + 25 * H })]);
+    // The sync's 15-minute re-post: no new event, the first deadline stands.
+    await setClock(T0 + H + 15 * 60_000);
+    expect((await syncCall('/v1/sync/board', payload(sha.D, fake('7'), board.states.D, { force: true }))).status).toBe(409);
+    expect(await rejected()).toHaveLength(2);
+    expect(await rows(`SELECT auto_accept_at FROM held_snapshots WHERE sha = ?`, sha.D)).toEqual([{ auto_accept_at: T0 + 25 * H }]);
+  });
+
+  it('a hold against an older head is held again against the new one, with a new deadline', async () => {
+    await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B));
+    expect((await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }))).status).toBe(409);
+    // main moves on (a fast-forward from B) while D is still unanswered; D is then re-posted.
+    await setClock(T0 + 2 * H);
+    await syncCall('/v1/sync/board', payload(fake('8'), sha.B, board.states.B));
+    expect((await syncCall('/v1/sync/board', payload(sha.D, fake('8'), board.states.D, { force: true }))).status).toBe(409);
+    const ev = await rejected();
+    expect(ev).toHaveLength(2);
+    // The fast-forward retired D's hold against B, so the re-post is a fresh hold against 8.
+    expect(JSON.parse(ev[1].detail_json)).toMatchObject({ head: fake('8'), auto_accept_at: T0 + 26 * H });
+    expect(await rows(`SELECT head_sha, received_at, auto_accept_at FROM held_snapshots WHERE sha = ?`, sha.D)).toEqual([
+      { head_sha: fake('8'), received_at: T0 + 2 * H, auto_accept_at: T0 + 26 * H }]);
+  });
+
+  it('an accepted line is consumed: a new rewrite against a head it was held against is held, never accepted', async () => {
+    await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B));
+    await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }));
+    await owner('/v1/ui/board/accept', { sha: sha.D });
+    expect((await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }))).status).toBe(200);
+    expect(await rows(`SELECT sha FROM held_snapshots`)).toEqual([]);
+    // Back to B by an accepted rewind; then a brand-new rewrite of B.
+    await syncCall('/v1/sync/board', payload(sha.B, sha.D, board.states.B, { force: true }));
+    await owner('/v1/ui/board/accept', { sha: sha.B });
+    expect((await syncCall('/v1/sync/board', payload(sha.B, sha.D, board.states.B, { force: true }))).status).toBe(200);
+    expect((await syncCall('/v1/sync/board', payload(fake('9'), sha.B, board.states.D, { force: true }))).status).toBe(409);
+    expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(sha.B);
+  });
+
+  it('a hold a fast-forward left behind is retired, so accepting it later accepts nothing', async () => {
+    await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B));
+    expect((await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }))).status).toBe(409);
+    await syncCall('/v1/sync/board', payload(fake('8'), sha.B, board.states.B));
+    expect(await rows(`SELECT sha FROM held_snapshots`)).toEqual([]);
+    expect((await uiState()).held).toEqual([]);
+    await alarmAt(T0 + 24 * H);
+    // Back to B through an accepted rewind; a brand-new rewrite of B is then held.
+    expect((await syncCall('/v1/sync/board', payload(sha.B, fake('8'), board.states.B, { force: true }))).status).toBe(409);
+    await owner('/v1/ui/board/accept', { sha: sha.B });
+    expect((await syncCall('/v1/sync/board', payload(sha.B, fake('8'), board.states.B, { force: true }))).status).toBe(200);
+    expect((await syncCall('/v1/sync/board', payload(fake('9'), sha.B, board.states.D, { force: true }))).status).toBe(409);
+    expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(sha.B);
+  });
+
+  it('the owner’s Accept makes the next force post of the rewind the head', async () => {
+    await rewound();
+    expect((await owner('/v1/ui/board/accept', { sha: sha.D })).status).toBe(200);
+    expect((await syncCall('/v1/sync/board', payload(sha.D, fake('7'), board.states.D, { force: true }))).status).toBe(200);
+    expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(sha.D);
+    expect((await uiState()).held).toEqual([]);
+  });
+
+  it('with no answer the alarm accepts the rewind 24 h after it was held, not after the first hold', async () => {
+    await rewound();
+    await alarmAt(T0 + 25 * H - 1);
+    expect((await syncCall('/v1/sync/board', payload(sha.D, fake('7'), board.states.D, { force: true }))).status).toBe(409);
+    await alarmAt(T0 + 25 * H);
+    expect((await syncCall('/v1/sync/board', payload(sha.D, fake('7'), board.states.D, { force: true }))).status).toBe(200);
+    expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(sha.D);
+  });
+
   it('a held post still applies its confirmations', async () => {
     const { secret } = await register('vm-a');
     const { json: c } = await claimItem('vm-a', secret);
