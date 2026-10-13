@@ -15,7 +15,7 @@ an item says `infra/baton/<path>`, it means `<path>` in this repository (BATON_S
 | `src/worker.ts` | The Worker: verifies the principal (OIDC for the sync, Access for the owner), sets the R-BTN-16 headers, serves the dashboard, forwards the API to the object |
 | `src/baton.ts` | The `Baton` Durable Object: migrations, board sync (§7.1), routing, the alarm, the dashboard state |
 | `src/workerApi.ts` | The worker API (§11): heartbeat and registration, activities, messages, suspensions, mode and shadow reports, the Workers view |
-| `src/validate.ts` | Pure: every worker- and owner-supplied field checked before any write (§10.3) |
+| `src/validate.ts` | Pure: every worker- and owner-supplied field checked before any write (§10.4) |
 | `src/board.ts` | Pure: snapshot validation, the `work_items` row an item becomes, peaks, prices |
 | `src/auth.ts` | JWT verification (R-BTN-15, R-BTN-16); worker tokens against `TOKEN_HASHES` (R-BTN-13) |
 | `src/migrations/` | Numbered schema migrations, applied before the object serves |

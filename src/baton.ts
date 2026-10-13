@@ -34,8 +34,9 @@ export class Baton extends DurableObject<Env> {
   /** §3: the one alarm, every 60 seconds. R3-1211 gives it suspensions and message expiry;
    *  R3-1212 adds reaping. */
   async alarm(): Promise<void> {
-    this.ctx.storage.transactionSync(() => this.workers.alarm());
+    // Re-armed first, so one failing tick never ends the cycle.
     await this.ctx.storage.setAlarm(this.now() + ALARM_EVERY_MS);
+    this.ctx.storage.transactionSync(() => this.workers.alarm());
   }
 
   private sql<T = Record<string, SqlStorageValue>>(query: string, ...params: unknown[]): T[] {
@@ -100,7 +101,8 @@ export class Baton extends DurableObject<Env> {
       }
       const ack = /^\/v1\/worker\/messages\/(\d+)\/ack$/.exec(p);
       if (m === 'POST' && ack) {
-        const body = await readJson(req).catch(() => ({}));
+        // An absent body is an acknowledgement with no reply; a malformed one is refused.
+        const body = req.headers.get('Content-Length') === '0' || !req.body ? null : await readJson(req);
         return json(tx(() => this.workers.ack(workerId, Number(ack[1]), body)));
       }
       if (m === 'POST' && p === '/v1/worker/shadow-report') {

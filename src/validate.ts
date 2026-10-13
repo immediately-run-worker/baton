@@ -62,9 +62,10 @@ export interface Heartbeat {
   transcripts: TranscriptReport[];
   usage: { provider_id: string; model_id: string; hour: number; usd_list: number }[];
   rate_limits: { provider_id: string; model_id?: string; resets_at?: number }[];
+  transcript_refusals: { index: number; code: string; message: string }[];
 }
 
-export interface TranscriptReport { repo: string; path: string; role: 'session' | 'subagent'; activity_id?: string; pushed_at?: number }
+export interface TranscriptReport { index?: number; repo: string; path: string; role: 'session' | 'subagent'; activity_id?: string; pushed_at?: number }
 
 /** §6.6 R-BTN-9: the worker declares its lease timeout, clamped to [900, 86400] s, default 900. */
 export const clampLease = (s: unknown) => (typeof s === 'number' && Number.isFinite(s) ? Math.min(86400, Math.max(900, Math.round(s))) : 900);
@@ -115,7 +116,9 @@ export function checkHeartbeat(body: unknown, transcriptRepos: string[]): Heartb
     skills_version: b.skills_version as number,
     last_activity_at: b.last_activity_at as number | undefined,
     test_harness: b.test_harness === true,
-    transcripts: transcripts.map((t, i) => checkTranscript(t, `transcripts[${i}]`, transcriptRepos)),
+    // One bad pointer is refused on its own and reported, never the heartbeat (§6.8): a failed
+    // heartbeat would stop last_seen_at and get a live worker reaped.
+    ...splitTranscripts(transcripts, transcriptRepos),
     usage: usage.map((u, i) => {
       if (!isObj(u)) bad(`usage[${i}]`, 'must be an object');
       const x = u as Record<string, unknown>;
@@ -130,6 +133,31 @@ export function checkHeartbeat(body: unknown, transcriptRepos: string[]): Heartb
       return { provider_id: matches(ACCOUNT, `rate_limits[${i}].provider_id`)(x.provider_id), model_id: optional(x.model_id, matches(MODEL, `rate_limits[${i}].model_id`)), resets_at: x.resets_at as number | undefined };
     }),
   };
+}
+
+function splitTranscripts(list: unknown[], allowed: string[]) {
+  const ok: TranscriptReport[] = [];
+  const transcript_refusals: { index: number; code: string; message: string }[] = [];
+  list.forEach((t, i) => {
+    try {
+      ok.push({ ...checkTranscript(t, `transcripts[${i}]`, allowed), index: i });
+    } catch (e) {
+      if (!(e instanceof BatonError)) throw e;
+      transcript_refusals.push({ index: i, code: e.code, message: e.message });
+    }
+  });
+  return { transcripts: ok, transcript_refusals };
+}
+
+/** §9: an acknowledgement's optional reply — `{text}`, free text (§10.4). */
+export function checkAck(body: unknown): { text: string | null } | null {
+  if (body === null || body === undefined) return null;
+  if (!isObj(body)) bad('body', 'must be a JSON object');
+  const reply = (body as Record<string, unknown>).reply;
+  if (reply === undefined || reply === null) return null;
+  if (!isObj(reply)) bad('reply', 'must be an object');
+  const text = (reply as Record<string, unknown>).text;
+  return { text: text === undefined || text === null ? null : freeText(text, 'reply.text') };
 }
 
 /** §6.8: a transcript pointer — an allow-listed repo and a safe path with no `..` segment. */
@@ -262,7 +290,9 @@ export function checkSuspension(body: unknown, now: number) {
   if (mode !== 'no-new-work' && mode !== 'stop') bad('mode', "must be 'no-new-work' or 'stop'");
   if (b.starts_at !== undefined && !isTime(b.starts_at)) bad('starts_at', 'must be epoch ms');
   const starts_at = (b.starts_at as number | undefined) ?? now;
-  if (b.ends_at !== undefined && b.ends_at !== null && (!isTime(b.ends_at) || (b.ends_at as number) <= starts_at)) bad('ends_at', 'must be epoch ms after starts_at');
+  if (b.ends_at !== undefined && b.ends_at !== null && (!isTime(b.ends_at) || (b.ends_at as number) <= Math.max(starts_at, now))) {
+    bad('ends_at', 'must be epoch ms after starts_at and after now');
+  }
   return {
     provider_id,
     model_id: model_id ?? null,

@@ -16,3 +16,7 @@ CREATE TABLE pending_transcripts (
 -- §7.4: a scheduled start and a timed end are each logged once, by the alarm.
 ALTER TABLE provider_suspensions ADD COLUMN start_logged INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE provider_suspensions ADD COLUMN end_logged INTEGER NOT NULL DEFAULT 0;
+
+-- R-BTN-14: set once the worker has presented X-Worker-Secret; from then on the body hash of a
+-- retried first heartbeat no longer authenticates it. A re-key resets it.
+ALTER TABLE workers ADD COLUMN secret_seen INTEGER NOT NULL DEFAULT 0;

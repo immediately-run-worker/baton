@@ -3,6 +3,7 @@
 // verified JWT is trusted: no header, cookie or query parameter stands in for one.
 import { createLocalJWKSet, createRemoteJWKSet, errors, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { BatonError } from './http';
+import { SHA256_HEX } from './validate';
 
 const remoteSets = new Map<string, JWTVerifyGetKey>();
 
@@ -113,7 +114,7 @@ export async function verifyWorker(req: Request, env: Env): Promise<string> {
   const presented = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
   let match: string | null = null;
   for (const [id, hex] of Object.entries(hashes)) {
-    if (!/^[0-9a-f]{64}$/.test(hex)) continue;
+    if (!SHA256_HEX.test(hex)) continue;
     const want = Uint8Array.from(hex.match(/../g)!.map((h) => parseInt(h, 16)));
     // Compare every entry in constant time, so the scan's timing says nothing.
     if (crypto.subtle.timingSafeEqual(presented, want)) match = id;

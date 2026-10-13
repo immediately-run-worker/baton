@@ -102,10 +102,16 @@ function renderWorkers() {
   const body = document.getElementById('workers');
   body.replaceChildren();
   for (const w of state.workers) {
-    const who = el('td', {}, el('div', { text: w.hostname }), el('div', { text: `${w.session_name} · ${w.harness} · #${w.id}`, cls: 'muted' }));
+    const who = el('td', {}, el('div', { text: w.hostname }), el('div', { text: `${w.session_name} · ${w.harness} · ${w.kind} · #${w.id}`, cls: 'muted' }));
+    // §14: tier ceiling, capabilities, providers and lease timeout.
+    const caps = (w.capabilities ?? []).map((c) => c.capability).join(', ') || 'no capabilities';
+    const provs = (w.providers ?? []).map((p) => `${p.prefix}→${p.provider_id}`).join(', ') || 'no known accounts';
+    who.append(el('div', { text: `ceiling ${w.tier_ceiling} · lease ${Math.round(w.lease_timeout_ms / 60_000)} min`, cls: 'muted' }));
+    who.append(el('div', { text: caps, cls: 'muted' }));
+    who.append(el('div', { text: provs, cls: 'muted' }));
     if (w.transcript_url) who.append(el('div', {}, githubLink('transcript', w.transcript_url)));
     const st = w.reaped_at != null ? 'reaped' : w.alive ? 'alive' : 'lease lapsed';
-    const stateCell = el('td', {}, el('div', { text: st, cls: w.alive ? 'alive' : 'dead' }), el('div', { text: `seen ${fmtTime(w.last_seen_at)}`, cls: 'muted' }));
+    const stateCell = el('td', {}, el('div', { text: st, cls: w.alive ? 'alive' : 'dead' }), el('div', { text: `seen ${fmtTime(w.last_seen_at)}`, cls: 'muted' }), el('div', { text: `active ${fmtTime(w.last_activity_at)}`, cls: 'muted' }));
     const claim = el('td', { text: w.claim ? w.claim.work_item_id : '—' });
     const a = w.activity;
     const activity = el('td', { text: a ? [a.kind, a.label].filter(Boolean).join(': ') : '—', cls: a ? '' : 'muted' });
@@ -130,7 +136,7 @@ function renderWorkers() {
         }));
       }
     }
-    body.append(el('tr', {}, who, el('td', { text: `${w.model_id}${w.model_provider_id ? ` (${w.model_provider_id})` : ''}` }), stateCell, claim, activity, el('td', { text: report, cls: 'muted' }), actions));
+    body.append(el('tr', {}, who, el('td', { text: `${w.model_id ?? '—'}${w.model_provider_id ? ` (${w.model_provider_id})` : ''}` }), stateCell, claim, activity, el('td', { text: report, cls: 'muted' }), actions));
   }
   if (!state.workers.length) body.append(el('tr', {}, el('td', { text: 'No worker has sent a heartbeat.', attrs: { colspan: '7' }, cls: 'muted' })));
 }

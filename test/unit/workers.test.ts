@@ -1,8 +1,10 @@
 // R3-1211 — workers (BATON_SPEC §5, §6.8, §6.9, §9, §10.1–10.4, §11): G-BTN-5, -13, -17, -23,
 // -24, messages, mode and shadow reports.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { runDurableObjectAlarm } from 'cloudflare:test';
-import { beat, hbBody, ORIGIN, ownerCall, payload, register, rows, seedClaim, setClock, sha256, stub, syncCall, workerCall } from '../helpers';
+import { env, runDurableObjectAlarm, runInDurableObject } from 'cloudflare:test';
+import { WorkerApi } from '../../src/workerApi';
+import type { Baton } from '../../src/baton';
+import { beat, call, hbBody, ORIGIN, ownerCall, payload, register, rows, seedClaim, setClock, sha256, stub, syncCall, workerCall } from '../helpers';
 
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');
@@ -137,9 +139,18 @@ describe('G-BTN-23: transcript pointers', () => {
     const t = (repo: string, path: string) => ({ transcripts: [{ repo, path }] });
     expect((await beat('vm-a', secret, t('immediately-run/claude-sessions', 'claude-code/2026-10-13-s.jsonl'))).status).toBe(200);
     expect(await rows('SELECT repo, path FROM pending_transcripts WHERE worker_id = ?', id)).toEqual([{ repo: 'immediately-run/claude-sessions', path: 'claude-code/2026-10-13-s.jsonl' }]);
-    expect((await beat('vm-a', secret, t('evil/repo', 'x.md'))).json.code).toBe('invalid-params');
-    expect((await beat('vm-a', secret, t('immediately-run/claude-sessions', '../etc/passwd'))).json.code).toBe('invalid-params');
-    expect((await beat('vm-a', secret, t('immediately-run/claude-sessions', 'a//b'))).json.code).toBe('invalid-params');
+    // A bad pointer is refused on its own; the heartbeat still counts (last_seen_at moves).
+    for (const [i, bad] of [t('evil/repo', 'x.md'), t('immediately-run/claude-sessions', '../etc/passwd'), t('immediately-run/claude-sessions', 'a//b')].entries()) {
+      await setClock(T0 + (i + 1) * 1000);
+      const res = await beat('vm-a', secret, bad);
+      expect([res.status, res.json.transcripts_refused?.[0]]).toEqual([200, expect.objectContaining({ index: 0, code: 'invalid-params' })]);
+      expect(await rows('SELECT last_seen_at FROM workers WHERE id = ?', id)).toEqual([{ last_seen_at: T0 + (i + 1) * 1000 }]);
+    }
+    expect(await rows('SELECT count(*) AS n FROM pending_transcripts WHERE worker_id = ?', id)).toEqual([{ n: 1 }]);
+    // An activity not received yet only loses the link.
+    const early = await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'sub/r.jsonl', role: 'subagent', activity_id: 'not-yet' }] });
+    expect(early.json.transcripts_refused).toEqual([expect.objectContaining({ index: 0, code: 'unknown-activity' })]);
+    expect(await rows(`SELECT activity_id FROM pending_transcripts WHERE path = 'sub/r.jsonl'`)).toEqual([{ activity_id: null }]);
     const claim = await seedClaim(id, 'R3-9001');
     await beat('vm-a', secret, t('immediately-run-worker/session-transcripts', 'vm-a/s.md'));
     expect(await rows('SELECT claim_id, path FROM transcripts WHERE worker_id = ?', id)).toEqual([{ claim_id: claim, path: 'vm-a/s.md' }]);
@@ -226,7 +237,113 @@ describe('mode and shadow reports (R-BTN-28, §13 step 2)', () => {
     expect(await report('vm-b', b.secret, { transition: 'claim', work_item_id: 'R3-9001', status: 'in-progress', nonce: 'bbbbbb', at: T0 })).toMatchObject({ ok: true, conflict: `held-by-worker:${a.id}` });
     expect(await rows(`SELECT count(*) AS n FROM work_item_claims WHERE status = 'active'`)).toEqual([{ n: 1 }]);
     expect(await rows(`SELECT count(*) AS n FROM events WHERE kind = 'shadow-conflict'`)).toEqual([{ n: 1 }]);
+    // A retried claim report (same nonce) is the same claim, not a conflict.
+    expect(await report('vm-a', a.secret, { transition: 'claim', work_item_id: 'R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 })).toEqual({ ok: true, claim_id: expect.any(Number) });
+    expect(await rows(`SELECT count(*) AS n FROM events WHERE kind = 'shadow-conflict'`)).toEqual([{ n: 1 }]);
+    // §6.5: in-review is an activity of the active claim; the claim lasts through the gate.
     expect(await report('vm-a', a.secret, { transition: 'set', work_item_id: 'R3-9001', status: 'in-review', at: T0 + 5 })).toMatchObject({ ok: true });
-    expect(await rows(`SELECT status, end_reason FROM work_item_claims`)).toEqual([{ status: 'released', end_reason: 'shadow:in-review' }]);
+    expect(await rows(`SELECT status FROM work_item_claims`)).toEqual([{ status: 'active' }]);
+    const claimId = (await rows<{ id: number }>('SELECT id FROM work_item_claims'))[0].id;
+    await setClock(T0 + 11 * 60_000);
+    const round = await workerCall('/v1/worker/activities', { cred: 'vm-a', secret: a.secret, body: { activities: [{ id: 'r1', claim_id: claimId, kind: 'review-round', source: 'skill', started_at: T0 + 10 }] } });
+    expect(((await round.json()) as { refused: unknown[] }).refused).toEqual([]);
+    expect(await report('vm-a', a.secret, { transition: 'set', work_item_id: 'R3-9001', status: 'done', at: T0 + 9 })).toMatchObject({ ok: true });
+    expect(await rows(`SELECT status, end_reason FROM work_item_claims`)).toEqual([{ status: 'released', end_reason: 'shadow:done' }]);
+  });
+});
+
+describe('round-one review fixes (baton#4)', () => {
+  it('R-BTN-14: once the secret has been presented, the body hash no longer authenticates', async () => {
+    const hash = await sha256('s1');
+    expect((await workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { secret_hash: hash }) })).status).toBe(200);
+    expect((await beat('vm-a', 's1')).status).toBe(200);
+    const replay = await workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { secret_hash: hash }) });
+    expect([replay.status, await code(replay)]).toEqual([409, 'session-taken']);
+  });
+
+  it('R-BTN-14: a re-key with the same hash cannot bring a reaped worker back; a retried re-key is idempotent', async () => {
+    const { id } = await register('vm-a');
+    const rekey = (s: string) => workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { rekey: true, secret_hash: s }) });
+    const h2 = await sha256('two');
+    expect((await rekey(h2)).status).toBe(200);
+    expect((await rekey(h2)).status).toBe(200); // a lost response, retried
+    expect(await rows('SELECT incarnation FROM workers WHERE id = ?', id)).toEqual([{ incarnation: 2 }]);
+    await rows('UPDATE workers SET reaped_at = 5 WHERE id = ?', id);
+    const same = await rekey(h2);
+    expect([same.status, await code(same)]).toEqual([400, 'invalid-params']);
+    expect(await rows('SELECT reaped_at, incarnation FROM workers WHERE id = ?', id)).toEqual([{ reaped_at: 5, incarnation: 2 }]);
+  });
+
+  it('§3: credentials are mirrored once per change of the secrets, not on every call; a dropped hash or policy revokes', async () => {
+    const { secret } = await register('vm-a');
+    expect(await rows(`SELECT id FROM credentials WHERE revoked_at IS NOT NULL`)).toEqual([{ id: 'gone' }]);
+    // Tamper with the mirror: an unchanged secret is not re-mirrored, so the tampered row stands.
+    await rows(`UPDATE credentials SET hostname = 'elsewhere' WHERE id = 'vm-a'`);
+    expect((await beat('vm-a', secret)).json.code).toBe('forbidden');
+    // A changed secret is mirrored: the hash removed revokes vm-a.
+    await runInDurableObject(stub(), (o: Baton, state: DurableObjectState) => {
+      const hashes = JSON.parse(env.TOKEN_HASHES!);
+      delete hashes['vm-a'];
+      const api = new WorkerApi({ storage: state.storage, env: { ...env, TOKEN_HASHES: JSON.stringify(hashes) } as Env, now: () => o.now() });
+      expect(() => api.credential('vm-a')).toThrow(/revoked/);
+      expect(() => api.credential('vm-b')).not.toThrow();
+    });
+    expect(await rows(`SELECT hostname, revoked_at IS NOT NULL AS revoked FROM credentials WHERE id = 'vm-a'`)).toEqual([{ hostname: 'vm-a', revoked: 1 }]);
+  });
+
+  it('§7.4: a billed account the reference data learns later is written on the next heartbeat', async () => {
+    const { id, secret } = await register('vm-a', { billing: { 'zai-coding-plan': 'zai', newco: 'newco' } });
+    expect(await rows('SELECT prefix FROM worker_providers WHERE worker_id = ? ORDER BY prefix', id)).toEqual([{ prefix: 'zai-coding-plan' }]);
+    await rows(`INSERT INTO model_providers (id, name, billing) VALUES ('newco', 'NewCo', 'subscription')`);
+    await beat('vm-a', secret, { billing: { 'zai-coding-plan': 'zai', newco: 'newco' } });
+    expect(await rows('SELECT prefix FROM worker_providers WHERE worker_id = ? ORDER BY prefix', id)).toEqual([{ prefix: 'newco' }, { prefix: 'zai-coding-plan' }]);
+  });
+
+  it('§7.3: usage replaces the hour’s row, unknown accounts are skipped, rate limits are logged', async () => {
+    const { id, secret } = await register('vm-a');
+    const hour = T0 - (T0 % 3_600_000);
+    await beat('vm-a', secret, { usage: [{ provider_id: 'zai', model_id: 'glm-5.3', hour, usd_list: 1.5 }, { provider_id: 'nope', model_id: 'm', hour, usd_list: 9 }], rate_limits: [{ provider_id: 'zai', resets_at: T0 + 60_000 }] });
+    await beat('vm-a', secret, { usage: [{ provider_id: 'zai', model_id: 'glm-5.3', hour, usd_list: 2.25 }] });
+    expect(await rows('SELECT provider_id, usd_list FROM usage_reports WHERE worker_id = ?', id)).toEqual([{ provider_id: 'zai', usd_list: 2.25 }]);
+    expect(await rows('SELECT provider_id, resets_at FROM rate_limit_events WHERE worker_id = ?', id)).toEqual([{ provider_id: 'zai', resets_at: T0 + 60_000 }]);
+  });
+
+  it('§7.2 rule 6: a declared human-operator gets its own capability row', async () => {
+    const { id } = await register('mac', { capabilities: ['human-operator'] });
+    // The role expands to its capabilities (ROLES), and rule 6's own row names the role itself.
+    expect(await rows(`SELECT capability FROM worker_capabilities WHERE worker_id = ? AND declared = 'human-operator' ORDER BY capability`, id))
+      .toEqual(['authentication', 'create-pr', 'drivable-browser', 'human-operator', 'llm-call'].map((capability) => ({ capability })));
+  });
+
+  it('§6.8: the synced transcript_repos replaces the default allow-list', async () => {
+    const { secret } = await register('vm-a');
+    await syncCall('/v1/sync/board', payload(board.shas.B, board.shas.A, board.states.B, { transcript_repos: ['immediately-run/other-transcripts'] }));
+    expect((await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/other-transcripts', path: 'a.md' }] })).json.transcripts_refused).toBeUndefined();
+    expect((await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'a.md' }] })).json.transcripts_refused).toHaveLength(1);
+  });
+
+  it('§9: an ack reply is validated before the write; a malformed body acknowledges nothing; no body is a plain ack', async () => {
+    const { id, secret } = await register('vm-a');
+    const send = async () => ((await (await owner('/v1/ui/messages', { to_worker_id: id, kind: 'status_request' })).json()) as { id: number }).id;
+    const m1 = await send();
+    for (const body of [{ reply: { text: '' } }, { reply: { text: '<b>' } }, { reply: { text: 'x'.repeat(501) } }]) {
+      const res = await workerCall(`/v1/worker/messages/${m1}/ack`, { secret, body });
+      expect([res.status, await code(res)]).toEqual([400, 'invalid-params']);
+    }
+    const raw = await call(`/v1/worker/messages/${m1}/ack`, { method: 'POST', headers: { Authorization: 'Bearer tok-vm-a', 'X-Worker-Secret': secret, 'Content-Type': 'application/json' }, body: '{not json' });
+    expect(raw.status).toBe(400);
+    expect(await rows('SELECT status FROM messages WHERE id = ?', m1)).toEqual([{ status: 'pending' }]);
+    expect((await workerCall(`/v1/worker/messages/${m1}/ack`, { secret, method: 'POST' })).status).toBe(200);
+    expect(await rows('SELECT status FROM messages WHERE id = ?', m1)).toEqual([{ status: 'acknowledged' }]);
+  });
+
+  it('§7.4: a window already over is refused; a lifted timed suspension never logs an end', async () => {
+    const past = await owner('/v1/ui/suspensions', { provider_id: 'zai', mode: 'stop', starts_at: T0 - 3 * 3_600_000, ends_at: T0 - 3_600_000 });
+    expect([past.status, await code(past)]).toEqual([400, 'invalid-params']);
+    const { id } = (await (await owner('/v1/ui/suspensions', { provider_id: 'zai', mode: 'no-new-work', ends_at: T0 + 3_600_000 })).json()) as { id: number };
+    await owner(`/v1/ui/suspensions/${id}/lift`, {});
+    await setClock(T0 + 2 * 3_600_000);
+    await runDurableObjectAlarm(stub());
+    expect((await rows<{ a: string }>(`SELECT json_extract(detail_json, '$.action') AS a FROM events WHERE kind = 'suspension' ORDER BY seq`)).map((r) => r.a)).toEqual(['set', 'started', 'lifted']);
   });
 });
