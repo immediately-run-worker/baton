@@ -177,8 +177,10 @@ export class WorkerApi {
         if (!hb.secret_hash) bad('secret_hash', 'a re-key carries the new secret’s SHA-256');
         if (w.reaped_at == null && this.activeClaim(w.id)) throw new BatonError('session-taken', 'a worker holding a claim cannot re-key');
         if (hb.secret_hash === w.secret_hash) {
-          // A retried re-key is idempotent; the same hash cannot bring a reaped worker back.
+          // A retried re-key is idempotent — only until the secret is presented, as for a retried
+          // first heartbeat; the same hash cannot bring a reaped worker back.
           if (w.reaped_at != null) bad('secret_hash', 'a re-key carries a new secret');
+          if (w.secret_seen && presented !== w.secret_hash) throw new BatonError('session-taken', 'a re-key carries a new secret');
         } else {
           this.exec('UPDATE workers SET secret_hash = ?, secret_seen = 0, incarnation = incarnation + 1, reaped_at = NULL WHERE id = ?', hb.secret_hash, w.id);
           this.event('rekeyed', `worker:${w.id}`, { incarnation: w.incarnation + 1 });
@@ -193,7 +195,8 @@ export class WorkerApi {
       }
     }
 
-    const secretSeen = presented != null && presented === w.secret_hash ? 1 : 0;
+    const current = rekeyed ? hb.secret_hash : w.secret_hash; // the hash stored now
+    const secretSeen = presented != null && presented === current ? 1 : 0;
     this.exec(`UPDATE workers SET last_seen_at = ?, secret_seen = MAX(secret_seen, ?), last_activity_at = COALESCE(?, last_activity_at), harness = ?, kind = ?,
                  model_id = ?, model_provider_id = ?, skills_version = ?, tier_ceiling = ?, lease_timeout_ms = ? WHERE id = ?`,
       now, secretSeen, hb.last_activity_at ?? null, hb.harness, hb.kind, hb.model_id ?? null, modelProvider, hb.skills_version, hb.tier_ceiling,
@@ -203,7 +206,8 @@ export class WorkerApi {
     const known = Object.values(hb.billing).filter((a) => knownAccounts.has(a)).sort().join(',');
     const storedHash = `${settingsHash}:${fnv1a(known)}`;
     if (storedHash !== w.settings_hash || rekeyed) this.rewriteSettings(w.id, hb, knownAccounts, storedHash);
-    const refused = [...hb.transcript_refusals, ...this.recordTranscripts(w.id, hb, now)];
+    const refused = hb.transcript_refusals;
+    const unlinked = this.recordTranscripts(w.id, hb, now);
     this.recordUsage(w.id, hb, knownAccounts, now);
 
     const claim = this.activeClaim(w.id);
@@ -219,6 +223,7 @@ export class WorkerApi {
       mode: this.mode().mode,
       server_time: now,
       ...(refused.length ? { transcripts_refused: refused } : {}),
+      ...(unlinked.length ? { transcripts_unlinked: unlinked } : {}),
     };
   }
 
@@ -250,28 +255,31 @@ export class WorkerApi {
   /** §6.8: a path reported under a claim is linked to it; one reported with none waits for the
    *  next claim (R3-1212 links it). A repeat report only moves `last_pushed_at`. */
   private recordTranscripts(workerId: number, hb: Heartbeat, now: number) {
-    const refused: { index: number; code: string; message: string }[] = [];
-    if (!hb.transcripts.length) return refused;
+    const unlinked: number[] = [];
+    if (!hb.transcripts.length) return unlinked;
     const claim = this.activeClaim(workerId);
     for (const t of hb.transcripts) {
-      // An activity not received (yet, or ever) only loses the link: the pointer is still kept.
+      // An activity not received yet only defers the link: the pointer is stored, and a later
+      // report of it, once the activity has arrived, fills the link in.
       if (t.activity_id && !this.rows('SELECT 1 FROM activities WHERE worker_id = ? AND id = ?', workerId, t.activity_id).length) {
-        refused.push({ index: t.index ?? -1, code: 'unknown-activity', message: `${t.activity_id} is not one of this worker's activities; kept without the link` });
+        unlinked.push(t.index ?? -1);
         t.activity_id = undefined;
       }
       if (claim) {
         this.exec(`INSERT INTO transcripts (worker_id, claim_id, repo, path, role, activity_id, first_seen_at, last_pushed_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT (worker_id, repo, path, claim_id) DO UPDATE SET last_pushed_at = COALESCE(excluded.last_pushed_at, transcripts.last_pushed_at)`,
+                   ON CONFLICT (worker_id, repo, path, claim_id) DO UPDATE SET last_pushed_at = COALESCE(excluded.last_pushed_at, transcripts.last_pushed_at),
+                     activity_id = COALESCE(transcripts.activity_id, excluded.activity_id)`,
           workerId, claim.id, t.repo, t.path, t.role, t.activity_id ?? null, now, t.pushed_at ?? null);
       } else {
         this.exec(`INSERT INTO pending_transcripts (worker_id, repo, path, role, activity_id, first_seen_at, last_pushed_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT (worker_id, repo, path) DO UPDATE SET last_pushed_at = COALESCE(excluded.last_pushed_at, pending_transcripts.last_pushed_at)`,
+                   ON CONFLICT (worker_id, repo, path) DO UPDATE SET last_pushed_at = COALESCE(excluded.last_pushed_at, pending_transcripts.last_pushed_at),
+                     activity_id = COALESCE(pending_transcripts.activity_id, excluded.activity_id)`,
           workerId, t.repo, t.path, t.role, t.activity_id ?? null, now, t.pushed_at ?? null);
       }
     }
-    return refused;
+    return unlinked;
   }
 
   /** §7.3: an hour's running total replaces the row (never added), and rate limits are logged.

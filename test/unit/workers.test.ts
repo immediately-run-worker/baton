@@ -149,8 +149,14 @@ describe('G-BTN-23: transcript pointers', () => {
     expect(await rows('SELECT count(*) AS n FROM pending_transcripts WHERE worker_id = ?', id)).toEqual([{ n: 1 }]);
     // An activity not received yet only loses the link.
     const early = await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'sub/r.jsonl', role: 'subagent', activity_id: 'not-yet' }] });
-    expect(early.json.transcripts_refused).toEqual([expect.objectContaining({ index: 0, code: 'unknown-activity' })]);
+    expect([early.json.transcripts_refused, early.json.transcripts_unlinked]).toEqual([undefined, [0]]);
     expect(await rows(`SELECT activity_id FROM pending_transcripts WHERE path = 'sub/r.jsonl'`)).toEqual([{ activity_id: null }]);
+    // Once the activity arrives, the next report of the pointer links it.
+    const act = await workerCall('/v1/worker/activities', { secret, body: { activities: [{ id: 'not-yet', kind: 'orient', source: 'hook', started_at: T0 }] } });
+    expect(((await act.json()) as { refused: unknown[] }).refused).toEqual([]);
+    const later = await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'sub/r.jsonl', role: 'subagent', activity_id: 'not-yet' }] });
+    expect(later.json.transcripts_unlinked).toBeUndefined();
+    expect(await rows(`SELECT activity_id FROM pending_transcripts WHERE path = 'sub/r.jsonl'`)).toEqual([{ activity_id: 'not-yet' }]);
     const claim = await seedClaim(id, 'R3-9001');
     await beat('vm-a', secret, t('immediately-run-worker/session-transcripts', 'vm-a/s.md'));
     expect(await rows('SELECT claim_id, path FROM transcripts WHERE worker_id = ?', id)).toEqual([{ claim_id: claim, path: 'vm-a/s.md' }]);
@@ -272,6 +278,11 @@ describe('round-one review fixes (baton#4)', () => {
     const same = await rekey(h2);
     expect([same.status, await code(same)]).toEqual([400, 'invalid-params']);
     expect(await rows('SELECT reaped_at, incarnation FROM workers WHERE id = ?', id)).toEqual([{ reaped_at: 5, incarnation: 2 }]);
+    // Once the new secret has been presented, repeating its hash as a re-key is no bearer token.
+    await rows('UPDATE workers SET reaped_at = NULL WHERE id = ?', id);
+    expect((await beat('vm-a', 'two')).status).toBe(200);
+    const replay = await rekey(h2);
+    expect([replay.status, await code(replay)]).toEqual([409, 'session-taken']);
   });
 
   it('§3: credentials are mirrored once per change of the secrets, not on every call; a dropped hash or policy revokes', async () => {
