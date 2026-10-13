@@ -45,7 +45,8 @@ describe('§12: the event feed', () => {
     expect(all.next).toBe(all.events.at(-1).seq);
     const claimed = all.events[1];
     expect(claimed).toMatchObject({ kind: 'claimed', work_item_id: 'R3-9001', claim_id: c.claim_id, actor: 'worker', detail: {} });
-    expect(claimed.claim).toMatchObject({ nonce: c.nonce, status: 'released', started: true });
+    expect(claimed.claim).toMatchObject({ nonce: c.nonce, status: 'released', started: true, legacy: false });
+    expect(claimed.claim.request_id).toBeUndefined();
     const released = all.events[2];
     expect(released.detail).toEqual({ end_reason: 'released:cannot-finish:transient' });
     expect(released.claim.activities).toEqual([expect.objectContaining({ kind: 'push', detail_json: JSON.stringify({ branch: 'claude/r3-9001-x', sha: 'abc' }) })]);
@@ -98,6 +99,7 @@ describe('§12: foreign claims', () => {
     // The cutover import's shape, its claimed (legacy) event included: the export's claim record.
     const feedKinds = (await feed()).events.filter((e) => e.work_item_id === 'R3-9001').map((e) => [e.kind, e.detail]);
     expect(feedKinds).toEqual([['claimed', { legacy: true, foreign: true }], ['foreign-claim', { nonce: 'f0f0f0', sha: sha.B, imported: true }]]);
+    expect((await feed()).events.find((e) => e.kind === 'claimed').claim).toMatchObject({ nonce: 'f0f0f0', legacy: true });
   });
 
   it('refuses a malformed report', async () => {

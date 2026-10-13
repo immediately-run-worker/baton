@@ -55,12 +55,16 @@ export class Mirror {
   }
 
   private claim(id: number) {
-    const c = this.rows<{ id: number; nonce: string; status: string; end_reason: string | null; claimed_at: number; ended_at: number | null; ended_at_sha: string | null }>(
-      'SELECT id, nonce, status, end_reason, claimed_at, ended_at, ended_at_sha FROM work_item_claims WHERE id = ?', id)[0];
+    const c = this.rows<{ id: number; nonce: string; status: string; end_reason: string | null; claimed_at: number; ended_at: number | null; ended_at_sha: string | null; request_id: string }>(
+      'SELECT id, nonce, status, end_reason, claimed_at, ended_at, ended_at_sha, request_id FROM work_item_claims WHERE id = ?', id)[0];
     if (!c) return null;
+    // §13 step 3: an imported claim (the cutover's, or a foreign one) is legacy for good — even
+    // once adopted — and its git note is claim.sh's, not the mirror's: the mirror ends it on that.
+    const { request_id, ...claim } = c;
+    const legacy = /^(legacy|foreign):/.test(request_id);
     // §12's `unstarted:` note: a claim that ended before any work beyond orienting.
     const started = this.rows(`SELECT 1 FROM activities WHERE claim_id = ? AND kind != 'orient' LIMIT 1`, id).length > 0;
-    const out: Record<string, unknown> = { ...c, started };
+    const out: Record<string, unknown> = { ...claim, legacy, started };
     if (c.status !== 'active') {
       out.activities = this.rows('SELECT kind, seq, label, started_at, ended_at, outcome, detail_json FROM activities WHERE claim_id = ? ORDER BY started_at', id);
       out.transcripts = this.rows('SELECT repo, path, role FROM transcripts WHERE claim_id = ? ORDER BY id', id);
