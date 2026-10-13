@@ -1,0 +1,31 @@
+// The Worker's bindings (wrangler.toml), plus the test-only ones vitest.config.ts adds.
+declare module '*.sql' { const text: string; export default text; }
+declare module '*.html' { const text: string; export default text; }
+declare module '*.css' { const text: string; export default text; }
+declare module '*/ui/app.js' { const text: string; export default text; }
+declare module '*/shared/baton.mjs';
+declare module '*/shared/vocabulary.mjs';
+
+interface Env {
+  BATON: DurableObjectNamespace;
+  PUBLIC_ORIGIN: string;
+  OIDC_ISSUER: string;
+  OIDC_JWKS_URL: string;
+  OIDC_AUDIENCE: string;
+  OIDC_REPOSITORY: string;
+  OIDC_REF: string;
+  SYNC_WORKFLOW_REF: string;
+  ACCESS_TEAM_DOMAIN: string;
+  ACCESS_AUD: string;
+  OWNER_EMAILS: string;
+  /** Test bindings only (vitest.config.ts, §13a): never set in wrangler.toml or by a deploy. */
+  BATON_TEST_BINDINGS?: string;
+  TEST_OIDC_JWKS?: string;
+  TEST_ACCESS_JWKS?: string;
+  TEST_SIGNING_JWK?: string;
+}
+
+// `env` from cloudflare:test is typed as Cloudflare.Env.
+declare namespace Cloudflare {
+  interface Env extends globalThis.Env {}
+}

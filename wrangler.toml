@@ -1,0 +1,34 @@
+# Baton — BATON_SPEC §3. One Worker, one SQLite Durable Object (`Baton`, fixed name).
+name = "baton"
+main = "src/worker.ts"
+compatibility_date = "2026-09-01"
+routes = [{ pattern = "workitems.immediately.run/*", zone_name = "immediately.run" }]
+
+[[durable_objects.bindings]]
+name = "BATON"
+class_name = "Baton"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Baton"]
+
+# The schema migrations, the dashboard page and its stylesheet are bundled as text; the
+# dashboard's one ES module too (it is served to the browser, never imported by the Worker).
+[[rules]]
+type = "Text"
+globs = ["**/*.sql", "**/*.html", "**/*.css", "**/ui/*.js"]
+fallthrough = false
+
+[vars]
+PUBLIC_ORIGIN = "https://workitems.immediately.run"
+# R-BTN-15: the sync principal — GitHub Actions OIDC, from named workflows on docs main.
+OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+OIDC_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks"
+OIDC_AUDIENCE = "workitems.immediately.run"
+OIDC_REPOSITORY = "immediately-run/docs"
+OIDC_REF = "refs/heads/main"
+SYNC_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-sync.yml@refs/heads/main"
+# R-BTN-16: the owner principal — Cloudflare Access. Set by the owner in R3-1208.
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""
+OWNER_EMAILS = ""

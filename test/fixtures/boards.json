@@ -1,0 +1,481 @@
+{
+  "shas": {
+    "A": "ecd69cd4f7512571bd2fe423d63052597d0f70d7",
+    "B": "bbfa44274ac7e31c3f2fc675bbae30b84c3a10a4",
+    "C": "d4be7317cec0680e29d913d5e1d2884357ccc988",
+    "D": "696bee63a085b6ee7a9162c5ad67fb18abe60e88"
+  },
+  "states": {
+    "A": {
+      "items": [
+        {
+          "id": "R3-9001",
+          "title": "Fixture: a routine docs change",
+          "status": "available",
+          "project": "baton",
+          "order": 10,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": [
+            "none"
+          ],
+          "tier": "routine",
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 1,
+          "prs": [],
+          "node": "ready-autonomous",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 14,
+          "overdue": false
+        },
+        {
+          "id": "R3-9002",
+          "title": "Fixture: a judgement item that needs the venue",
+          "status": "available",
+          "project": "baton",
+          "order": 20,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": [
+            "agent-venue"
+          ],
+          "tier": "judgement",
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 0,
+          "prs": [],
+          "node": "ready-autonomous",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 14,
+          "overdue": false
+        },
+        {
+          "id": "R3-9003",
+          "title": "[OP] Fixture: an operator leg",
+          "status": "available",
+          "project": "baton",
+          "order": 30,
+          "tags": [
+            "OP",
+            "roadmap-item"
+          ],
+          "requires": [
+            "human-operator",
+            "github-admin"
+          ],
+          "tier": "critical",
+          "queue": "operator",
+          "operatorNeeds": [
+            "human-operator",
+            "github-admin"
+          ],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 0,
+          "prs": [],
+          "node": "ready-operator",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 14,
+          "overdue": false
+        },
+        {
+          "id": "R3-9004",
+          "title": "Fixture: blocked on R3-9001",
+          "status": "available",
+          "project": "baton",
+          "order": 5,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": null,
+          "tier": null,
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [
+            "R3-9001"
+          ],
+          "blockedBy": [
+            "R3-9001"
+          ],
+          "dependents": 0,
+          "prs": [],
+          "node": "blocked",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": null,
+          "overdue": false
+        }
+      ],
+      "ready": [
+        "R3-9001",
+        "R3-9002",
+        "R3-9003"
+      ]
+    },
+    "B": {
+      "items": [
+        {
+          "id": "R3-9001",
+          "title": "Fixture: a routine docs change",
+          "status": "in-progress",
+          "project": "baton",
+          "order": 10,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": [
+            "none"
+          ],
+          "tier": "routine",
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 1,
+          "prs": [],
+          "node": "in-progress",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 7,
+          "overdue": false
+        },
+        {
+          "id": "R3-9002",
+          "title": "Fixture: a judgement item that needs the venue",
+          "status": "available",
+          "project": "baton",
+          "order": 20,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": [
+            "agent-venue"
+          ],
+          "tier": "judgement",
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 0,
+          "prs": [],
+          "node": "ready-autonomous",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 14,
+          "overdue": false
+        },
+        {
+          "id": "R3-9003",
+          "title": "[OP] Fixture: an operator leg",
+          "status": "available",
+          "project": "baton",
+          "order": 30,
+          "tags": [
+            "OP",
+            "roadmap-item"
+          ],
+          "requires": [
+            "human-operator",
+            "github-admin"
+          ],
+          "tier": "critical",
+          "queue": "operator",
+          "operatorNeeds": [
+            "human-operator",
+            "github-admin"
+          ],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 0,
+          "prs": [],
+          "node": "ready-operator",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 14,
+          "overdue": false
+        },
+        {
+          "id": "R3-9004",
+          "title": "Fixture: blocked on R3-9001",
+          "status": "available",
+          "project": "baton",
+          "order": 5,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": null,
+          "tier": null,
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [
+            "R3-9001"
+          ],
+          "blockedBy": [
+            "R3-9001"
+          ],
+          "dependents": 0,
+          "prs": [],
+          "node": "blocked",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": null,
+          "overdue": false
+        }
+      ],
+      "ready": [
+        "R3-9002",
+        "R3-9003"
+      ]
+    },
+    "C": {
+      "items": [
+        {
+          "id": "R3-9001",
+          "title": "Fixture: a routine docs change",
+          "status": "in-progress",
+          "project": "baton",
+          "order": 10,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": [
+            "none"
+          ],
+          "tier": "routine",
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 1,
+          "prs": [],
+          "node": "in-progress",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 7,
+          "overdue": false
+        },
+        {
+          "id": "R3-9002",
+          "title": "Fixture: a judgement item that needs the venue",
+          "status": "available",
+          "project": "baton",
+          "order": 20,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": [
+            "agent-venue"
+          ],
+          "tier": "judgement",
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 0,
+          "prs": [],
+          "node": "ready-autonomous",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 14,
+          "overdue": false
+        },
+        {
+          "id": "R3-9003",
+          "title": "[OP] Fixture: an operator leg",
+          "status": "available",
+          "project": "baton",
+          "order": 30,
+          "tags": [
+            "OP",
+            "roadmap-item"
+          ],
+          "requires": [
+            "human-operator",
+            "github-admin"
+          ],
+          "tier": "critical",
+          "queue": "operator",
+          "operatorNeeds": [
+            "human-operator",
+            "github-admin"
+          ],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 0,
+          "prs": [],
+          "node": "ready-operator",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 14,
+          "overdue": false
+        },
+        {
+          "id": "R3-9004",
+          "title": "Fixture: blocked on R3-9001",
+          "status": "available",
+          "project": "baton",
+          "order": 5,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": null,
+          "tier": null,
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [
+            "R3-9001"
+          ],
+          "blockedBy": [
+            "R3-9001"
+          ],
+          "dependents": 0,
+          "prs": [],
+          "node": "blocked",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": null,
+          "overdue": false
+        },
+        {
+          "id": "R3-9005",
+          "title": "Fixture: an outage fix",
+          "status": "available",
+          "project": "baton",
+          "order": 50,
+          "tags": [
+            "FEAT",
+            "EXPEDITE",
+            "roadmap-item"
+          ],
+          "requires": [
+            "none"
+          ],
+          "tier": "routine",
+          "queue": "expedite",
+          "operatorNeeds": [],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 0,
+          "prs": [],
+          "node": "ready-expedite",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 1,
+          "overdue": false
+        }
+      ],
+      "ready": [
+        "R3-9005",
+        "R3-9002",
+        "R3-9003"
+      ]
+    },
+    "D": {
+      "items": [
+        {
+          "id": "R3-9001",
+          "title": "Fixture: a routine docs change",
+          "status": "available",
+          "project": "baton",
+          "order": 10,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": [
+            "none"
+          ],
+          "tier": "routine",
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 1,
+          "prs": [],
+          "node": "ready-autonomous",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 14,
+          "overdue": false
+        },
+        {
+          "id": "R3-9002",
+          "title": "Fixture: a judgement item that needs the venue",
+          "status": "available",
+          "project": "baton",
+          "order": 20,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": [
+            "agent-venue"
+          ],
+          "tier": "judgement",
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [],
+          "blockedBy": [],
+          "dependents": 0,
+          "prs": [],
+          "node": "ready-autonomous",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": 14,
+          "overdue": false
+        },
+        {
+          "id": "R3-9004",
+          "title": "Fixture: blocked on R3-9001",
+          "status": "available",
+          "project": "baton",
+          "order": 5,
+          "tags": [
+            "FEAT",
+            "roadmap-item"
+          ],
+          "requires": null,
+          "tier": null,
+          "queue": "autonomous",
+          "operatorNeeds": [],
+          "dependsOn": [
+            "R3-9001"
+          ],
+          "blockedBy": [
+            "R3-9001"
+          ],
+          "dependents": 0,
+          "prs": [],
+          "node": "blocked",
+          "since": "2026-10-13",
+          "ageDays": 0,
+          "timeoutDays": null,
+          "overdue": false
+        }
+      ],
+      "ready": [
+        "R3-9001",
+        "R3-9002"
+      ]
+    }
+  }
+}
