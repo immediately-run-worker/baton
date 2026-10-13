@@ -38,6 +38,8 @@ export interface BoardPayload {
   reviewers?: Record<string, { reviews_on: string; bills: string[]; models?: Record<string, string> }>;
   matrix?: { families: Record<string, string[]>; agents: Record<string, { reviews_on: string; bills: string[]; models?: Record<string, string> }> };
   min_skills_version?: number;
+  /** §6.8: the transcript repositories from `baton.json`; absent, the defaults stand. */
+  transcript_repos?: string[];
 }
 
 export interface ProvidersData {
@@ -194,6 +196,9 @@ function checkReference(p: BoardPayload) {
     catalog('matrix.agents', p.matrix.agents);
   }
   if (p.reviewers !== undefined) catalog('reviewers', p.reviewers);
+  if (p.transcript_repos !== undefined && !(Array.isArray(p.transcript_repos) && p.transcript_repos.length <= 20 && p.transcript_repos.every((r) => typeof r === 'string' && /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(r)))) {
+    bad('transcript_repos', 'must be a list of owner/name repositories');
+  }
 }
 
 /** The row an item becomes (R-BTN-33). `rank` is its index in the sync's `ready` list. A

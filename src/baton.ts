@@ -9,18 +9,33 @@ import { checkPayload, inPeak, nextPeakChange, rowFor, rowHash, type BoardPayloa
 import { priceFor } from './shared/sessionUsage.mjs';
 import { familyOf } from './shared/baton.mjs';
 import { fitsTier, TIERS } from './shared/vocabulary.mjs';
+import { WorkerApi } from './workerApi';
 
 const HELD_AUTO_ACCEPT_MS = 24 * 3_600_000; // §7.1: a held history is accepted after 24 h (R3-1212)
+const ALARM_EVERY_MS = 60_000; // §3: one alarm, every 60 seconds
 
 export class Baton extends DurableObject<Env> {
   /** The clock (R-BTN-32). Tests replace it through `runInDurableObject`; nothing else here
    *  reads the time. */
   now: () => number = () => Date.now();
 
+  readonly workers: WorkerApi;
+
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
-    // The object refuses to serve until every migration is applied (§3).
-    ctx.blockConcurrencyWhile(async () => this.migrate());
+    this.workers = new WorkerApi({ storage: ctx.storage, env, now: () => this.now() });
+    // The object refuses to serve until every migration is applied (§3), and keeps one alarm.
+    ctx.blockConcurrencyWhile(async () => {
+      this.migrate();
+      if ((await ctx.storage.getAlarm()) == null) await ctx.storage.setAlarm(this.now() + ALARM_EVERY_MS);
+    });
+  }
+
+  /** §3: the one alarm, every 60 seconds. R3-1211 gives it suspensions and message expiry;
+   *  R3-1212 adds reaping. */
+  async alarm(): Promise<void> {
+    this.ctx.storage.transactionSync(() => this.workers.alarm());
+    await this.ctx.storage.setAlarm(this.now() + ALARM_EVERY_MS);
   }
 
   private sql<T = Record<string, SqlStorageValue>>(query: string, ...params: unknown[]): T[] {
@@ -46,6 +61,8 @@ export class Baton extends DurableObject<Env> {
       if (req.method === 'GET' && url.pathname === '/v1/sync/head') return json(this.head());
       if (req.method === 'POST' && url.pathname === '/v1/sync/board') return json(await this.board(checkPayload(await readJson(req))));
       if (req.method === 'GET' && url.pathname === '/v1/ui/state') return json(this.uiState());
+      const routed = await this.workerRoute(req, url);
+      if (routed) return routed;
       throw new BatonError('not-found', `no route ${req.method} ${url.pathname}`);
     } catch (e) {
       // Drain an unread body so the forwarded stream completes before the response does.
@@ -53,6 +70,59 @@ export class Baton extends DurableObject<Env> {
       if (e instanceof BatonError) return errorResponse(e.code, e.message);
       throw e;
     }
+  }
+
+  /** The worker and owner routes of R3-1211. The Worker has verified the principal and passes
+   *  it in `X-Baton-Credential` (a worker token's credential) or `X-Baton-Owner` (the Access
+   *  email); it strips both from every incoming request first. */
+  private async workerRoute(req: Request, url: URL): Promise<Response | null> {
+    const p = url.pathname;
+    const m = req.method;
+    const owner = req.headers.get('X-Baton-Owner');
+    const cred = req.headers.get('X-Baton-Credential');
+    const secret = req.headers.get('X-Worker-Secret');
+    const tx = <T>(f: () => T): T => this.ctx.storage.transactionSync(f);
+    if (p.startsWith('/v1/worker/')) {
+      if (!cred) throw new BatonError('unauthenticated', 'no worker principal');
+      if (m === 'POST' && p === '/v1/worker/heartbeat') {
+        const body = await readJson(req);
+        // The hashing is async; the writes happen in one transaction after it (§3: atomic).
+        return json(await this.workers.heartbeat(cred, secret, body));
+      }
+      if (m === 'GET' && p === '/v1/worker/mode') {
+        await this.workers.authWorker(cred, secret);
+        return json(this.workers.mode());
+      }
+      const workerId = await this.workers.authWorker(cred, secret);
+      if (m === 'POST' && p === '/v1/worker/activities') {
+        const body = await readJson(req);
+        return json(this.workers.activities(workerId, body));
+      }
+      const ack = /^\/v1\/worker\/messages\/(\d+)\/ack$/.exec(p);
+      if (m === 'POST' && ack) {
+        const body = await readJson(req).catch(() => ({}));
+        return json(tx(() => this.workers.ack(workerId, Number(ack[1]), body)));
+      }
+      if (m === 'POST' && p === '/v1/worker/shadow-report') {
+        const body = await readJson(req);
+        return json(tx(() => this.workers.shadowReport(workerId, body)));
+      }
+      return null;
+    }
+    if (p.startsWith('/v1/ui/') && m === 'POST') {
+      if (!owner) throw new BatonError('unauthenticated', 'no owner principal');
+      if (p === '/v1/ui/messages') {
+        const body = await readJson(req);
+        return json(tx(() => this.workers.sendMessage(owner, body)));
+      }
+      if (p === '/v1/ui/suspensions') {
+        const body = await readJson(req);
+        return json(tx(() => this.workers.setSuspension(owner, body)));
+      }
+      const lift = /^\/v1\/ui\/suspensions\/(\d+)\/lift$/.exec(p);
+      if (lift) return json(tx(() => this.workers.liftSuspension(owner, Number(lift[1]))));
+    }
+    return null;
   }
 
   // ── sync (§7.1) ───────────────────────────────────────────────────────────────────────
@@ -167,6 +237,9 @@ export class Baton extends DurableObject<Env> {
           name, a.reviews_on, familyOf(a.reviews_on, p.matrix) ?? 'unknown', JSON.stringify(a.bills), a.models ? JSON.stringify(a.models) : null);
       }
     }
+    if (p.transcript_repos) {
+      exec(`INSERT INTO baton_settings (key, value) VALUES ('transcript_repos', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(p.transcript_repos));
+    }
     if (p.min_skills_version != null) {
       exec(`INSERT INTO baton_settings (key, value) VALUES ('min_skills_version', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, String(p.min_skills_version));
     }
@@ -222,7 +295,9 @@ export class Baton extends DurableObject<Env> {
     const held = this.sql(
       `SELECT sha, parent_sha, head_sha, item_count, received_at, auto_accept_at FROM held_snapshots
        WHERE accepted_at IS NULL ORDER BY received_at`);
-    return { server_time: now, head: snap, ready, ready_by_tier: byTier, providers, held };
+    const suspensions = this.sql(`SELECT id, provider_id, model_id, mode, starts_at, ends_at, reason, set_by, lifted_at FROM provider_suspensions
+                                  WHERE lifted_at IS NULL AND (ends_at IS NULL OR ends_at > ?) ORDER BY starts_at`, now);
+    return { server_time: now, head: snap, ready, ready_by_tier: byTier, providers, held, workers: this.workers.workersView(now), suspensions };
   }
 }
 

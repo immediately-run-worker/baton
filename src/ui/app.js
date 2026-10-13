@@ -1,4 +1,5 @@
-// app.js — the dashboard (BATON_SPEC §14; rollout step 1: Ready and Providers). It polls
+// app.js — the dashboard (BATON_SPEC §14; Ready and Providers, and from R3-1211 Workers and
+// Suspensions with the owner's actions: status request, release, suspend and lift). It polls
 // GET /v1/ui/state every 10 seconds and renders with textContent only (§10.4): no markup is
 // ever built from server text.
 
@@ -71,6 +72,106 @@ function renderProviders() {
   if (!state.providers.length) box.append(el('p', { text: 'No provider data yet.', cls: 'muted' }));
 }
 
+/** An owner action (R-BTN-16: a JSON body from this Origin; the Access cookie authenticates it).
+ *  The reply's error, if any, goes to the footer; the next poll shows the result. */
+async function act(path, body) {
+  const status = document.getElementById('status');
+  try {
+    const res = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(json.message ?? `HTTP ${res.status}`);
+    status.textContent = 'Done.';
+    poll();
+  } catch (e) {
+    status.textContent = `Could not ${path.split('/').pop()}: ${e.message}`;
+  }
+}
+
+const button = (text, onClick) => {
+  const b = el('button', { text, attrs: { type: 'button' } });
+  b.addEventListener('click', onClick);
+  return b;
+};
+
+/** A link only to GitHub: the server builds it from validated parts (§6.8); this is belt and braces. */
+const githubLink = (text, href) => (typeof href === 'string' && href.startsWith('https://github.com/')
+  ? el('a', { text, attrs: { href, target: '_blank', rel: 'noopener' } })
+  : el('span', { text }));
+
+function renderWorkers() {
+  const body = document.getElementById('workers');
+  body.replaceChildren();
+  for (const w of state.workers) {
+    const who = el('td', {}, el('div', { text: w.hostname }), el('div', { text: `${w.session_name} · ${w.harness} · #${w.id}`, cls: 'muted' }));
+    if (w.transcript_url) who.append(el('div', {}, githubLink('transcript', w.transcript_url)));
+    const st = w.reaped_at != null ? 'reaped' : w.alive ? 'alive' : 'lease lapsed';
+    const stateCell = el('td', {}, el('div', { text: st, cls: w.alive ? 'alive' : 'dead' }), el('div', { text: `seen ${fmtTime(w.last_seen_at)}`, cls: 'muted' }));
+    const claim = el('td', { text: w.claim ? w.claim.work_item_id : '—' });
+    const a = w.activity;
+    const activity = el('td', { text: a ? [a.kind, a.label].filter(Boolean).join(': ') : '—', cls: a ? '' : 'muted' });
+    let report = '—';
+    if (w.last_report) {
+      try {
+        const p = JSON.parse(w.last_report.payload_json);
+        const doing = p.activity ? [p.activity.kind, p.activity.label].filter(Boolean).join(': ') : 'idle';
+        report = `${p.text ?? doing} (${fmtTime(w.last_report.sent_at)})`;
+      } catch {
+        report = 'unreadable';
+      }
+    }
+    const actions = el('td');
+    if (w.reaped_at == null) {
+      actions.append(button('Status', () => act('/v1/ui/messages', { to_worker_id: w.id, kind: 'status_request' })));
+      if (w.claim) {
+        actions.append(button('Release', () => {
+          if (confirm(`Ask worker #${w.id} to release ${w.claim.work_item_id}?`)) {
+            act('/v1/ui/messages', { to_worker_id: w.id, kind: 'release', payload: { work_item_id: w.claim.work_item_id, reason: 'requested' } });
+          }
+        }));
+      }
+    }
+    body.append(el('tr', {}, who, el('td', { text: `${w.model_id}${w.model_provider_id ? ` (${w.model_provider_id})` : ''}` }), stateCell, claim, activity, el('td', { text: report, cls: 'muted' }), actions));
+  }
+  if (!state.workers.length) body.append(el('tr', {}, el('td', { text: 'No worker has sent a heartbeat.', attrs: { colspan: '7' }, cls: 'muted' })));
+}
+
+function renderSuspensions() {
+  const list = document.getElementById('suspensions');
+  list.replaceChildren();
+  for (const s of state.suspensions) {
+    const when = s.starts_at > state.server_time ? `from ${fmtTime(s.starts_at)}` : 'in force';
+    const li = el('li', { text: `${s.provider_id}${s.model_id ? ` / ${s.model_id}` : ''} · ${s.mode} · ${when}${s.ends_at ? ` until ${fmtTime(s.ends_at)}` : ''}${s.reason ? ` · ${s.reason}` : ''}` });
+    li.append(button('Lift', () => act(`/v1/ui/suspensions/${s.id}/lift`)));
+    list.append(li);
+  }
+  if (!state.suspensions.length) list.append(el('li', { text: 'No account is suspended.', cls: 'muted' }));
+  const select = document.getElementById('s-provider');
+  const chosen = select.value;
+  select.replaceChildren(...state.providers.map((p) => el('option', { text: p.name, attrs: { value: p.id } })));
+  if (chosen) select.value = chosen;
+}
+
+/** datetime-local is the viewer's local time; empty means "now" (start) or "until lifted" (end). */
+const localMs = (id) => {
+  const v = document.getElementById(id).value;
+  return v ? new Date(v).getTime() : undefined;
+};
+
+document.getElementById('suspend').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const body = { provider_id: document.getElementById('s-provider').value, mode: document.getElementById('s-mode').value };
+  const model = document.getElementById('s-model').value.trim();
+  const reason = document.getElementById('s-reason').value.trim();
+  if (model) body.model_id = model;
+  if (reason) body.reason = reason;
+  const starts = localMs('s-start');
+  const ends = localMs('s-end');
+  if (starts !== undefined) body.starts_at = starts;
+  if (ends !== undefined) body.ends_at = ends;
+  if (body.mode === 'stop' && !confirm('Stop sends a release to every holder on this account. Continue?')) return;
+  act('/v1/ui/suspensions', body);
+});
+
 function renderHeld() {
   const section = document.getElementById('held-section');
   const list = document.getElementById('held');
@@ -85,6 +186,8 @@ function render() {
   renderHead();
   renderReady();
   renderProviders();
+  renderWorkers();
+  renderSuspensions();
   renderHeld();
   document.getElementById('status').textContent = `Updated ${fmtTime(state.server_time)}`;
 }

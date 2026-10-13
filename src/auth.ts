@@ -96,3 +96,28 @@ export function checkStateChanging(req: Request, env: Env): void {
     throw new BatonError('forbidden', 'a state-changing request needs Content-Type: application/json and the dashboard Origin');
   }
 }
+
+/** The worker principal (§10.1, R-BTN-13): a bearer token whose SHA-256 is one of the
+ *  `TOKEN_HASHES` Worker secret's values (`{credential id: hex}`). Returns that credential id.
+ *  Revoking a token is deleting its hash; the credential's policy (hostname, allowed
+ *  capabilities) is the `CREDENTIALS` secret, which the object mirrors into `credentials`. */
+export async function verifyWorker(req: Request, env: Env): Promise<string> {
+  const token = bearer(req);
+  if (!token) throw new BatonError('unauthenticated', 'a worker token is required');
+  let hashes: Record<string, string>;
+  try {
+    hashes = JSON.parse(env.TOKEN_HASHES ?? '{}');
+  } catch {
+    throw new BatonError('unavailable', 'the worker token table is unreadable');
+  }
+  const presented = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
+  let match: string | null = null;
+  for (const [id, hex] of Object.entries(hashes)) {
+    if (!/^[0-9a-f]{64}$/.test(hex)) continue;
+    const want = Uint8Array.from(hex.match(/../g)!.map((h) => parseInt(h, 16)));
+    // Compare every entry in constant time, so the scan's timing says nothing.
+    if (crypto.subtle.timingSafeEqual(presented, want)) match = id;
+  }
+  if (!match) throw new BatonError('unauthenticated', 'unknown worker token');
+  return match;
+}

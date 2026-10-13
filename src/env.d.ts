@@ -18,6 +18,10 @@ interface Env {
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
   OWNER_EMAILS: string;
+  /** Worker secrets (R3-1208 sets them): `{credential id: SHA-256 of its token}` and
+   *  `{credential id: {hostname, allowed_capabilities}}`. */
+  TOKEN_HASHES?: string;
+  CREDENTIALS?: string;
   /** Test bindings only (vitest.config.ts, §13a): never set in wrangler.toml or by a deploy. */
   BATON_TEST_BINDINGS?: string;
   TEST_OIDC_JWKS?: string;
