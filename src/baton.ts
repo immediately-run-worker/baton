@@ -269,15 +269,25 @@ export class Baton extends DurableObject<Env> {
       // A held post still carries the sync's confirmations: git carries those completions
       // whichever history the owner keeps, and dropping them would leave their items blocked.
       this.ctx.storage.transactionSync(() => this.claims.confirm(confirmations));
-      // Held once per sha: a repeat (the sync re-posts every 15 minutes) changes nothing,
-      // so the first deadline stands and the dashboard lists it once.
-      const known = this.sql<{ auto_accept_at: number }>('SELECT auto_accept_at FROM held_snapshots WHERE sha = ?', p.sha)[0];
-      const deadline = known?.auto_accept_at ?? at + HELD_AUTO_ACCEPT_MS;
-      if (!known) {
+      // Held once per sha and head: a repeat (the sync re-posts every 15 minutes) changes
+      // nothing, so the first deadline stands and the dashboard lists it once. A row that was
+      // accepted, or held against another head, is a NEW hold (R3-1223): a rewind to a sha the
+      // owner once accepted is held with a fresh row — held list, 24-hour clock, the owner's
+      // Accept — never a silent 409. `held_snapshots` keeps one row per sha; the hold reuses it.
+      const known = this.sql<{ auto_accept_at: number; accepted_at: number | null; head_sha: string | null }>(
+        'SELECT auto_accept_at, accepted_at, head_sha FROM held_snapshots WHERE sha = ?', p.sha)[0];
+      const held = !!known && known.accepted_at == null && known.head_sha === head;
+      const deadline = held ? known.auto_accept_at : at + HELD_AUTO_ACCEPT_MS;
+      if (!held) {
         this.ctx.storage.transactionSync(() => {
-          this.ctx.storage.sql.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, item_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
-            p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
-          this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, item_count: p.state.items.length, auto_accept_at: deadline }, at);
+          if (known) {
+            this.ctx.storage.sql.exec(`UPDATE held_snapshots SET parent_sha = ?, head_sha = ?, item_count = ?, received_at = ?, auto_accept_at = ?, accepted_at = NULL
+                                       WHERE sha = ?`, p.parent_sha, head, p.state.items.length, at, deadline, p.sha);
+          } else {
+            this.ctx.storage.sql.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, item_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
+              p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
+          }
+          this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, item_count: p.state.items.length, auto_accept_at: deadline, ...(known ? { again: true } : {}) }, at);
         });
       }
       throw new BatonError('snapshot-rejected', `a rewritten history is held for the owner until ${new Date(deadline).toISOString()}; claims continue on the current head`);
