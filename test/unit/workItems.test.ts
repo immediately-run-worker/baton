@@ -1,13 +1,18 @@
 // R3-1206 — the work_items cache (BATON_SPEC §4, §7.1, §7.2 rules 4 and 6, R-BTN-33/35;
 // G-BTN-39's server half) and the reference data and dashboard state built from it.
 import { describe, it, expect, inject } from 'vitest';
-import reference from '../fixtures/reference.json';
+import prices from '../fixtures/data/model-prices.json';
+import providers from '../fixtures/data/model-providers.json';
+import matrix from '../fixtures/data/reviewer-matrix.json';
+import batonData from '../fixtures/data/baton.json';
 import { ownerCall, payload, rows, setClock, syncCall } from '../helpers';
 
 const board = inject('board');
+// The reference data: the fixture repository's own scripts/data files (one source with S-BTN-13).
+const reference = { prices, providers, matrix, min_skills_version: batonData.skills_version };
 const { A, B } = board.shas;
 // The hand-built cases below vary the items alone, so they post them without the fixture's
-// reference data; the reference cases add test/fixtures/reference.json.
+// reference data; the reference cases add the fixture repository's scripts/data files.
 const stateA = { items: board.states.A.state.items as Record<string, unknown>[], ready: board.states.A.ready };
 const post = (sha: string, parent: string | null, state: { items: unknown[]; ready: string[] }, extra: Record<string, unknown> = {}) =>
   syncCall('/v1/sync/board', payload(sha, parent, state, extra));

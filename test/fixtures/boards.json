@@ -97,7 +97,7 @@
             "timeoutDays": 14,
             "overdue": false,
             "repos": [
-              "deploy"
+              "provisioning"
             ]
           },
           {
@@ -386,7 +386,7 @@
             "timeoutDays": 14,
             "overdue": false,
             "repos": [
-              "deploy"
+              "provisioning"
             ]
           },
           {
@@ -674,7 +674,7 @@
             "timeoutDays": 14,
             "overdue": false,
             "repos": [
-              "deploy"
+              "provisioning"
             ]
           },
           {

@@ -101,13 +101,13 @@ export async function syncOnce(next, deps, { backoffMs = 30_000 } = {}) {
 
 /** The dashboard's Ready order against the local order (`rankReady` per tier — Baton applies
  *  the expedite bound from its own claims), per tier (R3-1209's live check):
- *  `{tier: {baton: [ids], claimOrder: [ids], same}}`. */
-export function compareReady(readyByTier, claimOrderOf, tiers) {
+ *  `{tier: {baton: [ids], local: [ids], same}}`. */
+export function compareReady(readyByTier, localOf, tiers) {
   const out = {};
   for (const t of tiers) {
     const baton = readyByTier?.[t] ?? [];
-    const local = claimOrderOf(t).map((r) => r.id);
-    out[t] = { baton, claimOrder: local, same: baton.length === local.length && baton.every((id, i) => id === local[i]) };
+    const local = localOf(t).map((r) => r.id);
+    out[t] = { baton, local, same: baton.length === local.length && baton.every((id, i) => id === local[i]) };
   }
   return out;
 }
