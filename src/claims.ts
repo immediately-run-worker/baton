@@ -5,14 +5,14 @@
 // SQLite refuse a second holder, never check-then-insert without them (R-BTN-4).
 import { BatonError } from './http';
 import { familyOf, isEligible, RULE_CODES, suspended } from './shared/baton.mjs';
-import { checkAccept, checkClaim, checkConfirm, checkEnd } from './validate';
+import { fitsTier, TIERS } from './shared/vocabulary.mjs';
+import { checkAccept, checkClaim, checkConfirm, checkEnd, checkResolve } from './validate';
 
 type Row = Record<string, SqlStorageValue>;
 const EXPEDITE_BOUND = 2; // §7.2 rule 2
 const RELEASE_ACK_MS = 2 * 3_600_000; // §9: a delivered release unacknowledged for 2 h reaps the claim
 export const UNCONFIRMED_FLAG_MS = 6 * 3_600_000; // §6.7
 const STALLED_MS = 2 * 3_600_000; // §14 Running: alive but no activity for 2 h
-const TIER_RANK: Record<string, number> = { routine: 0, judgement: 1, critical: 2 };
 /** R-BTN-35: the git states that end an active claim `released:stale-board`. */
 const GIT_ENDS = new Set(['done', 'superseded', 'deferred', 'deprioritized']);
 
@@ -176,7 +176,7 @@ export class Claims {
          AND (? OR w.operator_only = 0)
        ORDER BY COALESCE((SELECT expedite FROM item_overrides o WHERE o.work_item_id = w.id), 0) DESC, w.rank
        LIMIT ?`,
-      now, w.id, TIER_RANK[w.tier_ceiling] ?? 2, w.declared.includes('human-operator') ? 1 : 0, limit).map((r) => r.id);
+      now, w.id, (TIERS as string[]).indexOf(w.tier_ceiling), w.declared.includes('human-operator') ? 1 : 0, limit).map((r) => r.id);
   }
 
   /** The worker-level rules, checked once before any query (§7.2): 7 and 9, with the same
@@ -190,6 +190,18 @@ export class Claims {
     }
   }
 
+  /** `isEligible` for one item. Rule 8 reads the reviewer matrix, which a board may post
+   *  without a usable row (no `default`): that fails closed as rule 8, never as a 500. */
+  private eligible(w: WorkerFacts, item: ItemFacts, now: number, shared: ReturnType<Claims['shared']>): { ok: boolean; rule?: number | string; code?: string } {
+    const ctx = this.contextFor(item, now, shared);
+    try {
+      return isEligible(w, item, ctx);
+    } catch (e) {
+      if (ctx.lastEndReason !== 'released:awaiting-review-capacity') throw e;
+      return { ok: false, rule: 8, code: RULE_CODES[8] };
+    }
+  }
+
   /** The item a claim by `w` would get now: the named one if eligible, else the first
    *  eligible candidate. Throws the §11 refusal. */
   private decide(w: WorkerFacts, wanted: string | null, now: number): { item: ItemFacts; reason: string } {
@@ -198,13 +210,13 @@ export class Claims {
     if (wanted) {
       const item = this.item(wanted);
       if (!item || !item.node.startsWith('ready-')) throw new BatonError('not-eligible', `${wanted} is not in the claim order`, { rule: 1, rule_code: 'not-ready' });
-      const v = isEligible(w, item, this.contextFor(item, now, shared));
+      const v = this.eligible(w, item, now, shared);
       if (!v.ok) throw new BatonError(v.code === 'backing-off' ? 'backing-off' : 'not-eligible', `${wanted}: ${v.code}`, { rule: v.rule, rule_code: v.code });
       return { item, reason: 'requested' };
     }
     for (const id of this.candidates(w, now)) {
       const item = this.item(id)!;
-      if (isEligible(w, item, this.contextFor(item, now, shared)).ok) {
+      if (this.eligible(w, item, now, shared).ok) {
         return { item, reason: item.expedite ? 'expedite lane' : `${item.queue} queue · rank ${item.rank ?? '—'}` };
       }
     }
@@ -275,6 +287,16 @@ export class Claims {
     if (!c || c.worker_id !== workerId) throw new BatonError('not-holder', 'this worker does not hold that claim');
     if (c.status !== 'active') {
       if (c.end_reason === e.end_reason) return { ok: true };
+      // R-BTN-8 pushes git first, so a sync can see the item done and release the claim
+      // stale-board (R-BTN-35) before the worker's own end arrives: that completion is the
+      // truth, recorded as such, and the release it no longer needs is withdrawn.
+      if (c.status === 'released' && c.end_reason === 'released:stale-board' && e.status === 'completed') {
+        this.exec(`UPDATE work_item_claims SET status = 'completed', end_reason = ?, ended_at_sha = ? WHERE id = ?`, e.end_reason, e.ended_at_sha, c.id);
+        this.exec(`UPDATE messages SET status = 'expired' WHERE to_worker_id = ? AND kind = 'release' AND status IN ('pending','delivered')
+                   AND json_extract(payload_json, '$.work_item_id') = ? AND json_extract(payload_json, '$.reason') = 'stale-board'`, workerId, c.work_item_id);
+        this.event('completed', `worker:${workerId}`, { end_reason: e.end_reason, ended_at_sha: e.ended_at_sha, after: 'released:stale-board' }, c.work_item_id, c.id);
+        return { ok: true };
+      }
       throw new BatonError('claim-ended', `the claim already ended (${c.status}: ${c.end_reason})`);
     }
     this.finish(c.id, c.work_item_id, e.status, e.end_reason, `worker:${workerId}`, { ended_at_sha: e.ended_at_sha });
@@ -331,6 +353,24 @@ export class Claims {
     return { ok: true, fence_pending: alive };
   }
 
+  /** `POST /v1/ui/claims/{id}/resolve` (§6.7): an unconfirmed completion is never confirmed
+   *  automatically; the owner confirms it (git does carry it) or releases it (it never landed),
+   *  which makes the item claimable again. The commit it named stays in the event. */
+  resolve(owner: string, claimId: number, body: unknown) {
+    const { action } = checkResolve(body);
+    const c = this.rows<{ work_item_id: string; end_reason: string; ended_at_sha: string }>(
+      `SELECT work_item_id, end_reason, ended_at_sha FROM work_item_claims WHERE id = ? AND status = 'completed' AND confirmed_at IS NULL`, claimId)[0];
+    if (!c) throw new BatonError('not-found', 'no unconfirmed completion with that id');
+    if (action === 'confirm') {
+      this.exec('UPDATE work_item_claims SET confirmed_at = ? WHERE id = ?', this.c.now(), claimId);
+      this.event('confirmed', `owner:${owner}`, { by: 'owner', sha: c.ended_at_sha }, c.work_item_id, claimId);
+    } else {
+      this.exec(`UPDATE work_item_claims SET status = 'released', end_reason = 'released:requested', ended_at_sha = NULL WHERE id = ?`, claimId);
+      this.event('released', `owner:${owner}`, { by: 'owner', unconfirmed: { end_reason: c.end_reason, ended_at_sha: c.ended_at_sha } }, c.work_item_id, claimId);
+    }
+    return { ok: true };
+  }
+
   /** `POST /v1/ui/board/accept`: the owner accepts a held history; the sync's next force post
    *  of it then becomes the head (§7.1). */
   acceptHeld(owner: string, body: unknown) {
@@ -345,6 +385,14 @@ export class Claims {
   }
 
   // ── the sync's share (§6.7, R-BTN-35) ───────────────────────────────────────────────────
+
+  /** §7.1: whether a force post is the accepted rewritten history. Accepting a held history
+   *  accepts the line, not one sha: main keeps moving while it is held, and the sync always
+   *  posts the newest main (§7.1 step 2), so a force post against the head an accepted row
+   *  was held against is accepted too. */
+  acceptedLine(sha: string, head: string | null) {
+    return this.rows('SELECT 1 FROM held_snapshots WHERE accepted_at IS NOT NULL AND (sha = ? OR head_sha IS ?)', sha, head).length > 0;
+  }
 
   /** §6.7: the sync confirms a completion once git carries it (it checked the ancestry and the
    *  status); anything but an unconfirmed completion is ignored. */
@@ -373,7 +421,7 @@ export class Claims {
     for (const c of active) {
       const it = this.rows<{ status: string; tier: string | null }>('SELECT status, tier FROM work_items WHERE id = ?', c.work_item_id)[0];
       const why = !it ? 'gone or archived' : GIT_ENDS.has(it.status) ? it.status
-        : (TIER_RANK[it.tier ?? 'critical'] ?? 2) > (TIER_RANK[c.tier_ceiling] ?? 2) ? `re-tiered ${it.tier ?? 'untiered'}` : null;
+        : !fitsTier(it.tier ?? null, c.tier_ceiling) ? `re-tiered ${it.tier ?? 'untiered'}` : null;
       if (!why) continue;
       this.finish(c.id, c.work_item_id, 'released', 'released:stale-board', 'sync', {});
       if (c.kind !== 'legacy') {
@@ -405,9 +453,12 @@ export class Claims {
        JOIN work_item_claims c ON c.worker_id = m.to_worker_id AND c.status = 'active' AND c.work_item_id = json_extract(m.payload_json, '$.work_item_id')
        JOIN workers w ON w.id = c.worker_id
        WHERE m.kind = 'release' AND m.status = 'delivered' AND m.delivered_at <= ?`, now - RELEASE_ACK_MS);
+    const reaped = new Set<number>();
     for (const c of stale) {
-      this.finish(c.id, c.work_item_id, 'reaped', 'reaped:release-unacknowledged', 'alarm', { fence: { incarnation: c.incarnation } });
       this.exec(`UPDATE messages SET status = 'expired' WHERE id = ?`, c.mid);
+      if (reaped.has(c.id)) continue; // two stale releases for one claim reap it once
+      reaped.add(c.id);
+      this.finish(c.id, c.work_item_id, 'reaped', 'reaped:release-unacknowledged', 'alarm', { fence: { incarnation: c.incarnation } });
     }
     // A fence also clears when its worker goes silent past its own timeout (R-BTN-19).
     const lapsed = this.rows<{ id: number; work_item_id: string; worker_id: number }>(
@@ -458,7 +509,13 @@ export class Claims {
         claims: this.rows<Row>(`SELECT id, work_item_id, claimed_at, ended_at, status, end_reason FROM work_item_claims
                                 WHERE worker_id = ? AND (ended_at IS NULL OR ended_at >= ?) ORDER BY claimed_at`, l.id, from).map((c) => ({
           ...c,
-          activities: this.rows('SELECT id, kind, label, started_at, ended_at, outcome, parent_id FROM activities WHERE claim_id = ? ORDER BY started_at', c.id),
+          activities: this.rows<Row>('SELECT id, kind, seq, label, started_at, ended_at, outcome, parent_id, detail_json FROM activities WHERE claim_id = ? ORDER BY started_at', c.id)
+            .map((a) => {
+              // §6.8: a link built only from validated parts — the activity's own transcript, else the session's.
+              const t = this.rows<{ repo: string; path: string }>(
+                `SELECT repo, path FROM transcripts WHERE claim_id = ? AND (activity_id = ? OR activity_id IS NULL) ORDER BY activity_id IS NULL, id LIMIT 1`, c.id, a.id)[0];
+              return { ...a, transcript_url: t ? `https://github.com/${t.repo}/blob/HEAD/${t.path}` : null };
+            }),
         })),
       })),
     };

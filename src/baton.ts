@@ -11,7 +11,7 @@ import { familyOf } from './shared/baton.mjs';
 import { fitsTier, TIERS } from './shared/vocabulary.mjs';
 import { WorkerApi } from './workerApi';
 import { Claims } from './claims';
-import { checkConfirmations } from './validate';
+import { checkConfirmations, ITEM_ID } from './validate';
 
 const HELD_AUTO_ACCEPT_MS = 24 * 3_600_000; // §7.1: a held history is accepted after 24 h (R3-1212)
 const ALARM_EVERY_MS = 60_000; // §3: one alarm, every 60 seconds
@@ -106,8 +106,15 @@ export class Baton extends DurableObject<Env> {
       if (m === 'GET' && holder) {
         // R-BTN-7: callable with the token alone (the witness has no sidecar); with a secret, the
         // caller's own claim is not "another".
+        let item = '';
+        try {
+          item = decodeURIComponent(holder[1]);
+        } catch {
+          // a malformed escape is the caller's error, never a 500
+        }
+        if (!ITEM_ID.test(item)) throw new BatonError('invalid-params', 'item: must be a work item id');
         const caller = secret ? await this.workers.authWorker(cred, secret) : null;
-        return json(this.claims.holder(caller, decodeURIComponent(holder[1])));
+        return json(this.claims.holder(caller, item));
       }
       const workerId = await this.workers.authWorker(cred, secret);
       if (m === 'POST' && p === '/v1/worker/claim') {
@@ -153,6 +160,11 @@ export class Baton extends DurableObject<Env> {
         const body = await readJson(req);
         return json(tx(() => this.claims.forceReap(owner, Number(reap[1]), body)));
       }
+      const resolve = /^\/v1\/ui\/claims\/(\d+)\/resolve$/.exec(p);
+      if (resolve) {
+        const body = await readJson(req);
+        return json(tx(() => this.claims.resolve(owner, Number(resolve[1]), body)));
+      }
       if (p === '/v1/ui/board/accept') {
         const body = await readJson(req);
         return json(tx(() => this.claims.acceptHeld(owner, body)));
@@ -183,8 +195,11 @@ export class Baton extends DurableObject<Env> {
     const at = this.now();
     const confirmations = checkConfirmations(p.confirmations);
     // A held history the owner (or the 24-hour clock) accepted becomes the head on its next post.
-    const accepted = p.force && this.sql<{ n: number }>('SELECT count(*) AS n FROM held_snapshots WHERE sha = ? AND accepted_at IS NOT NULL', p.sha)[0].n > 0;
+    const accepted = !!p.force && this.claims.acceptedLine(p.sha, head);
     if (p.force && !accepted) {
+      // A held post still carries the sync's confirmations: git carries those completions
+      // whichever history the owner keeps, and dropping them would leave their items blocked.
+      this.ctx.storage.transactionSync(() => this.claims.confirm(confirmations));
       // Held once per sha: a repeat (the sync re-posts every 15 minutes) changes nothing,
       // so the first deadline stands and the dashboard lists it once.
       const known = this.sql<{ auto_accept_at: number }>('SELECT auto_accept_at FROM held_snapshots WHERE sha = ?', p.sha)[0];

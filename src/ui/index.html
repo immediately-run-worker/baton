@@ -28,6 +28,7 @@
     <h2 id="timeline-title">Timeline</h2>
     <p class="muted">The last 24 hours, one lane per alive worker: claims as bars, activities inside them.</p>
     <div id="timeline" class="timeline"></div>
+    <div id="timeline-detail" class="card detail" hidden></div>
   </section>
   <section aria-labelledby="ready-title">
     <div class="section-head">
@@ -74,10 +75,6 @@
       <label>Reason <input id="s-reason" maxlength="500" autocomplete="off"></label>
       <button type="submit">Suspend</button>
     </form>
-  </section>
-  <section aria-labelledby="held-title" id="held-section" hidden>
-    <h2 id="held-title">Held histories</h2>
-    <ul id="held"></ul>
   </section>
 </main>
 <footer class="muted" id="status"></footer>

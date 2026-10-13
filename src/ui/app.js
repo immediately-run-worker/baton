@@ -204,6 +204,32 @@ function renderRunning() {
   if (!state.running.length) body.append(el('tr', {}, el('td', { text: 'No active claims.', attrs: { colspan: '6' }, cls: 'muted' })));
 }
 
+/** §14: segments coloured by kind group. */
+const KIND_GROUP = {
+  implement: 'build', 'local-verify': 'build', push: 'build', 'open-pr': 'build', merge: 'build', reconcile: 'build', 'status-write': 'build',
+  'review-round': 'review', reviewer: 'review', 'fix-findings': 'review', adjudicate: 'review', 'decision-packet': 'review',
+  'ci-wait': 'wait',
+};
+
+/** The clicked segment's label, detail and transcript (§14), drawn as text. */
+function showActivity(a) {
+  const box = document.getElementById('timeline-detail');
+  box.replaceChildren(el('div', { text: `${a.kind}${a.seq != null ? ` #${a.seq}` : ''}${a.label ? ` — ${a.label}` : ''}` }),
+    el('div', { text: `${fmtTime(a.started_at)} → ${a.ended_at ? fmtTime(a.ended_at) : 'running'}${a.outcome ? ` · ${a.outcome}` : ''}`, cls: 'muted' }));
+  if (a.detail_json) {
+    try {
+      for (const [k, v] of Object.entries(JSON.parse(a.detail_json))) {
+        if (k === 'pr') box.append(el('div', {}, githubLink(String(v), v)));
+        else box.append(el('div', { text: `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`, cls: 'muted' }));
+      }
+    } catch {
+      box.append(el('div', { text: 'detail unreadable', cls: 'muted' }));
+    }
+  }
+  if (a.transcript_url) box.append(el('div', {}, githubLink('transcript', a.transcript_url)));
+  box.hidden = false;
+}
+
 function renderTimeline() {
   const box = document.getElementById('timeline');
   box.replaceChildren();
@@ -219,10 +245,13 @@ function renderTimeline() {
       bar.style.left = pct(c.claimed_at);
       bar.style.width = width(c.claimed_at, c.ended_at);
       track.append(bar);
+      // A review round's reviewers are nested: drawn on a lower band beneath their round.
       for (const a of c.activities) {
-        const seg = el('div', { cls: a.outcome === 'failed' ? 'seg failed' : 'seg', attrs: { title: `${a.kind}${a.label ? `: ${a.label}` : ''}${a.outcome ? ` · ${a.outcome}` : ''}` } });
+        const cls = ['seg', `k-${KIND_GROUP[a.kind] ?? 'other'}`, a.parent_id ? 'child' : '', a.outcome === 'failed' ? 'failed' : ''].filter(Boolean).join(' ');
+        const seg = el('button', { cls, attrs: { type: 'button', title: `${a.kind}${a.label ? `: ${a.label}` : ''}${a.outcome ? ` · ${a.outcome}` : ''}`, 'aria-label': `${a.kind} ${a.label ?? ''}` } });
         seg.style.left = pct(a.started_at);
         seg.style.width = width(a.started_at, a.ended_at);
+        seg.addEventListener('click', () => showActivity(a));
         track.append(seg);
       }
     }
@@ -235,7 +264,17 @@ function renderNeeds() {
   const n = state.needs_you;
   const list = document.getElementById('needs');
   list.replaceChildren();
-  for (const c of n.unconfirmed) list.append(el('li', { text: `${c.work_item_id}: completed ${fmtTime(c.ended_at)} (${c.end_reason}) at ${short(c.ended_at_sha)}, not confirmed by git after 6 h` }));
+  for (const c of n.unconfirmed) {
+    // §6.7: never confirmed automatically; the owner confirms it or releases it.
+    const li = el('li', { text: `${c.work_item_id}: completed ${fmtTime(c.ended_at)} (${c.end_reason}) at ${short(c.ended_at_sha)}, not confirmed by git after 6 h` });
+    li.append(button('Confirm', () => {
+      if (confirm(`Confirm ${c.work_item_id}: git carries docs@${short(c.ended_at_sha)}?`)) act(`/v1/ui/claims/${c.id}/resolve`, { action: 'confirm', confirm: true });
+    }));
+    li.append(button('Release', () => {
+      if (confirm(`Release ${c.work_item_id}: its push never landed, and the item becomes claimable again?`)) act(`/v1/ui/claims/${c.id}/resolve`, { action: 'release', confirm: true });
+    }));
+    list.append(li);
+  }
   for (const m of n.unacknowledged_releases) {
     let item = '?';
     try {
@@ -258,16 +297,6 @@ function renderNeeds() {
   document.getElementById('needs-section').hidden = !list.children.length;
 }
 
-function renderHeld() {
-  const section = document.getElementById('held-section');
-  const list = document.getElementById('held');
-  list.replaceChildren();
-  for (const h of state.held) {
-    list.append(el('li', { text: `docs@${short(h.sha)} (parent ${short(h.parent_sha)}) held ${fmtTime(h.received_at)}; accepted automatically from ${fmtTime(h.auto_accept_at)}` }));
-  }
-  section.hidden = !state.held.length;
-}
-
 function render() {
   renderHead();
   renderReady();
@@ -277,7 +306,6 @@ function render() {
   renderTimeline();
   renderWorkers();
   renderSuspensions();
-  renderHeld();
   document.getElementById('status').textContent = `Updated ${fmtTime(state.server_time)}`;
 }
 

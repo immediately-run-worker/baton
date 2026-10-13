@@ -354,6 +354,7 @@ export function checkEnd(body: unknown): { end_reason: string; status: 'complete
   }
   const sha = optional(b.ended_at_sha, matches(GIT_SHA, 'ended_at_sha')) ?? null;
   if (status! === 'completed' && !sha) bad('ended_at_sha', 'a completed end names the commit that pushed it (R-BTN-8)');
+  if (status! === 'released' && sha) bad('ended_at_sha', 'only a completed end names a commit');
   return { end_reason: reason, status: status!, ended_at_sha: sha };
 }
 
@@ -382,4 +383,12 @@ export function checkConfirm(body: unknown): void {
 export function checkAccept(body: unknown): { sha: string } {
   if (!isObj(body)) bad('body', 'must be a JSON object');
   return { sha: matches(GIT_SHA, 'sha')((body as Record<string, unknown>).sha) };
+}
+
+/** §6.7: the owner's resolution of an unconfirmed completion. */
+export function checkResolve(body: unknown): { action: 'confirm' | 'release' } {
+  if (!isObj(body) || (body.action !== 'confirm' && body.action !== 'release') || body.confirm !== true) {
+    bad('body', "must be {action: 'confirm' | 'release', confirm: true}");
+  }
+  return { action: (body as Record<string, unknown>).action as 'confirm' | 'release' };
 }
