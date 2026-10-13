@@ -262,8 +262,8 @@ export class Baton extends DurableObject<Env> {
    * `held_snapshots` keeps one row per sha, written once PER HOLD (R3-1223): a force post of a
    * sha whose row was accepted, or held against another head, is a new hold that resets the
    * row's head, received_at and 24-hour deadline — the 0001 schema's "written once" and "the
-   * first force post" describe a single hold. An accepted row is deleted once its line
-   * becomes the head.
+   * first force post" describe a single hold. Rows held against a head are deleted when the
+   * head moves, so every row is a hold against the current head.
    */
   async board(p: BoardPayload) {
     const head = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? null;
@@ -343,10 +343,13 @@ export class Baton extends DurableObject<Env> {
       this.reference(p);
       this.ctx.storage.sql.exec('INSERT INTO board_snapshots (sha, parent_sha, received_at, item_count) VALUES (?, ?, ?, ?) ON CONFLICT (sha) DO NOTHING', p.sha, p.parent_sha, at, p.state.items.length);
       this.ctx.storage.sql.exec('INSERT INTO board_head (id, sha) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET sha = excluded.sha', p.sha);
-      // The accepted line is consumed once it becomes the head (R3-1223): left in place, an old
-      // accepted row would accept a NEW rewrite silently whenever the head came back to the
-      // sha it was held against. Its history stays in the events.
-      if (accepted) this.ctx.storage.sql.exec('DELETE FROM held_snapshots WHERE accepted_at IS NOT NULL AND head_sha IS ?', head);
+      // A hold is against one head (R3-1223): when the head moves — an accepted rewrite or a
+      // plain fast-forward — every row held against the head it leaves is retired, answered or
+      // not. Left in place, an accepted row would accept a NEW rewrite silently whenever the
+      // head came back to that sha; an unanswered one is moot (main moved on), and a re-post of
+      // its sha is held afresh. So every row left is a hold against the current head. Their
+      // history stays in the events.
+      this.ctx.storage.sql.exec('DELETE FROM held_snapshots WHERE head_sha IS ?', head);
       this.event('snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, item_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
       (changed as Record<string, number>).confirmed = this.claims.confirm(confirmations);
       // R-BTN-35: git wins over a claim it has overtaken.

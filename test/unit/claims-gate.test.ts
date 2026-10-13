@@ -88,7 +88,8 @@ describe('§7.1: accepting a held history accepts the line', () => {
     expect((await syncCall('/v1/sync/board', payload(sha.D, fake('8'), board.states.D, { force: true }))).status).toBe(409);
     const ev = await rejected();
     expect(ev).toHaveLength(2);
-    expect(JSON.parse(ev[1].detail_json)).toMatchObject({ head: fake('8'), auto_accept_at: T0 + 26 * H, again: true });
+    // The fast-forward retired D's hold against B, so the re-post is a fresh hold against 8.
+    expect(JSON.parse(ev[1].detail_json)).toMatchObject({ head: fake('8'), auto_accept_at: T0 + 26 * H });
     expect(await rows(`SELECT head_sha, received_at, auto_accept_at FROM held_snapshots WHERE sha = ?`, sha.D)).toEqual([
       { head_sha: fake('8'), received_at: T0 + 2 * H, auto_accept_at: T0 + 26 * H }]);
   });
@@ -103,6 +104,21 @@ describe('§7.1: accepting a held history accepts the line', () => {
     await syncCall('/v1/sync/board', payload(sha.B, sha.D, board.states.B, { force: true }));
     await owner('/v1/ui/board/accept', { sha: sha.B });
     expect((await syncCall('/v1/sync/board', payload(sha.B, sha.D, board.states.B, { force: true }))).status).toBe(200);
+    expect((await syncCall('/v1/sync/board', payload(fake('9'), sha.B, board.states.D, { force: true }))).status).toBe(409);
+    expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(sha.B);
+  });
+
+  it('a hold a fast-forward left behind is retired, so accepting it later accepts nothing', async () => {
+    await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B));
+    expect((await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }))).status).toBe(409);
+    await syncCall('/v1/sync/board', payload(fake('8'), sha.B, board.states.B));
+    expect(await rows(`SELECT sha FROM held_snapshots`)).toEqual([]);
+    expect((await uiState()).held).toEqual([]);
+    await alarmAt(T0 + 24 * H);
+    // Back to B through an accepted rewind; a brand-new rewrite of B is then held.
+    expect((await syncCall('/v1/sync/board', payload(sha.B, fake('8'), board.states.B, { force: true }))).status).toBe(409);
+    await owner('/v1/ui/board/accept', { sha: sha.B });
+    expect((await syncCall('/v1/sync/board', payload(sha.B, fake('8'), board.states.B, { force: true }))).status).toBe(200);
     expect((await syncCall('/v1/sync/board', payload(fake('9'), sha.B, board.states.D, { force: true }))).status).toBe(409);
     expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(sha.B);
   });
