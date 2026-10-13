@@ -47,12 +47,12 @@ const bearer = (req: Request) => {
 };
 
 /**
- * The sync principal (R-BTN-15): a GitHub Actions OIDC token from `baton-sync.yml` on
- * `immediately-run/docs` `main`. Issuer, audience, repository, ref and the workflow ref must
- * all match; a token minted by a workflow on a branch, another workflow or another
- * repository is refused.
+ * The sync principal (R-BTN-15): a GitHub Actions OIDC token from `baton-sync.yml` (or, for the
+ * mirror's routes, `baton-mirror.yml`) on `immediately-run/docs` `main`. Issuer, audience,
+ * repository, ref and the workflow ref must all match; a token minted by a workflow on a
+ * branch, another workflow or another repository is refused.
  */
-export async function verifySync(req: Request, env: Env): Promise<void> {
+export async function verifySync(req: Request, env: Env, workflowRef: string = env.SYNC_WORKFLOW_REF): Promise<void> {
   const token = bearer(req);
   if (!token) throw new BatonError('unauthenticated', 'an OIDC bearer token is required');
   const keys = testKeys(env, env.TEST_OIDC_JWKS) ?? remote(env.OIDC_JWKS_URL);
@@ -62,8 +62,8 @@ export async function verifySync(req: Request, env: Env): Promise<void> {
   } catch (e) {
     throw verifyFailure(e, 'OIDC');
   }
-  if (claims.repository !== env.OIDC_REPOSITORY || claims.ref !== env.OIDC_REF || claims.job_workflow_ref !== env.SYNC_WORKFLOW_REF) {
-    throw new BatonError('forbidden', 'the OIDC token is not from the board-sync workflow on docs main');
+  if (!workflowRef || claims.repository !== env.OIDC_REPOSITORY || claims.ref !== env.OIDC_REF || claims.job_workflow_ref !== workflowRef) {
+    throw new BatonError('forbidden', 'the OIDC token is not from this route’s workflow on docs main');
   }
 }
 

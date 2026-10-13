@@ -21,7 +21,9 @@ const PRINCIPAL_HEADERS = ['X-Baton-Credential', 'X-Baton-Owner'];
 async function route(req: Request, env: Env): Promise<Response> {
   const { pathname } = new URL(req.url);
   if (pathname.startsWith('/v1/sync/')) {
-    await verifySync(req, env);
+    // §10.3: the mirror's routes take only baton-mirror.yml's token; the board's only baton-sync.yml's.
+    const mirror = pathname === '/v1/sync/events' || pathname === '/v1/sync/foreign-claim';
+    await verifySync(req, env, mirror ? env.MIRROR_WORKFLOW_REF : env.SYNC_WORKFLOW_REF);
     return forward(req, env, {});
   }
   if (pathname.startsWith('/v1/worker/')) {

@@ -21,6 +21,8 @@ const GIT_ENDS = new Set(['done', 'superseded', 'deferred', 'deprioritized']);
 export interface Ctx {
   storage: DurableObjectStorage;
   now: () => number;
+  /** §12: ask for a workflow dispatch once this request's transaction has committed. */
+  dispatch?: (workflow: 'baton-mirror.yml' | 'baton-sync.yml') => void;
 }
 
 interface WorkerFacts {
@@ -256,6 +258,7 @@ export class Claims {
     }
     const id = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
     this.event('claimed', `worker:${workerId}`, { request_id: b.request_id }, item.id, id);
+    this.c.dispatch?.('baton-mirror.yml');
     // §6.8: transcripts reported while the worker held nothing are linked to this claim.
     this.exec(`INSERT INTO transcripts (worker_id, claim_id, repo, path, role, activity_id, first_seen_at, last_pushed_at)
                SELECT worker_id, ?, repo, path, role, activity_id, first_seen_at, last_pushed_at FROM pending_transcripts WHERE worker_id = ?
@@ -294,6 +297,7 @@ export class Claims {
         this.exec(`UPDATE messages SET status = 'expired' WHERE to_worker_id = ? AND kind = 'release' AND status IN ('pending','delivered')
                    AND json_extract(payload_json, '$.work_item_id') = ? AND json_extract(payload_json, '$.reason') = 'stale-board'`, workerId, c.work_item_id);
         this.event('completed', `worker:${workerId}`, { end_reason: e.end_reason, ended_at_sha: e.ended_at_sha, after: 'released:stale-board' }, c.work_item_id, c.id);
+        this.c.dispatch?.('baton-sync.yml');
         return { ok: true };
       }
       throw new BatonError('claim-ended', `the claim already ended (${c.status}: ${c.end_reason})`);
@@ -310,6 +314,10 @@ export class Claims {
       status, now, reason, opts.ended_at_sha ?? null, opts.fence ? 1 : 0, opts.fence?.incarnation ?? null, claimId);
     this.exec(`UPDATE activities SET ended_at = ?, outcome = 'abandoned' WHERE claim_id = ? AND ended_at IS NULL`, now, claimId);
     this.event(status, actor, { end_reason: reason, ...(opts.ended_at_sha ? { ended_at_sha: opts.ended_at_sha } : {}), ...(opts.fence ? { fence_pending: true } : {}) }, item, claimId);
+    // §12: the mirror writes the end; a completion also wants a board sync, which confirms it
+    // (R-BTN-10) without waiting for an unrelated push.
+    this.c.dispatch?.('baton-mirror.yml');
+    if (status === 'completed') this.c.dispatch?.('baton-sync.yml');
     // §13 step 3: a legacy claim that ends takes its adoption request with it.
     this.exec('DELETE FROM adoptions WHERE claim_id = ?', claimId);
     if (status !== 'completed') {
@@ -390,6 +398,7 @@ export class Claims {
 
   /** §8: every hold, whoever sets it, is an `override` event and a `held` event with its reason. */
   private hold(item: string, reason: string, actor: string, detail: Record<string, unknown> = {}) {
+    this.c.dispatch?.('baton-mirror.yml'); // §6.10: the mirror writes the hold's note
     this.upsertOverride(item, actor, { hold: 1, hold_reason: reason });
     this.event('override', actor, { hold: 1, hold_reason: reason }, item, (detail.claim_id as number) ?? null);
     this.event('held', actor, { hold_reason: reason, ...detail }, item, (detail.claim_id as number) ?? null);
@@ -401,6 +410,7 @@ export class Claims {
     const o = checkOverride(body);
     const actor = `owner:${owner}`;
     if (o.expedite !== undefined) {
+      if (o.expedite) this.c.dispatch?.('baton-mirror.yml'); // §8: the mirror writes the EXPEDITE tag
       this.upsertOverride(item, actor, { expedite: o.expedite ? 1 : 0 });
       this.event('override', actor, { expedite: o.expedite ? 1 : 0 }, item);
     }
@@ -474,6 +484,7 @@ export class Claims {
       this.event('confirmed', `owner:${owner}`, { by: 'owner', sha: c.ended_at_sha }, c.work_item_id, claimId);
     } else {
       this.exec(`UPDATE work_item_claims SET status = 'released', end_reason = 'released:requested', ended_at_sha = NULL WHERE id = ?`, claimId);
+      this.c.dispatch?.('baton-mirror.yml');
       this.event('released', `owner:${owner}`, { by: 'owner', unconfirmed: { end_reason: c.end_reason, ended_at_sha: c.ended_at_sha } }, c.work_item_id, claimId);
     }
     return { ok: true };
