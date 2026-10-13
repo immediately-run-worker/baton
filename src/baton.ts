@@ -5,7 +5,8 @@
 import { DurableObject } from 'cloudflare:workers';
 import { MIGRATIONS } from './migrations';
 import { BatonError, errorResponse, json } from './http';
-import { checkPayload, inPeak, nextPeakChange, priceFor, rowFor, rowHash, type BoardPayload } from './board';
+import { checkPayload, inPeak, nextPeakChange, rowFor, rowHash, type BoardPayload } from './board';
+import { priceFor } from './shared/sessionUsage.mjs';
 import { familyOf } from './shared/baton.mjs';
 import { fitsTier, TIERS } from './shared/vocabulary.mjs';
 
@@ -75,8 +76,18 @@ export class Baton extends DurableObject<Env> {
     const head = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? null;
     const at = this.now();
     if (p.force) {
-      this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, item_count: p.state.items.length, held: true, auto_accept_at: at + HELD_AUTO_ACCEPT_MS }, at);
-      throw new BatonError('snapshot-rejected', 'a rewritten history is held for the owner; claims continue on the current head');
+      // Held once per sha: a repeat (the sync re-posts every 15 minutes) changes nothing,
+      // so the first deadline stands and the dashboard lists it once.
+      const known = this.sql<{ auto_accept_at: number }>('SELECT auto_accept_at FROM held_snapshots WHERE sha = ?', p.sha)[0];
+      const deadline = known?.auto_accept_at ?? at + HELD_AUTO_ACCEPT_MS;
+      if (!known) {
+        this.ctx.storage.transactionSync(() => {
+          this.ctx.storage.sql.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, item_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
+            p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
+          this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, item_count: p.state.items.length, auto_accept_at: deadline }, at);
+        });
+      }
+      throw new BatonError('snapshot-rejected', `a rewritten history is held for the owner until ${new Date(deadline).toISOString()}; claims continue on the current head`);
     }
     if (p.sha === head) return { ok: true, unchanged: true };
     if (p.parent_sha !== head) throw new BatonError('head-moved', `the head is ${head ?? 'unset'}; re-read it and retry`);
@@ -125,11 +136,15 @@ export class Baton extends DurableObject<Env> {
 
   /** The reference data the sync posts with every snapshot (§7.3, §7.4): providers, peak
    *  schedules, per-model prices and limits, the reviewer catalog, `min_skills_version`. Each
-   *  table is a copy of a docs file, never edited here, so it is rewritten whole. */
+   *  table is a copy of a docs file, never edited here, so it is rewritten whole: an account
+   *  the file no longer lists is deleted. (Nothing references `model_providers` yet; when
+   *  workers and suspensions do, R3-1211 decides what retiring a referenced account means.) */
   private reference(p: BoardPayload) {
     const exec = (q: string, ...a: unknown[]) => this.ctx.storage.sql.exec(q, ...(a as SqlStorageValue[]));
     if (p.providers) {
       exec('DELETE FROM provider_models');
+      const ids = p.providers.accounts.map((a) => a.id);
+      exec(`DELETE FROM model_providers WHERE id NOT IN (${ids.map(() => '?').join(', ') || "''"})`, ...ids);
       for (const a of p.providers.accounts) {
         exec(`INSERT INTO model_providers (id, name, billing, window_limits_json) VALUES (?, ?, ?, ?)
               ON CONFLICT (id) DO UPDATE SET name = excluded.name, billing = excluded.billing, window_limits_json = excluded.window_limits_json`,
@@ -138,7 +153,7 @@ export class Baton extends DurableObject<Env> {
       exec('DELETE FROM peak_schedules');
       for (const s of p.providers.peak_schedules) exec('INSERT INTO peak_schedules (id, rules_json, factor) VALUES (?, ?, ?)', s.id, JSON.stringify(s.rules), s.factor);
       for (const m of p.providers.models) {
-        const price = priceFor(p.prices, m.model);
+        const price = priceFor(m.model, p.prices);
         exec(`INSERT INTO provider_models (provider_id, model_id, input_per_m, output_per_m, cache_read_per_m, cache_write_per_m, monthly_limit_usd, peak_schedule_id)
               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           m.provider, m.model, price?.input ?? null, price?.output ?? null, price?.cacheRead ?? null, price?.cacheWrite5m ?? null, m.monthly_limit_usd, m.peak_schedule ?? null);
@@ -204,8 +219,9 @@ export class Baton extends DurableObject<Env> {
       return { id: a.id, name: a.name, billing: a.billing, window_limits: a.window_limits_json ? JSON.parse(a.window_limits_json) : null, models, peaks };
     });
 
-    const held = this.sql<{ at: number; detail_json: string }>(
-      `SELECT at, detail_json FROM events WHERE kind = 'snapshot-rejected' ORDER BY seq DESC LIMIT 5`).map((e) => ({ at: e.at, ...JSON.parse(e.detail_json) }));
+    const held = this.sql(
+      `SELECT sha, parent_sha, head_sha, item_count, received_at, auto_accept_at FROM held_snapshots
+       WHERE accepted_at IS NULL ORDER BY received_at`);
     return { server_time: now, head: snap, ready, ready_by_tier: byTier, providers, held };
   }
 }

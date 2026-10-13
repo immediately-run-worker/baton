@@ -41,7 +41,7 @@ function renderReady() {
     for (const name of r.requires) reqs.append(el('span', { text: name, cls: 'tag' }));
     body.append(el('tr', {},
       el('td', { text: i + 1, cls: 'num' }),
-      el('td', {}, el('a', { text: r.id, attrs: { href: r.url, target: '_blank', rel: 'noopener' } }), document.createTextNode(' '), el('span', { text: r.title })),
+      el('td', {}, el('span', { text: r.id, cls: 'muted' }), document.createTextNode(' '), el('a', { text: r.title, attrs: { href: r.url, target: '_blank', rel: 'noopener' } })),
       el('td', { text: r.tier ?? 'untiered' }),
       reqs,
       el('td', { text: r.rank_reason, cls: 'muted' })));
@@ -76,7 +76,7 @@ function renderHeld() {
   const list = document.getElementById('held');
   list.replaceChildren();
   for (const h of state.held) {
-    list.append(el('li', { text: `docs@${short(h.sha)} (parent ${short(h.parent_sha)}) held ${fmtTime(h.at)}; accepted automatically from ${fmtTime(h.auto_accept_at)}` }));
+    list.append(el('li', { text: `docs@${short(h.sha)} (parent ${short(h.parent_sha)}) held ${fmtTime(h.received_at)}; accepted automatically from ${fmtTime(h.auto_accept_at)}` }));
   }
   section.hidden = !state.held.length;
 }
@@ -89,13 +89,21 @@ function render() {
   document.getElementById('status').textContent = `Updated ${fmtTime(state.server_time)}`;
 }
 
+let latest = 0;
+
+/** One poll, bounded by the poll interval. Only the newest poll's answer is drawn, so a slow
+ *  response can never overwrite a newer one. */
 async function poll() {
+  const mine = ++latest;
   try {
-    const res = await fetch('/v1/ui/state', { headers: { Accept: 'application/json' } });
+    const res = await fetch('/v1/ui/state', { headers: { Accept: 'application/json' }, signal: AbortSignal.timeout(POLL_MS) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    state = await res.json();
+    const next = await res.json();
+    if (mine !== latest) return;
+    state = next;
     render();
   } catch (e) {
+    if (mine !== latest) return;
     document.getElementById('status').textContent = `Could not load the state: ${e.message}. Retrying.`;
   }
 }

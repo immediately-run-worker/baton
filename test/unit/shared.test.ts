@@ -8,7 +8,7 @@ describe('src/shared', () => {
   const { manifest, vendored, upstream } = inject('shared');
 
   it('each copy is the file its manifest pins', () => {
-    expect(Object.keys(manifest).sort()).toEqual(['baton.mjs', 'vocabulary.mjs']);
+    expect(Object.keys(manifest).sort()).toEqual(['baton.mjs', 'sessionUsage.mjs', 'vocabulary.mjs']);
     expect(vendored).toEqual(manifest);
   });
 

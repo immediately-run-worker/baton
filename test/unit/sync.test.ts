@@ -39,7 +39,7 @@ describe('POST /v1/sync/board', () => {
     expect(await body(res)).toMatchObject({ ok: true, unchanged: true });
   });
 
-  it('G-BTN-7: force is held — the head stays, a snapshot-rejected event records it', async () => {
+  it('G-BTN-7: force is held once per sha — the head stays, the first deadline stands', async () => {
     await setClock(Date.parse('2026-10-13T12:00:00Z'));
     await post(A, null, 'A');
     await post(B, A, 'B');
@@ -47,9 +47,12 @@ describe('POST /v1/sync/board', () => {
     expect(res.status).toBe(409);
     expect((await body(res)).code).toBe('snapshot-rejected');
     expect(await head()).toBe(B);
-    const ev = await rows<{ kind: string; detail_json: string }>(`SELECT kind, detail_json FROM events WHERE kind = 'snapshot-rejected'`);
-    expect(ev).toHaveLength(1);
-    expect(JSON.parse(ev[0].detail_json)).toMatchObject({ sha: D, parent_sha: B, head: B, held: true, auto_accept_at: Date.parse('2026-10-14T12:00:00Z') });
+    // The sync re-posts every 15 minutes: a repeat changes nothing.
+    await setClock(Date.parse('2026-10-13T12:15:00Z'));
+    expect((await body(await post(D, B, 'D', { force: true }))).code).toBe('snapshot-rejected');
+    const held = await rows('SELECT sha, parent_sha, head_sha, item_count, received_at, auto_accept_at, accepted_at FROM held_snapshots');
+    expect(held).toEqual([{ sha: D, parent_sha: B, head_sha: B, item_count: 3, received_at: Date.parse('2026-10-13T12:00:00Z'), auto_accept_at: Date.parse('2026-10-14T12:00:00Z'), accepted_at: null }]);
+    expect(await rows(`SELECT 1 FROM events WHERE kind = 'snapshot-rejected'`)).toHaveLength(1);
     // Nothing of D reached the cache: R3-9003 (archived in D) is still there.
     expect(await rows(`SELECT id FROM work_items WHERE id = 'R3-9003'`)).toHaveLength(1);
   });
@@ -60,10 +63,25 @@ describe('POST /v1/sync/board', () => {
     ['ready naming an item the state lacks', { sha: A, parent_sha: null, state: { items: [] }, ready: ['R3-9001'] }],
     ['a malformed item id', { sha: A, parent_sha: null, state: { items: [{ id: '../etc', title: 't', status: 'available', queue: 'autonomous', node: 'blocked' }] }, ready: [] }],
     ['a control character in a title', { sha: A, parent_sha: null, state: { items: [{ id: 'R3-1', title: 'a\u0007b', status: 'available', queue: 'autonomous', node: 'blocked' }] }, ready: [] }],
+    ['force as a string', { ...payload(A, null, board.states.A), force: 'false' }],
+    ['a negative min_skills_version', { ...payload(A, null, board.states.A), min_skills_version: -1 }],
+    ['an account list that is not a list', { ...payload(A, null, board.states.A), providers: { accounts: 'x', peak_schedules: [], models: [] } }],
+    ['an unknown billing kind', { ...payload(A, null, board.states.A), providers: { accounts: [{ id: 'zai', name: 'Z', billing: 'credits', window_limits: null }], peak_schedules: [], models: [] } }],
+    ['a model on an unknown schedule', { ...payload(A, null, board.states.A), providers: { accounts: [{ id: 'zai', name: 'Z', billing: 'api', window_limits: null }], peak_schedules: [], models: [{ provider: 'zai', model: 'm', monthly_limit_usd: null, peak_schedule: 'nope' }] } }],
+    ['a model on an unknown account', { ...payload(A, null, board.states.A), providers: { accounts: [], peak_schedules: [], models: [{ provider: 'zai', model: 'm', monthly_limit_usd: null }] } }],
+    ['a price pattern that does not compile', { ...payload(A, null, board.states.A), prices: { models: [{ match: '(', input: 1 }] } }],
+    ['a reviewer with no bills', { ...payload(A, null, board.states.A), matrix: { families: {}, agents: { 'review-pr-x': { reviews_on: 'm' } } } }],
   ])('refuses %s with invalid-params, writing nothing', async (_what, bad) => {
     const res = await syncCall('/v1/sync/board', bad);
     expect(res.status).toBe(400);
     expect((await body(res)).code).toBe('invalid-params');
     expect(await head()).toBeNull();
+  });
+
+  it.skipIf(!inject('liveBoard'))("accepts today's real docs board, as factory-state computes it", async () => {
+    const live = inject('liveBoard')!;
+    const res = await syncCall('/v1/sync/board', payload('f'.repeat(40), null, live));
+    expect(res.status).toBe(200);
+    expect(await rows('SELECT count(*) AS n FROM work_items')).toEqual([{ n: live.items.length }]);
   });
 });

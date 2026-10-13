@@ -1,7 +1,7 @@
 // auth.ts — the two principals R3-1206 serves (BATON_SPEC §10.1): the board sync, by GitHub
 // Actions OIDC (R-BTN-15), and the owner, by Cloudflare Access (R-BTN-16). Nothing but a
 // verified JWT is trusted: no header, cookie or query parameter stands in for one.
-import { createLocalJWKSet, createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose';
+import { createLocalJWKSet, createRemoteJWKSet, errors, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { BatonError } from './http';
 
 const remoteSets = new Map<string, JWTVerifyGetKey>();
@@ -23,6 +23,16 @@ function testKeys(env: Env, jwks: string | undefined): JWTVerifyGetKey | null {
   return createLocalJWKSet(JSON.parse(jwks));
 }
 
+/** A failed verification's code: the token's fault is `unauthenticated`; a key set that could
+ *  not be fetched or read (an outage of GitHub's or Access's key endpoint) is `unavailable`, so
+ *  the caller retries rather than reading an outage as a bad credential. */
+function verifyFailure(e: unknown, what: string): BatonError {
+  if (e instanceof errors.JWKSTimeout || e instanceof errors.JWKSInvalid || !(e instanceof errors.JOSEError)) {
+    return new BatonError('unavailable', `the ${what} key set could not be fetched; retry`);
+  }
+  return new BatonError('unauthenticated', `the ${what} token did not verify`);
+}
+
 const bearer = (req: Request) => {
   const h = req.headers.get('Authorization') ?? '';
   return h.startsWith('Bearer ') ? h.slice(7).trim() : '';
@@ -41,8 +51,8 @@ export async function verifySync(req: Request, env: Env): Promise<void> {
   let claims: Record<string, unknown>;
   try {
     ({ payload: claims } = await jwtVerify(token, keys, { issuer: env.OIDC_ISSUER, audience: env.OIDC_AUDIENCE }));
-  } catch {
-    throw new BatonError('unauthenticated', 'the OIDC token did not verify');
+  } catch (e) {
+    throw verifyFailure(e, 'OIDC');
   }
   if (claims.repository !== env.OIDC_REPOSITORY || claims.ref !== env.OIDC_REF || claims.job_workflow_ref !== env.SYNC_WORKFLOW_REF) {
     throw new BatonError('forbidden', 'the OIDC token is not from the board-sync workflow on docs main');
@@ -64,8 +74,8 @@ export async function verifyOwner(req: Request, env: Env): Promise<string> {
   let claims: Record<string, unknown>;
   try {
     ({ payload: claims } = await jwtVerify(token, keys, { issuer: `https://${team}`, audience: env.ACCESS_AUD }));
-  } catch {
-    throw new BatonError('unauthenticated', 'the Access token did not verify');
+  } catch (e) {
+    throw verifyFailure(e, 'Access');
   }
   const email = typeof claims.email === 'string' ? claims.email.toLowerCase() : '';
   if (!owners.includes(email)) throw new BatonError('forbidden', 'not an owner');

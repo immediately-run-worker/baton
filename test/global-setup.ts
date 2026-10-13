@@ -35,4 +35,14 @@ export default async function setup(project: TestProject) {
   const upstream = haveDocs ? Object.fromEntries(Object.keys(manifest.files).map((n) => [n, sha256(join(docs, 'scripts/lib', n))])) : null;
   project.provide('shared', { manifest: manifest.files, vendored, upstream });
   project.provide('wranglerToml', readFileSync(join(ROOT, 'wrangler.toml'), 'utf8'));
+
+  // One input from the real producer: today's docs board, as factory-state computes it.
+  let liveBoard: { items: unknown[]; ready: string[] } | null = null;
+  if (haveDocs) {
+    const { computeState } = await import(join(docs, 'scripts/factory-state.mjs'));
+    const { rankReady } = await import(join(docs, 'scripts/lib/factoryState.mjs'));
+    const state = computeState({});
+    liveBoard = { items: state.items, ready: rankReady(state).map((r: { id: string }) => r.id) };
+  }
+  project.provide('liveBoard', liveBoard);
 }

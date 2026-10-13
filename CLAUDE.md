@@ -6,7 +6,7 @@ sections it cites before changing anything. See `README.md` for the layout.
 
 ## Rules
 
-- **`src/shared/` is vendored.** Change `baton.mjs`/`vocabulary.mjs` in docs, then
+- **`src/shared/` is vendored.** Change `baton.mjs`, `vocabulary.mjs` or `sessionUsage.mjs` in docs, then
   `npm run vendor` here. The suite fails on a copy that does not match its manifest.
 - **One clock.** The object reads time only through `this.now` (R-BTN-32); tests set it with
   `setClock`. Never call `Date.now()` anywhere else in `src/`.

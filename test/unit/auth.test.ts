@@ -92,11 +92,23 @@ describe('the test key exists only in the test bindings (§13a)', () => {
     for (const name of ['BATON_TEST_BINDINGS', 'TEST_OIDC_JWKS', 'TEST_ACCESS_JWKS', 'TEST_SIGNING_JWK']) expect(toml).not.toContain(name);
   });
 
-  it('without BATON_TEST_BINDINGS the test key set is ignored', async () => {
-    // The production path fetches the remote key set; here that fetch fails, so a token signed
-    // by the test key cannot verify.
+  it('without BATON_TEST_BINDINGS the test key set is ignored: verification goes to the remote key set', async () => {
+    const req = () => new Request(`${ORIGIN}/v1/sync/head`, { headers: { Authorization: `Bearer ${tokenNow}` } });
+    const tokenNow = await syncToken();
+    await expect(verifySync(req(), env)).resolves.toBeUndefined();
+    // The production path fetches GitHub's key set; here that fetch fails, so the test-key
+    // token cannot verify — and the failure is an outage (retry), not a bad credential.
+    const prod = { ...env, BATON_TEST_BINDINGS: undefined, OIDC_JWKS_URL: 'https://jwks.invalid/keys' } as Env;
+    await expect(verifySync(req(), prod)).rejects.toMatchObject({ code: 'unavailable' });
+  });
+});
+
+describe('a key-set outage is not a credential failure', () => {
+  it('a token that fails verification is 401 unauthenticated; an unreachable key set is 503 unavailable', async () => {
     const prod = { ...env, BATON_TEST_BINDINGS: undefined, OIDC_JWKS_URL: 'https://jwks.invalid/keys' } as Env;
     const req = new Request(`${ORIGIN}/v1/sync/head`, { headers: { Authorization: `Bearer ${await syncToken()}` } });
-    await expect(verifySync(req, prod)).rejects.toMatchObject({ code: 'unauthenticated' });
+    await expect(verifySync(req, prod)).rejects.toMatchObject({ code: 'unavailable' });
+    const garbage = new Request(`${ORIGIN}/v1/sync/head`, { headers: { Authorization: 'Bearer not-a-jwt' } });
+    await expect(verifySync(garbage, env)).rejects.toMatchObject({ code: 'unauthenticated' });
   });
 });

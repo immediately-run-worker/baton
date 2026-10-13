@@ -80,13 +80,22 @@ describe('reference data and the dashboard state', () => {
     expect(await rows(`SELECT value FROM baton_settings WHERE key = 'min_skills_version'`)).toEqual([{ value: '3' }]);
   });
 
+  it('an account the providers file no longer lists is deleted', async () => {
+    await post(A, null, stateA, reference);
+    const providers = { ...reference.providers, accounts: reference.providers.accounts.filter((a) => a.id !== 'zai'), models: reference.providers.models.filter((m) => m.provider !== 'zai') };
+    await post(B, A, stateA, { ...reference, providers });
+    expect(await rows('SELECT id FROM model_providers')).toEqual([{ id: 'opencode_go_plus' }]);
+    const s = (await (await ownerCall('/v1/ui/state')).json()) as { providers: { id: string }[] };
+    expect(s.providers.map((p) => p.id)).toEqual(['opencode_go_plus']);
+  });
+
   it('the Ready view orders each tier ceiling by rank; Providers shows peak now and the next change', async () => {
     // Monday 2026-10-12 07:30 UTC: inside both the DeepSeek and the Z.AI peak (06–10).
     await setClock(Date.parse('2026-10-12T07:30:00Z'));
     await post(A, null, stateA, reference);
     const s = (await (await ownerCall('/v1/ui/state')).json()) as {
       head: { sha: string; item_count: number };
-      ready: { id: string; url: string; rank_reason: string; requires: string[]; operator_only: boolean }[];
+      ready: { id: string; title: string; url: string; rank_reason: string; requires: string[]; operator_only: boolean }[];
       ready_by_tier: Record<string, string[]>;
       providers: { id: string; peaks: { schedule: string; in_peak: boolean; next_change: number }[] }[];
     };

@@ -20,6 +20,8 @@ export interface StateItem {
   node: string;
   dependsOn?: string[];
   blockedBy?: string[];
+  /** Not in factory-state's items today: the sync adds it from each item's `repos:`
+   *  frontmatter (R3-1207). Absent, the row stores `[]`. */
   repos?: string[];
 }
 
@@ -105,7 +107,88 @@ export function checkPayload(body: unknown): BoardPayload {
     list(it.repos, /^[A-Za-z0-9._-]{1,100}$/, `${it.id}: repos`);
   }
   for (const id of p.ready) if (!seen.has(id)) throw new BatonError('invalid-params', `ready names ${id}, which is not in state.items`);
+  if (p.force !== undefined && typeof p.force !== 'boolean') throw new BatonError('invalid-params', 'force must be a boolean');
+  if (p.min_skills_version !== undefined && !(Number.isInteger(p.min_skills_version) && p.min_skills_version >= 0)) {
+    throw new BatonError('invalid-params', 'min_skills_version must be a non-negative integer');
+  }
+  checkReference(p);
   return p;
+}
+
+const ACCOUNT = /^[a-z0-9_]{1,64}$/;
+const MODEL = /^[A-Za-z0-9._/:-]{1,200}$/;
+const isNum = (v: unknown) => typeof v === 'number' && Number.isFinite(v);
+const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
+const bad = (field: string, why: string): never => {
+  throw new BatonError('invalid-params', `${field}: ${why}`);
+};
+function regex(field: string, pattern: unknown) {
+  if (typeof pattern !== 'string') bad(field, 'must be a pattern string');
+  try {
+    new RegExp(pattern as string, 'i');
+  } catch {
+    bad(field, 'is not a valid pattern');
+  }
+}
+function catalog(field: string, agents: unknown) {
+  if (!isObj(agents)) bad(field, 'must be an object of agents');
+  for (const [name, a] of Object.entries(agents as Record<string, unknown>)) {
+    if (!NAME.test(name) || !isObj(a)) bad(`${field}.${name}`, 'is malformed');
+    const agent = a as Record<string, unknown>;
+    if (typeof agent.reviews_on !== 'string' || !MODEL.test(agent.reviews_on)) bad(`${field}.${name}.reviews_on`, 'must be a model id');
+    if (!Array.isArray(agent.bills) || !agent.bills.every((b) => typeof b === 'string' && NAME.test(b))) bad(`${field}.${name}.bills`, 'must be a list of prefixes');
+    if (agent.models !== undefined && !(isObj(agent.models) && Object.entries(agent.models).every(([k, v]) => NAME.test(k) && typeof v === 'string' && MODEL.test(v)))) {
+      bad(`${field}.${name}.models`, 'must map prefixes to model ids');
+    }
+  }
+}
+
+/** The reference blocks (§7.3, §7.4) are docs data files: a malformed one is refused, named,
+ *  before anything is written, never left to fail a constraint mid-transaction. */
+function checkReference(p: BoardPayload) {
+  if (p.prices !== undefined) {
+    if (!isObj(p.prices) || !Array.isArray(p.prices.models)) bad('prices.models', 'must be a list');
+    p.prices.models.forEach((m, i) => {
+      if (!isObj(m)) bad(`prices.models[${i}]`, 'must be an object');
+      regex(`prices.models[${i}].match`, m.match);
+      for (const k of ['input', 'output', 'cacheRead', 'cacheWrite5m'] as const) if (m[k] !== undefined && !isNum(m[k])) bad(`prices.models[${i}].${k}`, 'must be a number');
+    });
+  }
+  if (p.providers !== undefined) {
+    const pr = p.providers;
+    if (!isObj(pr) || !Array.isArray(pr.accounts) || !Array.isArray(pr.peak_schedules) || !Array.isArray(pr.models)) bad('providers', 'needs accounts, peak_schedules and models lists');
+    const accounts = new Set<string>();
+    pr.accounts.forEach((a, i) => {
+      if (!isObj(a) || typeof a.id !== 'string' || !ACCOUNT.test(a.id)) bad(`providers.accounts[${i}].id`, 'is malformed');
+      if (typeof a.name !== 'string' || !TEXT.test(a.name)) bad(`providers.accounts[${i}].name`, 'must be short text');
+      if (a.billing !== 'subscription' && a.billing !== 'api') bad(`providers.accounts[${i}].billing`, "must be 'subscription' or 'api'");
+      if (a.window_limits !== null && !(isObj(a.window_limits) && Object.values(a.window_limits).every(isNum))) bad(`providers.accounts[${i}].window_limits`, 'must be null or numbers by window');
+      accounts.add(a.id);
+    });
+    const schedules = new Set<string>();
+    pr.peak_schedules.forEach((sc, i) => {
+      const ok = isObj(sc) && typeof sc.id === 'string' && NAME.test(sc.id) && isNum(sc.factor) && isObj(sc.rules) &&
+        Array.isArray(sc.rules.days) && sc.rules.days.every((d) => Number.isInteger(d) && d >= 0 && d <= 6) &&
+        Array.isArray(sc.rules.hoursUtc) && sc.rules.hoursUtc.every((h) => Array.isArray(h) && h.length === 2 && Number.isInteger(h[0]) && Number.isInteger(h[1]) && 0 <= h[0] && h[0] < h[1] && h[1] <= 24);
+      if (!ok) bad(`providers.peak_schedules[${i}]`, 'needs an id, days 0–6, [start, end) hour pairs and a numeric factor');
+      schedules.add(sc.id);
+    });
+    pr.models.forEach((m, i) => {
+      if (!isObj(m) || !accounts.has(m.provider)) bad(`providers.models[${i}].provider`, 'must name an account in providers.accounts');
+      if (typeof m.model !== 'string' || !MODEL.test(m.model)) bad(`providers.models[${i}].model`, 'must be a model id');
+      if (m.monthly_limit_usd !== null && !isNum(m.monthly_limit_usd)) bad(`providers.models[${i}].monthly_limit_usd`, 'must be a number or null');
+      if (m.peak_schedule !== undefined && !schedules.has(m.peak_schedule)) bad(`providers.models[${i}].peak_schedule`, 'must name a schedule in providers.peak_schedules');
+    });
+  }
+  if (p.matrix !== undefined) {
+    if (!isObj(p.matrix) || !isObj(p.matrix.families)) bad('matrix.families', 'must be an object');
+    for (const [fam, pats] of Object.entries(p.matrix.families)) {
+      if (!NAME.test(fam) || !Array.isArray(pats)) bad(`matrix.families.${fam}`, 'must be a list of patterns');
+      pats.forEach((pat, i) => regex(`matrix.families.${fam}[${i}]`, pat));
+    }
+    catalog('matrix.agents', p.matrix.agents);
+  }
+  if (p.reviewers !== undefined) catalog('reviewers', p.reviewers);
 }
 
 /** The row an item becomes (R-BTN-33). `rank` is its index in the sync's `ready` list. A
@@ -159,18 +242,5 @@ export function nextPeakChange(rules: { days: number[]; hoursUtc: [number, numbe
   const now = inPeak(rules, ms);
   let t = Math.floor(ms / HOUR) * HOUR + HOUR;
   for (let i = 0; i < 24 * 8; i++, t += HOUR) if (inPeak(rules, t) !== now) return t;
-  return null;
-}
-
-/** The list price for a model id: the first `prices.models` entry whose `match` regex
- *  (case-insensitive) matches, as model-prices.json is read by sessionUsage.mjs. */
-export function priceFor(prices: BoardPayload['prices'], modelId: string) {
-  for (const m of prices?.models ?? []) {
-    try {
-      if (new RegExp(m.match, 'i').test(modelId)) return m;
-    } catch {
-      /* a malformed pattern matches nothing */
-    }
-  }
   return null;
 }

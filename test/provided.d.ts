@@ -10,5 +10,6 @@ declare module 'vitest' {
     };
     shared: { manifest: Record<string, string>; vendored: Record<string, string>; upstream: Record<string, string> | null };
     wranglerToml: string;
+    liveBoard: { items: unknown[]; ready: string[] } | null;
   }
 }

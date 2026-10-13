@@ -29,3 +29,4 @@ interface Env {
 declare namespace Cloudflare {
   interface Env extends globalThis.Env {}
 }
+declare module '*/shared/sessionUsage.mjs';

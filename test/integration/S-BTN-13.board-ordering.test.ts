@@ -76,6 +76,6 @@ describe('S-BTN-13 board ordering', () => {
     // The held history is on the dashboard, with its 24-hour auto-accept time.
     const state = (await (await ownerCall('/v1/ui/state')).json()) as { held: { sha: string; auto_accept_at: number }[]; head: { sha: string } };
     expect(state.head.sha).toBe(sha.C);
-    expect(state.held).toEqual([expect.objectContaining({ sha: sha.D, auto_accept_at: Date.parse('2026-10-14T12:00:00Z') })]);
+    expect(state.held).toEqual([expect.objectContaining({ sha: sha.D, head_sha: sha.C, auto_accept_at: Date.parse('2026-10-14T12:00:00Z') })]);
   });
 });

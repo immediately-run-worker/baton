@@ -261,3 +261,18 @@ CREATE TABLE baton_settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- Not in §4 (R3-1206, review round 1): a rewritten history held for the owner (§7.1
+-- R-BTN-11). One row per held sha, written once: a repeat force post of the same sha keeps
+-- the first `auto_accept_at`, so the sync's 15-minute re-posts cannot push the 24-hour
+-- deadline forward. Only the sha and its counts are kept, never the board (R-BTN-33);
+-- accepting one is R3-1212's, which re-syncs from git. `accepted_at` is set then.
+CREATE TABLE held_snapshots (
+  sha            TEXT PRIMARY KEY,
+  parent_sha     TEXT,
+  head_sha       TEXT,                           -- the head it was held against
+  item_count     INTEGER NOT NULL,
+  received_at    INTEGER NOT NULL,               -- the first force post
+  auto_accept_at INTEGER NOT NULL,               -- received_at + 24 h (§7.1)
+  accepted_at    INTEGER
+);
