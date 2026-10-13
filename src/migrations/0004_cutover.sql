@@ -15,3 +15,8 @@ CREATE TABLE adoptions (
   worker_id    INTEGER NOT NULL REFERENCES workers(id),
   requested_at INTEGER NOT NULL
 );
+
+-- §6.10: attempts are counted from the event log (the newest hold-lift, each claim's end);
+-- these keep that a lookup, not a scan of an ever-growing table.
+CREATE INDEX events_by_item ON events(work_item_id, kind, seq);
+CREATE INDEX events_by_claim ON events(claim_id, kind, seq);

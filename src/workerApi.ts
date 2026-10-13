@@ -4,6 +4,7 @@
 // them, and shadow reports. No claim logic lives here (R3-1212): claims are read, and written only
 // by the shadow report, whose rows the unique indexes guard.
 import { BatonError } from './http';
+import { logEvent } from './db';
 import { capabilitiesOf } from './shared/vocabulary.mjs';
 import {
   checkAck, checkActivity, checkHeartbeat, checkMessage, checkShadowReport, checkSuspension, bad,
@@ -49,8 +50,7 @@ export class WorkerApi {
     return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[]));
   }
   private event(kind: string, actor: string, detail: unknown, workItemId: string | null = null, claimId: number | null = null) {
-    this.exec('INSERT INTO events (at, kind, work_item_id, claim_id, actor, detail_json) VALUES (?, ?, ?, ?, ?, ?)',
-      this.c.now(), kind, workItemId, claimId, actor, JSON.stringify(detail));
+    logEvent(this.c.storage.sql, this.c.now(), kind, actor, detail, workItemId, claimId);
   }
   private setting(key: string): string | null {
     return (this.rows<{ value: string }>('SELECT value FROM baton_settings WHERE key = ?', key)[0]?.value) ?? null;

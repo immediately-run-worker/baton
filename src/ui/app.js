@@ -304,8 +304,26 @@ function renderNeeds() {
   for (const w of n.stale_skills) list.append(el('li', { text: `${w.hostname} · ${w.session_name}: skills version ${w.skills_version}, below the minimum` }));
   for (const h of n.held_items) {
     // §6.10: the owner decides what a hold means — retry (Lift), re-draft, re-tier or park.
-    const attempts = (h.attempts ?? []).map((a) => `#${a.id} ${a.end_reason}`).join(', ');
-    const li = el('li', { text: `${h.work_item_id}: held (${h.hold_reason ?? 'owner'})${attempts ? ` after ${attempts}` : ''}` });
+    const li = el('li', { text: `${h.work_item_id}: held (${h.hold_reason ?? 'owner'})` });
+    // §14: each attempt with its resume record (R-BTN-24), as text.
+    for (const a of h.attempts ?? []) {
+      let r = null;
+      try {
+        r = a.resume_json ? JSON.parse(a.resume_json) : null;
+      } catch {
+        // shown without it
+      }
+      const parts = [`#${a.id} ${a.end_reason} ${fmtTime(a.ended_at)}`];
+      if (r?.branches?.length) parts.push(`branch ${r.branches.join(', ')}`);
+      if (r?.review_rounds?.length) {
+        const last = r.review_rounds.at(-1);
+        parts.push(`review round ${last.seq ?? '?'}${last.blocking != null ? ` (${last.blocking} blocking)` : ''}`);
+      }
+      if (r?.last_activity) parts.push(`last: ${r.last_activity.kind}${r.last_activity.outcome ? ` ${r.last_activity.outcome}` : ''}`);
+      const line = el('div', { text: parts.join(' · '), cls: 'muted' });
+      for (const pr of r?.prs ?? []) line.append(document.createTextNode(' '), githubLink('PR', pr));
+      li.append(line);
+    }
     li.append(button('Lift hold', () => {
       if (confirm(`Lift the hold on ${h.work_item_id}? Its failed-attempt count starts again.`)) act(`/v1/ui/overrides/${h.work_item_id}`, { hold: false });
     }));

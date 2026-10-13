@@ -4,6 +4,7 @@
 // item to its file on GitHub instead.
 import { capabilitiesOf } from './shared/vocabulary.mjs';
 import { BatonError } from './http';
+import { SESSION_NAME } from './validate';
 
 /** One factory-state item, as the sync posts it (`docs/scripts/factory-state.mjs`). Only the
  *  keys named here are read; anything else in the item is ignored. */
@@ -115,12 +116,6 @@ export function checkPayload(body: unknown): BoardPayload {
     list(it.dependsOn, ID, `${it.id}: dependsOn`);
     list(it.blockedBy, ID, `${it.id}: blockedBy`);
     list(it.repos, /^[A-Za-z0-9._-]{1,100}$/, `${it.id}: repos`);
-    if (it.since != null && (typeof it.since !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(it.since) || !Number.isFinite(Date.parse(it.since)))) {
-      throw new BatonError('invalid-params', `${it.id}: since must be a YYYY-MM-DD date`);
-    }
-    if (it.holder != null && (typeof it.holder !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(it.holder))) {
-      throw new BatonError('invalid-params', `${it.id}: holder must be a session id`);
-    }
   }
   for (const id of p.ready) if (!seen.has(id)) throw new BatonError('invalid-params', `ready names ${id}, which is not in state.items`);
   if (p.force !== undefined && typeof p.force !== 'boolean') throw new BatonError('invalid-params', 'force must be a boolean');
@@ -240,9 +235,18 @@ export function rowFor(it: StateItem, rankOf: Map<string, number>): WorkItemRow 
     ord: it.order == null ? null : String(it.order),
     rank: rankOf.get(it.id) ?? null,
     requires: [...capabilitiesOf(names)].sort(),
-    since: it.since ?? null,
-    holder: it.holder ?? null,
+    since: calendarDate(it.since),
+    holder: typeof it.holder === 'string' && SESSION_NAME.test(it.holder) ? it.holder : null,
   };
+}
+
+/** `since` comes from a Status note's date, which git does not check: a value that is not a
+ *  real calendar day (`2026-13-01`, `2026-02-31`) is unknown for that item, and never refuses the
+ *  whole board. The legacy import then counts from the cutover itself. */
+export function calendarDate(v: unknown): string | null {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+  const t = Date.parse(`${v}T00:00:00Z`);
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === v ? v : null;
 }
 
 /** The row's hash: what decides whether an accepted snapshot rewrites it (§7.1). */

@@ -176,13 +176,15 @@ export class Baton extends DurableObject<Env> {
         const body = await readJson(req);
         return json(tx(() => this.cutover.cutover(owner, body)));
       }
-      const adoption = /^\/v1\/ui\/adoptions\/(R3-[A-Za-z0-9.-]{1,32})\/confirm$/.exec(p);
+      const adoption = /^\/v1\/ui\/adoptions\/([^/]+)\/confirm$/.exec(p);
       if (adoption) {
+        if (!ITEM_ID.test(adoption[1])) throw new BatonError('invalid-params', 'item: must be a work item id');
         const body = await readJson(req);
         return json(tx(() => this.cutover.confirmAdoption(owner, adoption[1], body)));
       }
-      const override = /^\/v1\/ui\/overrides\/(R3-[A-Za-z0-9.-]{1,32})$/.exec(p);
+      const override = /^\/v1\/ui\/overrides\/([^/]+)$/.exec(p);
       if (override) {
+        if (!ITEM_ID.test(override[1])) throw new BatonError('invalid-params', 'item: must be a work item id');
         const body = await readJson(req);
         return json(tx(() => this.claims.setOverride(owner, override[1], body)));
       }

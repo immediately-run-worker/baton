@@ -1,9 +1,10 @@
-// claims.ts — the fenced lease (BATON_SPEC §6.1–6.7, §7.2 rules 1–9, §11 claim, end, holder and
-// reap rows; R3-1212): claiming by the matching rules, ending in §6.5's vocabulary, the alarm's
+// claims.ts — the fenced lease (BATON_SPEC §6.1–6.7, §7.2 rules 1–10, §11 claim, end, holder and
+// reap rows; R3-1212), with attempts, retries, holds and resume records (§6.10–6.11; R3-1217): claiming by the matching rules, ending in §6.5's vocabulary, the alarm's
 // reaps, the fence before re-issue (R-BTN-19), confirmation by ancestry, and git winning over a
 // stale claim (R-BTN-35). The lock is the two partial unique indexes: a claim inserts and lets
 // SQLite refuse a second holder, never check-then-insert without them (R-BTN-4).
 import { BatonError } from './http';
+import { isUniqueViolation, logEvent, randomHex } from './db';
 import { familyOf, isEligible, RULE_CODES, suspended } from './shared/baton.mjs';
 import { fitsTier, TIERS } from './shared/vocabulary.mjs';
 import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord, reviewCapacityRun, REVIEW_CAPACITY_LOOPS, type ResumeActivity } from './attempts';
@@ -50,7 +51,6 @@ interface ItemFacts {
   rank: number | null;
 }
 
-const randomNonce = () => [...crypto.getRandomValues(new Uint8Array(3))].map((b) => b.toString(16).padStart(2, '0')).join('');
 
 export class Claims {
   constructor(private readonly c: Ctx) {}
@@ -62,8 +62,7 @@ export class Claims {
     return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[]));
   }
   private event(kind: string, actor: string, detail: unknown, workItemId: string | null = null, claimId: number | null = null) {
-    this.exec('INSERT INTO events (at, kind, work_item_id, claim_id, actor, detail_json) VALUES (?, ?, ?, ?, ?, ?)',
-      this.c.now(), kind, workItemId, claimId, actor, JSON.stringify(detail));
+    logEvent(this.c.storage.sql, this.c.now(), kind, actor, detail, workItemId, claimId);
   }
   private setting(key: string): string | null {
     return this.rows<{ value: string }>('SELECT value FROM baton_settings WHERE key = ?', key)[0]?.value ?? null;
@@ -249,10 +248,10 @@ export class Claims {
     const { item } = this.decide(w, b.work_item_id, now);
     try {
       this.exec(`INSERT INTO work_item_claims (work_item_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
-                 VALUES (?, ?, ?, ?, ?, ?, 'active')`, item.id, workerId, b.request_id, randomNonce(), this.head() ?? '', now);
+                 VALUES (?, ?, ?, ?, ?, ?, 'active')`, item.id, workerId, b.request_id, randomHex(3), this.head() ?? '', now);
     } catch (e) {
       // R-BTN-4: the partial unique indexes refuse a second holder of the item or the worker.
-      if (/UNIQUE constraint failed/.test(String(e))) throw new BatonError('not-eligible', `${item.id} is already held`, { rule: 3, rule_code: RULE_CODES[3] });
+      if (isUniqueViolation(e)) throw new BatonError('not-eligible', `${item.id} is already held`, { rule: 3, rule_code: RULE_CODES[3] });
       throw e;
     }
     const id = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
@@ -266,8 +265,7 @@ export class Claims {
   }
 
   /** The claim response (§11, R-BTN-34): the item's path and the snapshot it was decided on —
-   *  never the item's content — and the earlier attempts, newest first (§6.11; their resume
-   *  records are R3-1217's). */
+   *  never the item's content — and the earlier attempts, newest first, each with its resume record (§6.11, R-BTN-24). */
   private claimResponse(id: number) {
     const c = this.rows<{ id: number; work_item_id: string; nonce: string; snapshot_sha: string }>('SELECT id, work_item_id, nonce, snapshot_sha FROM work_item_claims WHERE id = ?', id)[0];
     const path = this.rows<{ path: string }>('SELECT path FROM work_items WHERE id = ?', c.work_item_id)[0]?.path ?? `content/roadmap/${c.work_item_id}.mdx`;
@@ -312,6 +310,8 @@ export class Claims {
       status, now, reason, opts.ended_at_sha ?? null, opts.fence ? 1 : 0, opts.fence?.incarnation ?? null, claimId);
     this.exec(`UPDATE activities SET ended_at = ?, outcome = 'abandoned' WHERE claim_id = ? AND ended_at IS NULL`, now, claimId);
     this.event(status, actor, { end_reason: reason, ...(opts.ended_at_sha ? { ended_at_sha: opts.ended_at_sha } : {}), ...(opts.fence ? { fence_pending: true } : {}) }, item, claimId);
+    // §13 step 3: a legacy claim that ends takes its adoption request with it.
+    this.exec('DELETE FROM adoptions WHERE claim_id = ?', claimId);
     if (status !== 'completed') {
       this.writeResume(claimId, reason, now);
       this.applyRetryPolicy(claimId, item, reason);
