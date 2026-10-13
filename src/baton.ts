@@ -11,6 +11,7 @@ import { familyOf } from './shared/baton.mjs';
 import { fitsTier, TIERS } from './shared/vocabulary.mjs';
 import { WorkerApi } from './workerApi';
 import { Claims } from './claims';
+import { Cutover } from './cutover';
 import { checkConfirmations, ITEM_ID } from './validate';
 
 const HELD_AUTO_ACCEPT_MS = 24 * 3_600_000; // §7.1: a held history is accepted after 24 h (R3-1212)
@@ -23,10 +24,12 @@ export class Baton extends DurableObject<Env> {
 
   readonly workers: WorkerApi;
   readonly claims: Claims;
+  readonly cutover: Cutover;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.claims = new Claims({ storage: ctx.storage, now: () => this.now() });
+    this.cutover = new Cutover({ storage: ctx.storage, now: () => this.now() });
     this.workers = new WorkerApi({ storage: ctx.storage, env, now: () => this.now(), fenced: (w, inc, id) => this.claims.fenced(w, inc, id) });
     // The object refuses to serve until every migration is applied (§3), and keeps one alarm.
     ctx.blockConcurrencyWhile(async () => {
@@ -122,6 +125,10 @@ export class Baton extends DurableObject<Env> {
         return json(tx(() => this.claims.claim(workerId, body)));
       }
       if (m === 'GET' && p === '/v1/worker/next') return json(this.claims.next(workerId));
+      if (m === 'POST' && p === '/v1/worker/adopt') {
+        const body = await readJson(req);
+        return json(tx(() => this.cutover.adopt(workerId, body)));
+      }
       const end = /^\/v1\/worker\/claims\/(\d+)\/end$/.exec(p);
       if (m === 'POST' && end) {
         const body = await readJson(req);
@@ -164,6 +171,22 @@ export class Baton extends DurableObject<Env> {
       if (resolve) {
         const body = await readJson(req);
         return json(tx(() => this.claims.resolve(owner, Number(resolve[1]), body)));
+      }
+      if (p === '/v1/ui/cutover') {
+        const body = await readJson(req);
+        return json(tx(() => this.cutover.cutover(owner, body)));
+      }
+      const adoption = /^\/v1\/ui\/adoptions\/([^/]+)\/confirm$/.exec(p);
+      if (adoption) {
+        if (!ITEM_ID.test(adoption[1])) throw new BatonError('invalid-params', 'item: must be a work item id');
+        const body = await readJson(req);
+        return json(tx(() => this.cutover.confirmAdoption(owner, adoption[1], body)));
+      }
+      const override = /^\/v1\/ui\/overrides\/([^/]+)$/.exec(p);
+      if (override) {
+        if (!ITEM_ID.test(override[1])) throw new BatonError('invalid-params', 'item: must be a work item id');
+        const body = await readJson(req);
+        return json(tx(() => this.claims.setOverride(owner, override[1], body)));
       }
       if (p === '/v1/ui/board/accept') {
         const body = await readJson(req);
@@ -235,15 +258,16 @@ export class Baton extends DurableObject<Env> {
         if (before === hash) continue;
         this.ctx.storage.sql.exec(
           `INSERT INTO work_items (id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only,
-             depends_on, blocked_by, repos, ord, rank, snapshot_sha, row_hash)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             depends_on, blocked_by, repos, ord, rank, snapshot_sha, row_hash, since, holder)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (id) DO UPDATE SET path = excluded.path, title = excluded.title, project = excluded.project,
              status = excluded.status, node = excluded.node, queue = excluded.queue, tags = excluded.tags,
              tier = excluded.tier, requires_clause = excluded.requires_clause, operator_only = excluded.operator_only,
              depends_on = excluded.depends_on, blocked_by = excluded.blocked_by, repos = excluded.repos,
-             ord = excluded.ord, rank = excluded.rank, snapshot_sha = excluded.snapshot_sha, row_hash = excluded.row_hash`,
+             ord = excluded.ord, rank = excluded.rank, snapshot_sha = excluded.snapshot_sha, row_hash = excluded.row_hash,
+             since = excluded.since, holder = excluded.holder`,
           row.id, row.path, row.title, row.project, row.status, row.node, row.queue, row.tags, row.tier,
-          row.requires_clause, row.operator_only, row.depends_on, row.blocked_by, row.repos, row.ord, row.rank, p.sha, hash);
+          row.requires_clause, row.operator_only, row.depends_on, row.blocked_by, row.repos, row.ord, row.rank, p.sha, hash, row.since, row.holder);
         this.ctx.storage.sql.exec('DELETE FROM work_item_requires WHERE work_item_id = ?', row.id);
         for (const name of row.requires) this.ctx.storage.sql.exec('INSERT INTO work_item_requires (work_item_id, name) VALUES (?, ?)', row.id, name);
         changed.upserted++;
@@ -363,7 +387,9 @@ export class Baton extends DurableObject<Env> {
                                   WHERE lifted_at IS NULL AND (ends_at IS NULL OR ends_at > ?) ORDER BY starts_at`, now);
     return {
       server_time: now, head: snap, ready, ready_by_tier: byTier, providers, held, workers: this.workers.workersView(now), suspensions,
-      running: this.claims.running(now), timeline: this.claims.timeline(now), needs_you: this.claims.needsYou(now),
+      running: this.claims.running(now), timeline: this.claims.timeline(now),
+      needs_you: { ...this.claims.needsYou(now), adoptions: this.cutover.adoptions() },
+      mode: this.workers.mode(),
     };
   }
 }

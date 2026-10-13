@@ -20,6 +20,22 @@ function el(tag, { text, cls, attrs } = {}, ...children) {
 const fmtTime = (ms) => (ms == null ? '—' : new Date(ms).toISOString().replace('T', ' ').slice(0, 16) + ' UTC');
 const short = (sha) => (sha ? sha.slice(0, 8) : '—');
 
+function renderMode() {
+  const box = document.getElementById('mode');
+  box.replaceChildren();
+  const m = state.mode;
+  if (m?.mode === 'cut-over') {
+    box.append(el('span', { text: `Cut over ${fmtTime(m.cutover_at)}: Baton holds the claims.`, cls: 'muted' }));
+    return;
+  }
+  box.append(el('span', { text: 'Shadow: git holds the claims; Baton records them. ', cls: 'muted' }));
+  box.append(button('Cut over', () => {
+    // R-BTN-28: one-way. §13 step 3's drain comes first.
+    if (confirm('Cut over to Baton? This is one-way: nothing clears it.\nDrain the fleet first; in-progress items are imported as legacy claims.') &&
+      confirm('Confirm again: cut over now?')) act('/v1/ui/cutover', { confirm: true });
+  }));
+}
+
 function renderHead() {
   const h = state.head;
   document.getElementById('head').textContent = h
@@ -286,7 +302,42 @@ function renderNeeds() {
   }
   for (const c of n.fence_pending) list.append(el('li', { text: `${c.work_item_id}: reaped ${fmtTime(c.ended_at)}, waiting for worker #${c.worker_id} to confirm its fence` }));
   for (const w of n.stale_skills) list.append(el('li', { text: `${w.hostname} · ${w.session_name}: skills version ${w.skills_version}, below the minimum` }));
-  for (const h of n.held_items) list.append(el('li', { text: `${h.work_item_id}: held (${h.hold_reason ?? 'owner'})` }));
+  for (const h of n.held_items) {
+    // §6.10: the owner decides what a hold means — retry (Lift), re-draft, re-tier or park.
+    const li = el('li', { text: `${h.work_item_id}: held (${h.hold_reason ?? 'owner'})` });
+    // §14: each attempt with its resume record (R-BTN-24), as text.
+    for (const a of h.attempts ?? []) {
+      let r = null;
+      try {
+        r = a.resume_json ? JSON.parse(a.resume_json) : null;
+      } catch {
+        // shown without it
+      }
+      const parts = [`#${a.id} ${a.end_reason} ${fmtTime(a.ended_at)}`];
+      if (r?.branches?.length) parts.push(`branch ${r.branches.join(', ')}`);
+      if (r?.review_rounds?.length) {
+        const last = r.review_rounds.at(-1);
+        parts.push(`review round ${last.seq ?? '?'}${last.blocking != null ? ` (${last.blocking} blocking)` : ''}`);
+      }
+      if (r?.last_activity) parts.push(`last: ${r.last_activity.kind}${r.last_activity.outcome ? ` ${r.last_activity.outcome}` : ''}`);
+      const line = el('div', { text: parts.join(' · '), cls: 'muted' });
+      for (const pr of r?.prs ?? []) line.append(document.createTextNode(' '), githubLink('PR', pr));
+      li.append(line);
+    }
+    li.append(button('Lift hold', () => {
+      if (confirm(`Lift the hold on ${h.work_item_id}? Its failed-attempt count starts again.`)) act(`/v1/ui/overrides/${h.work_item_id}`, { hold: false });
+    }));
+    list.append(li);
+  }
+  for (const a of n.adoptions ?? []) {
+    const li = el('li', { text: `${a.work_item_id}: ${a.hostname} · ${a.session_name} asks to adopt the legacy claim (note's session: ${a.legacy_session})` });
+    li.append(button('Confirm adoption', () => {
+      if (confirm(`Move ${a.work_item_id} to ${a.hostname} · ${a.session_name}? Claim notes are public: confirm only a session you know worked it.`)) {
+        act(`/v1/ui/adoptions/${a.work_item_id}/confirm`, { confirm: true });
+      }
+    }));
+    list.append(li);
+  }
   for (const h of state.held) {
     const li = el('li', { text: `Rewritten history docs@${short(h.sha)} held; accepted automatically ${fmtTime(h.auto_accept_at)}` });
     li.append(button('Accept now', () => {
@@ -301,6 +352,7 @@ function render() {
   renderHead();
   renderReady();
   renderProviders();
+  renderMode();
   renderNeeds();
   renderRunning();
   renderTimeline();

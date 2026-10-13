@@ -69,7 +69,7 @@ describe('the work_items cache', () => {
     }
     const cols = (await rows<{ name: string }>(`SELECT name FROM pragma_table_info('work_items')`)).map((c) => c.name);
     expect(cols).toEqual(['id', 'path', 'title', 'project', 'status', 'node', 'queue', 'tags', 'tier', 'requires_clause', 'operator_only',
-      'depends_on', 'blocked_by', 'repos', 'ord', 'rank', 'snapshot_sha', 'row_hash']);
+      'depends_on', 'blocked_by', 'repos', 'ord', 'rank', 'snapshot_sha', 'row_hash', 'since', 'holder']);
   });
 });
 

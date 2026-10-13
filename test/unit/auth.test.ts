@@ -66,8 +66,9 @@ describe('the owner principal (R-BTN-16)', () => {
     expect(await code(await post({ 'Content-Type': 'application/json' }))).toBe('forbidden');
     expect(await code(await post({ 'Content-Type': 'application/json', Origin: 'https://evil.immediately.run' }))).toBe('forbidden');
     expect(await code(await post({ 'Content-Type': 'text/plain', Origin: ORIGIN }))).toBe('forbidden');
-    // Both present: the request passes the middleware and reaches routing (no ui write exists yet).
-    expect(await code(await post({ 'Content-Type': 'application/json', Origin: ORIGIN }))).toBe('not-found');
+    // Both present: the request passes the middleware and reaches the route, which refuses the
+    // empty body on its own terms.
+    expect(await code(await post({ 'Content-Type': 'application/json', Origin: ORIGIN }))).toBe('invalid-params');
   });
 });
 

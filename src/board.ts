@@ -4,6 +4,7 @@
 // item to its file on GitHub instead.
 import { capabilitiesOf } from './shared/vocabulary.mjs';
 import { BatonError } from './http';
+import { SESSION_NAME } from './validate';
 
 /** One factory-state item, as the sync posts it (`docs/scripts/factory-state.mjs`). Only the
  *  keys named here are read; anything else in the item is ignored. */
@@ -23,6 +24,12 @@ export interface StateItem {
   /** Not in factory-state's items today: the sync adds it from each item's `repos:`
    *  frontmatter (R3-1207). Absent, the row stores `[]`. */
   repos?: string[];
+  /** factory-state's date the item entered its status (`YYYY-MM-DD`): for an in-progress item,
+   *  its claim note's date, which the legacy import's `reap_after` counts from (§13). */
+  since?: string;
+  /** The claim note's holder session (`holderOf`), when the sync posts it: the legacy worker's
+   *  session name, which adoption matches (§13 step 3). */
+  holder?: string;
 }
 
 export interface BoardPayload {
@@ -67,6 +74,8 @@ export interface WorkItemRow {
   ord: string | null;
   rank: number | null;
   requires: string[];
+  since: string | null;
+  holder: string | null;
 }
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -226,7 +235,18 @@ export function rowFor(it: StateItem, rankOf: Map<string, number>): WorkItemRow 
     ord: it.order == null ? null : String(it.order),
     rank: rankOf.get(it.id) ?? null,
     requires: [...capabilitiesOf(names)].sort(),
+    since: calendarDate(it.since),
+    holder: typeof it.holder === 'string' && SESSION_NAME.test(it.holder) ? it.holder : null,
   };
+}
+
+/** `since` comes from a Status note's date, which git does not check: a value that is not a
+ *  real calendar day (`2026-13-01`, `2026-02-31`) is unknown for that item, and never refuses the
+ *  whole board. The legacy import then counts from the cutover itself. */
+export function calendarDate(v: unknown): string | null {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return null;
+  const t = Date.parse(`${v}T00:00:00Z`);
+  return Number.isFinite(t) && new Date(t).toISOString().slice(0, 10) === v ? v : null;
 }
 
 /** The row's hash: what decides whether an accepted snapshot rewrites it (§7.1). */

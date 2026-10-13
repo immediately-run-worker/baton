@@ -226,7 +226,7 @@ describe('the hold override and legacy claims', () => {
     await alarmAt(T0 + 7 * 24 * H - 1);
     expect(await rows(`SELECT status FROM work_item_claims WHERE worker_id = ?`, lw)).toEqual([{ status: 'active' }]);
     await alarmAt(T0 + 7 * 24 * H);
-    expect(await rows(`SELECT status, end_reason FROM work_item_claims WHERE worker_id = ?`, lw)).toEqual([{ status: 'reaped', end_reason: 'reaped:silent' }]);
+    expect(await rows(`SELECT status, end_reason FROM work_item_claims WHERE worker_id = ?`, lw)).toEqual([{ status: 'reaped', end_reason: 'reaped:legacy' }]);
   });
 });
 

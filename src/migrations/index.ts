@@ -3,9 +3,11 @@
 import init from './0001_init.sql';
 import workers from './0002_workers.sql';
 import claims from './0003_claims.sql';
+import cutover from './0004_cutover.sql';
 
 export const MIGRATIONS: { id: number; sql: string }[] = [
   { id: 1, sql: init },
   { id: 2, sql: workers },
   { id: 3, sql: claims },
+  { id: 4, sql: cutover },
 ];
