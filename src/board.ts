@@ -23,6 +23,12 @@ export interface StateItem {
   /** Not in factory-state's items today: the sync adds it from each item's `repos:`
    *  frontmatter (R3-1207). Absent, the row stores `[]`. */
   repos?: string[];
+  /** factory-state's date the item entered its status (`YYYY-MM-DD`): for an in-progress item,
+   *  its claim note's date, which the legacy import's `reap_after` counts from (§13). */
+  since?: string;
+  /** The claim note's holder session (`holderOf`), when the sync posts it: the legacy worker's
+   *  session name, which adoption matches (§13 step 3). */
+  holder?: string;
 }
 
 export interface BoardPayload {
@@ -67,6 +73,8 @@ export interface WorkItemRow {
   ord: string | null;
   rank: number | null;
   requires: string[];
+  since: string | null;
+  holder: string | null;
 }
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -107,6 +115,12 @@ export function checkPayload(body: unknown): BoardPayload {
     list(it.dependsOn, ID, `${it.id}: dependsOn`);
     list(it.blockedBy, ID, `${it.id}: blockedBy`);
     list(it.repos, /^[A-Za-z0-9._-]{1,100}$/, `${it.id}: repos`);
+    if (it.since != null && (typeof it.since !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(it.since) || !Number.isFinite(Date.parse(it.since)))) {
+      throw new BatonError('invalid-params', `${it.id}: since must be a YYYY-MM-DD date`);
+    }
+    if (it.holder != null && (typeof it.holder !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(it.holder))) {
+      throw new BatonError('invalid-params', `${it.id}: holder must be a session id`);
+    }
   }
   for (const id of p.ready) if (!seen.has(id)) throw new BatonError('invalid-params', `ready names ${id}, which is not in state.items`);
   if (p.force !== undefined && typeof p.force !== 'boolean') throw new BatonError('invalid-params', 'force must be a boolean');
@@ -226,6 +240,8 @@ export function rowFor(it: StateItem, rankOf: Map<string, number>): WorkItemRow 
     ord: it.order == null ? null : String(it.order),
     rank: rankOf.get(it.id) ?? null,
     requires: [...capabilitiesOf(names)].sort(),
+    since: it.since ?? null,
+    holder: it.holder ?? null,
   };
 }
 

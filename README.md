@@ -16,6 +16,8 @@ an item says `infra/baton/<path>`, it means `<path>` in this repository (BATON_S
 | `src/baton.ts` | The `Baton` Durable Object: migrations, board sync (§7.1), routing, the alarm, the dashboard state |
 | `src/workerApi.ts` | The worker API (§11): heartbeat and registration, activities, messages, suspensions, mode and shadow reports, the Workers view |
 | `src/claims.ts` | The lease (§6, R3-1212): claim and end, matching (§7.2 rules 1–9 via `isEligible`), the alarm's reaps, the fence before re-issue, confirmations, git winning over a stale claim, the Running / Timeline / Needs you data |
+| `src/attempts.ts` | Pure: the retry policy (§6.10 R-BTN-23) — which ends count, backoff, holds, the review-capacity run, the resume record (R-BTN-24) |
+| `src/cutover.ts` | The one-way cutover (R-BTN-28): `POST /v1/ui/cutover`, the legacy import, adoption on the owner's confirmation |
 | `src/validate.ts` | Pure: every worker- and owner-supplied field checked before any write (§10.4) |
 | `src/board.ts` | Pure: snapshot validation, the `work_items` row an item becomes, peaks, prices |
 | `src/auth.ts` | JWT verification (R-BTN-15, R-BTN-16); worker tokens against `TOKEN_HASHES` (R-BTN-13) |

@@ -392,3 +392,12 @@ export function checkResolve(body: unknown): { action: 'confirm' | 'release' } {
   }
   return { action: (body as Record<string, unknown>).action as 'confirm' | 'release' };
 }
+
+/** §8, §11: `{expedite?, hold?}` — booleans, at least one. */
+export function checkOverride(body: unknown): { expedite?: boolean; hold?: boolean } {
+  if (!isObj(body)) bad('body', 'must be a JSON object');
+  const b = body as Record<string, unknown>;
+  for (const k of ['expedite', 'hold']) if (b[k] !== undefined && typeof b[k] !== 'boolean') bad(k, 'must be a boolean');
+  if (b.expedite === undefined && b.hold === undefined) bad('body', 'names expedite or hold');
+  return { expedite: b.expedite as boolean | undefined, hold: b.hold as boolean | undefined };
+}

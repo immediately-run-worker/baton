@@ -31,12 +31,19 @@ describe('S-BTN-2 silent worker reaped (server half)', () => {
     await setClock(T0 + 120_000 + 900_000);
     await tick();
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'reaped', end_reason: 'reaped:silent', fence_pending: 0 });
-    expect(await rows(`SELECT kind, actor FROM events WHERE claim_id = ? ORDER BY seq`, c.claim_id)).toEqual([{ kind: 'claimed', actor: `worker:${dead.id}` }, { kind: 'reaped', actor: 'alarm' }]);
+    expect(await rows(`SELECT kind, actor FROM events WHERE claim_id = ? ORDER BY seq`, c.claim_id)).toEqual([
+      { kind: 'claimed', actor: `worker:${dead.id}` }, { kind: 'reaped', actor: 'alarm' }, { kind: 'override', actor: 'baton' }]);
 
+    // A reap for silence is a failed attempt (R-BTN-23): the item is re-issued after its
+    // 1-hour backoff, with the dead claim's resume record.
+    await beat('vm-b', live.secret);
+    expect((await claimItem('vm-b', live.secret, { work_item_id: 'R3-9001' })).json).toMatchObject({ code: 'backing-off', rule: 10 });
+    await setClock(T0 + 1_020_000 + 3_600_000);
     await beat('vm-b', live.secret);
     const reissued = await claimItem('vm-b', live.secret, { work_item_id: 'R3-9001' });
     expect(reissued.status).toBe(200);
-    expect(reissued.json.previous_attempts).toEqual([{ claim_id: c.claim_id, status: 'reaped', end_reason: 'reaped:silent', ended_at: T0 + 1_020_000, resume: null }]);
+    expect(reissued.json.previous_attempts).toEqual([{ claim_id: c.claim_id, status: 'reaped', end_reason: 'reaped:silent', ended_at: T0 + 1_020_000,
+      resume: expect.objectContaining({ end_reason: 'reaped:silent', ended_at: T0 + 1_020_000, last_activity: null }) }]);
 
     // The dead session, resumed: its heartbeat is refused, and its pre-push hook's holder query
     // (token alone) finds another live holder.

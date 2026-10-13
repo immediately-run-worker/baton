@@ -92,7 +92,8 @@ export class WorkerApi {
     }
     // A credential dropped from the policy is revoked too.
     const listed = Object.keys(policy);
-    this.exec(`UPDATE credentials SET revoked_at = ? WHERE revoked_at IS NULL AND id NOT IN (SELECT value FROM json_each(?))`, now, JSON.stringify(listed));
+    // (`legacy` is the cutover import's own credential, with no token: never revoked here.)
+    this.exec(`UPDATE credentials SET revoked_at = ? WHERE revoked_at IS NULL AND id != 'legacy' AND id NOT IN (SELECT value FROM json_each(?))`, now, JSON.stringify(listed));
     this.exec(`INSERT INTO baton_settings (key, value) VALUES ('credentials_marker', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, marker);
   }
 

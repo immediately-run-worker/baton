@@ -6,7 +6,8 @@
 import { BatonError } from './http';
 import { familyOf, isEligible, RULE_CODES, suspended } from './shared/baton.mjs';
 import { fitsTier, TIERS } from './shared/vocabulary.mjs';
-import { checkAccept, checkClaim, checkConfirm, checkEnd, checkResolve } from './validate';
+import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord, reviewCapacityRun, REVIEW_CAPACITY_LOOPS, type ResumeActivity } from './attempts';
+import { checkAccept, checkClaim, checkConfirm, checkEnd, checkOverride, checkResolve } from './validate';
 
 type Row = Record<string, SqlStorageValue>;
 const EXPEDITE_BOUND = 2; // §7.2 rule 2
@@ -311,6 +312,104 @@ export class Claims {
       status, now, reason, opts.ended_at_sha ?? null, opts.fence ? 1 : 0, opts.fence?.incarnation ?? null, claimId);
     this.exec(`UPDATE activities SET ended_at = ?, outcome = 'abandoned' WHERE claim_id = ? AND ended_at IS NULL`, now, claimId);
     this.event(status, actor, { end_reason: reason, ...(opts.ended_at_sha ? { ended_at_sha: opts.ended_at_sha } : {}), ...(opts.fence ? { fence_pending: true } : {}) }, item, claimId);
+    if (status !== 'completed') {
+      this.writeResume(claimId, reason, now);
+      this.applyRetryPolicy(claimId, item, reason);
+    }
+  }
+
+  // ── attempts, retries and holds (§6.10, §8; R3-1217) ────────────────────────────────────
+
+  /** The event-log position of the newest hold-lift on the item: the count of failed attempts
+   *  starts after it (§6.10). Ordered by the log, never by time — a lift and an end can share a
+   *  millisecond. */
+  private lastLift(item: string): number {
+    return this.rows<{ seq: number | null }>(
+      `SELECT max(seq) AS seq FROM events WHERE kind = 'override' AND work_item_id = ? AND json_extract(detail_json, '$.hold') = 0`, item)[0]?.seq ?? 0;
+  }
+
+  /** The claims of an item whose end was logged after event `since`, newest end first. */
+  private endedSince(item: string, since: number) {
+    return this.rows<{ id: number; worker_id: number; end_reason: string; failed_attempt: number }>(
+      `SELECT id, worker_id, end_reason, failed_attempt FROM (
+         SELECT c.id, c.worker_id, c.end_reason, c.failed_attempt,
+                (SELECT max(e.seq) FROM events e WHERE e.claim_id = c.id AND e.kind IN ('completed', 'released', 'reaped')) AS end_seq
+         FROM work_item_claims c WHERE c.work_item_id = ? AND c.status != 'active')
+       WHERE end_seq > ? ORDER BY end_seq DESC`, item, since);
+  }
+
+  /** Counting is a query, not a counter: failed claims ended after the newest hold-lift. */
+  failedAttempts(item: string): number[] {
+    return this.endedSince(item, this.lastLift(item)).filter((c) => c.failed_attempt === 1).map((c) => c.id).sort((a, b) => a - b);
+  }
+
+  /** R-BTN-24: the record the next claimant reads, from this claim's activities. */
+  private writeResume(claimId: number, reason: string, now: number) {
+    const acts = this.rows<ResumeActivity>('SELECT kind, seq, label, started_at, ended_at, outcome, detail_json FROM activities WHERE claim_id = ? ORDER BY started_at', claimId);
+    const transcripts = this.rows<{ repo: string; path: string; role: string }>('SELECT repo, path, role FROM transcripts WHERE claim_id = ? ORDER BY id', claimId);
+    this.exec('UPDATE work_item_claims SET resume_json = ? WHERE id = ?', JSON.stringify(resumeRecord(reason, now, acts, transcripts)), claimId);
+  }
+
+  /** §6.10 and §7.4, after a claim ends other than completed: mark the failed attempt, then
+   *  back off, or hold — non-retryable at once, attempts-exhausted at the third, review-capacity
+   *  at the third consecutive awaiting-review-capacity release. */
+  private applyRetryPolicy(claimId: number, item: string, reason: string) {
+    const ended = this.endedSince(item, this.lastLift(item));
+    const c = this.rows<{ worker_id: number }>('SELECT worker_id FROM work_item_claims WHERE id = ?', claimId)[0];
+    const leaseLostBefore = reason === 'released:lease-lost' &&
+      ended.some((e) => e.id !== claimId && e.worker_id === c.worker_id && e.failed_attempt === 1 && e.end_reason === 'released:lease-lost');
+    if (countsAsFailed(reason, leaseLostBefore)) {
+      this.exec('UPDATE work_item_claims SET failed_attempt = 1 WHERE id = ?', claimId);
+      const failed = this.failedAttempts(item);
+      const cls = nonRetryableClass(reason);
+      if (cls) return this.hold(item, `non-retryable:${cls}`, 'baton', { claim_id: claimId, attempts: failed });
+      const next = afterFailure(failed.length);
+      if (next && 'hold' in next) {
+        this.event('attempts-exhausted', 'baton', { claim_id: claimId, attempts: failed }, item, claimId);
+        return this.hold(item, next.hold, 'baton', { claim_id: claimId, attempts: failed });
+      }
+      if (next) {
+        const until = this.c.now() + next.retryAfterMs;
+        this.upsertOverride(item, 'baton', { retry_after: until });
+        this.event('override', 'baton', { retry_after: until, claim_id: claimId, attempts: failed }, item, claimId);
+      }
+      return;
+    }
+    if (reason === 'released:awaiting-review-capacity') {
+      if (reviewCapacityRun(ended.map((e) => e.end_reason)) >= REVIEW_CAPACITY_LOOPS) this.hold(item, 'review-capacity', 'baton', { claim_id: claimId });
+    }
+  }
+
+  private upsertOverride(item: string, by: string, set: { hold?: 0 | 1; hold_reason?: string | null; retry_after?: number | null; expedite?: 0 | 1 }) {
+    const now = this.c.now();
+    this.exec(`INSERT INTO item_overrides (work_item_id, expedite, hold, hold_reason, retry_after, set_by, set_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (work_item_id) DO UPDATE SET set_by = excluded.set_by, set_at = excluded.set_at`,
+      item, set.expedite ?? 0, set.hold ?? 0, set.hold_reason ?? null, set.retry_after ?? null, by, now);
+    for (const [k, v] of Object.entries(set)) this.exec(`UPDATE item_overrides SET ${k} = ? WHERE work_item_id = ?`, v, item);
+  }
+
+  /** §8: every hold, whoever sets it, is an `override` event and a `held` event with its reason. */
+  private hold(item: string, reason: string, actor: string, detail: Record<string, unknown> = {}) {
+    this.upsertOverride(item, actor, { hold: 1, hold_reason: reason });
+    this.event('override', actor, { hold: 1, hold_reason: reason }, item, (detail.claim_id as number) ?? null);
+    this.event('held', actor, { hold_reason: reason, ...detail }, item, (detail.claim_id as number) ?? null);
+  }
+
+  /** `POST /v1/ui/overrides/{item}` (§8, §11): `{expedite?, hold?}`. Lifting a hold clears its
+   *  reason and any backoff, and resets the attempt count (§6.10). */
+  setOverride(owner: string, item: string, body: unknown) {
+    const o = checkOverride(body);
+    const actor = `owner:${owner}`;
+    if (o.expedite !== undefined) {
+      this.upsertOverride(item, actor, { expedite: o.expedite ? 1 : 0 });
+      this.event('override', actor, { expedite: o.expedite ? 1 : 0 }, item);
+    }
+    if (o.hold === true) this.hold(item, 'owner', actor);
+    if (o.hold === false) {
+      this.upsertOverride(item, actor, { hold: 0, hold_reason: null, retry_after: null });
+      this.event('override', actor, { hold: 0 }, item);
+    }
+    return { ok: true };
   }
 
   /** Whether a stale-board release still reads as the worker's own git-first completion: git
@@ -449,12 +548,12 @@ export class Claims {
   alarm() {
     const now = this.c.now();
     // Silent workers: reaped at exactly their clamped timeout (R-BTN-9), never by Date.now().
-    const silent = this.rows<{ id: number; work_item_id: string; worker_id: number }>(
-      `SELECT c.id, c.work_item_id, c.worker_id FROM work_item_claims c JOIN workers w ON w.id = c.worker_id
+    const silent = this.rows<{ id: number; work_item_id: string; worker_id: number; kind: string }>(
+      `SELECT c.id, c.work_item_id, c.worker_id, w.kind FROM work_item_claims c JOIN workers w ON w.id = c.worker_id
        WHERE c.status = 'active' AND ((w.kind != 'legacy' AND ? - w.last_seen_at >= w.lease_timeout_ms)
                                       OR (w.kind = 'legacy' AND c.reap_after IS NOT NULL AND c.reap_after <= ?))`, now, now);
     for (const c of silent) {
-      this.finish(c.id, c.work_item_id, 'reaped', 'reaped:silent', 'alarm', {});
+      this.finish(c.id, c.work_item_id, 'reaped', c.kind === 'legacy' ? 'reaped:legacy' : 'reaped:silent', 'alarm', {});
       this.exec('UPDATE workers SET reaped_at = ? WHERE id = ? AND reaped_at IS NULL', now, c.worker_id);
     }
     // §9: a release delivered 2 h ago and still unacknowledged reaps the claim, fenced: the
@@ -543,7 +642,12 @@ export class Claims {
       fence_pending: this.rows(`SELECT id, work_item_id, worker_id, ended_at FROM work_item_claims WHERE status = 'reaped' AND fence_pending = 1 ORDER BY ended_at`),
       stale_skills: this.rows(`SELECT id, hostname, session_name, skills_version FROM workers
                                WHERE reaped_at IS NULL AND kind != 'legacy' AND skills_version < ? AND ? - last_seen_at < lease_timeout_ms`, minSkills, now),
-      held_items: this.rows(`SELECT work_item_id, hold_reason, retry_after FROM item_overrides WHERE hold = 1 ORDER BY work_item_id`),
+      held_items: this.rows<{ work_item_id: string; hold_reason: string | null; set_at: number }>(
+        `SELECT work_item_id, hold_reason, set_at FROM item_overrides WHERE hold = 1 ORDER BY work_item_id`).map((h) => ({
+        ...h,
+        attempts: this.rows(`SELECT id, end_reason, ended_at, resume_json FROM work_item_claims WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id`,
+          JSON.stringify(this.failedAttempts(h.work_item_id))),
+      })),
     };
   }
 }
