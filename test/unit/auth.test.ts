@@ -2,8 +2,8 @@
 // R-BTN-16; G-BTN-11, G-BTN-12).
 import { describe, it, expect, inject } from 'vitest';
 import { env } from 'cloudflare:test';
-import { generateKeyPair, SignJWT } from 'jose';
-import { verifySync } from '../../src/auth';
+import { errors, generateKeyPair, SignJWT } from 'jose';
+import { verifyFailure, verifySync } from '../../src/auth';
 import { accessToken, call, ORIGIN, ownerCall, syncCall, syncToken } from '../helpers';
 
 const code = async (res: Response) => ((await res.json()) as { code: string }).code;
@@ -110,5 +110,16 @@ describe('a key-set outage is not a credential failure', () => {
     await expect(verifySync(req, prod)).rejects.toMatchObject({ code: 'unavailable' });
     const garbage = new Request(`${ORIGIN}/v1/sync/head`, { headers: { Authorization: 'Bearer not-a-jwt' } });
     await expect(verifySync(garbage, env)).rejects.toMatchObject({ code: 'unauthenticated' });
+  });
+
+  it('classifies what jose throws: a key endpoint answering 503 or non-JSON is unavailable', () => {
+    // jose's remote key set throws a plain JOSEError for a non-200 answer and for a body that
+    // is not JSON (jwks/remote.js), JWKSTimeout for a timeout, and a TypeError for a failed fetch.
+    for (const e of [new errors.JOSEError('Expected 200 OK from the JSON Web Key Set HTTP response'), new errors.JOSEError('Failed to parse the JSON Web Key Set HTTP response as JSON'), new errors.JWKSTimeout(), new errors.JWKSInvalid(), new TypeError('fetch failed')]) {
+      expect(verifyFailure(e, 'OIDC').code).toBe('unavailable');
+    }
+    for (const e of [new errors.JWTExpired('exp', {}), new errors.JWTClaimValidationFailed('aud', {}), new errors.JWSSignatureVerificationFailed(), new errors.JWSInvalid(), new errors.JWTInvalid(), new errors.JWKSNoMatchingKey()]) {
+      expect(verifyFailure(e, 'OIDC').code).toBe('unauthenticated');
+    }
   });
 });

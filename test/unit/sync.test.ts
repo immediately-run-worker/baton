@@ -70,6 +70,9 @@ describe('POST /v1/sync/board', () => {
     ['a model on an unknown schedule', { ...payload(A, null, board.states.A), providers: { accounts: [{ id: 'zai', name: 'Z', billing: 'api', window_limits: null }], peak_schedules: [], models: [{ provider: 'zai', model: 'm', monthly_limit_usd: null, peak_schedule: 'nope' }] } }],
     ['a model on an unknown account', { ...payload(A, null, board.states.A), providers: { accounts: [], peak_schedules: [], models: [{ provider: 'zai', model: 'm', monthly_limit_usd: null }] } }],
     ['a price pattern that does not compile', { ...payload(A, null, board.states.A), prices: { models: [{ match: '(', input: 1 }] } }],
+    ['a repeated peak schedule id', { ...payload(A, null, board.states.A), providers: { accounts: [], peak_schedules: [{ id: 'x', rules: { days: [1], hoursUtc: [[1, 2]] }, factor: 0.5 }, { id: 'x', rules: { days: [1], hoursUtc: [[1, 2]] }, factor: 0.5 }], models: [] } }],
+    ['a repeated (provider, model) pair', { ...payload(A, null, board.states.A), providers: { accounts: [{ id: 'zai', name: 'Z', billing: 'api', window_limits: null }], peak_schedules: [], models: [{ provider: 'zai', model: 'm', monthly_limit_usd: null }, { provider: 'zai', model: 'm', monthly_limit_usd: 1 }] } }],
+    ['a repeated account id', { ...payload(A, null, board.states.A), providers: { accounts: [{ id: 'zai', name: 'Z', billing: 'api', window_limits: null }, { id: 'zai', name: 'Z2', billing: 'api', window_limits: null }], peak_schedules: [], models: [] } }],
     ['a reviewer with no bills', { ...payload(A, null, board.states.A), matrix: { families: {}, agents: { 'review-pr-x': { reviews_on: 'm' } } } }],
   ])('refuses %s with invalid-params, writing nothing', async (_what, bad) => {
     const res = await syncCall('/v1/sync/board', bad);
@@ -78,10 +81,13 @@ describe('POST /v1/sync/board', () => {
     expect(await head()).toBeNull();
   });
 
-  it.skipIf(!inject('liveBoard'))("accepts today's real docs board, as factory-state computes it", async () => {
+  it.skipIf(!inject('liveBoard'))("accepts today's real docs board and data files, as the sync will post them", async () => {
     const live = inject('liveBoard')!;
-    const res = await syncCall('/v1/sync/board', payload('f'.repeat(40), null, live));
+    const res = await syncCall('/v1/sync/board', payload('f'.repeat(40), null, live, inject('liveReference')!));
     expect(res.status).toBe(200);
     expect(await rows('SELECT count(*) AS n FROM work_items')).toEqual([{ n: live.items.length }]);
+    const ref = inject('liveReference') as { providers: { accounts: unknown[] }; matrix: { agents: object } };
+    expect(await rows('SELECT count(*) AS n FROM model_providers')).toEqual([{ n: ref.providers.accounts.length }]);
+    expect(await rows('SELECT count(*) AS n FROM reviewer_agents')).toEqual([{ n: Object.keys(ref.matrix.agents).length }]);
   });
 });

@@ -28,7 +28,7 @@ an item says `infra/baton/<path>`, it means `<path>` in this repository (BATON_S
 - `npm run typecheck` — the Worker and the Node scripts.
 - `npm run vendor` — re-copy `baton.mjs`, `vocabulary.mjs` and `sessionUsage.mjs` from a sibling `../docs`
   checkout (or `DOCS_DIR`) and rewrite `src/shared/manifest.json`. Do this in a PR here after
-  docs changes either file.
+  docs changes any of them.
 - `npm run fixtures` — regenerate `test/fixtures/boards.json` with the real docs
   `factory-state` code.
 

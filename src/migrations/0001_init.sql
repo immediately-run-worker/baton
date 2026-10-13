@@ -255,14 +255,14 @@ CREATE TABLE rate_limit_events (
   resets_at   INTEGER
 );
 
--- Not in §4 (R3-1206): the settings the board sync posts with each snapshot
+-- Added to §4 by baton#1's review (R3-1206): the settings the board sync posts with each snapshot
 -- (`min_skills_version`, R-BTN-22) and, later, the one-way `cutover_at` (R-BTN-28).
 CREATE TABLE baton_settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 
--- Not in §4 (R3-1206, review round 1): a rewritten history held for the owner (§7.1
+-- Added to §4 by baton#1's review (R3-1206): a rewritten history held for the owner (§7.1
 -- R-BTN-11). One row per held sha, written once: a repeat force post of the same sha keeps
 -- the first `auto_accept_at`, so the sync's 15-minute re-posts cannot push the 24-hour
 -- deadline forward. Only the sha and its counts are kept, never the board (R-BTN-33);

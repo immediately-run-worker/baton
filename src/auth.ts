@@ -23,14 +23,21 @@ function testKeys(env: Env, jwks: string | undefined): JWTVerifyGetKey | null {
   return createLocalJWKSet(JSON.parse(jwks));
 }
 
-/** A failed verification's code: the token's fault is `unauthenticated`; a key set that could
- *  not be fetched or read (an outage of GitHub's or Access's key endpoint) is `unavailable`, so
- *  the caller retries rather than reading an outage as a bad credential. */
-function verifyFailure(e: unknown, what: string): BatonError {
-  if (e instanceof errors.JWKSTimeout || e instanceof errors.JWKSInvalid || !(e instanceof errors.JOSEError)) {
-    return new BatonError('unavailable', `the ${what} key set could not be fetched; retry`);
-  }
-  return new BatonError('unauthenticated', `the ${what} token did not verify`);
+/** The JOSE failures that are the token's fault: a malformed, expired, mis-claimed or
+ *  mis-signed token, or one whose key the set does not hold. */
+const TOKEN_FAULTS = [
+  errors.JWTExpired, errors.JWTClaimValidationFailed, errors.JWTInvalid, errors.JWSInvalid,
+  errors.JWSSignatureVerificationFailed, errors.JWKSNoMatchingKey, errors.JWKSMultipleMatchingKeys,
+  errors.JOSEAlgNotAllowed, errors.JOSENotSupported,
+];
+
+/** A failed verification's code: the token's fault is `unauthenticated`; anything else — a key
+ *  set that could not be fetched, answered non-200 or non-JSON, timed out or was malformed (an
+ *  outage of GitHub's or Access's key endpoint) — is `unavailable`, so the caller retries
+ *  rather than reading an outage as a bad credential. */
+export function verifyFailure(e: unknown, what: string): BatonError {
+  if (TOKEN_FAULTS.some((cls) => e instanceof cls)) return new BatonError('unauthenticated', `the ${what} token did not verify`);
+  return new BatonError('unavailable', `the ${what} key set could not be fetched; retry`);
 }
 
 const bearer = (req: Request) => {

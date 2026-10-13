@@ -45,4 +45,10 @@ export default async function setup(project: TestProject) {
     liveBoard = { items: state.items, ready: rankReady(state).map((r: { id: string }) => r.id) };
   }
   project.provide('liveBoard', liveBoard);
+  // …and the real reference data files the sync posts with it (§7.3, §7.4).
+  const data = (f: string) => JSON.parse(readFileSync(join(docs, 'scripts/data', f), 'utf8'));
+  project.provide('liveReference', haveDocs ? {
+    prices: data('model-prices.json'), providers: data('model-providers.json'), matrix: data('reviewer-matrix.json'),
+    min_skills_version: data('baton.json').skills_version,
+  } : null);
 }

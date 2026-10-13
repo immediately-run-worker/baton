@@ -160,6 +160,7 @@ function checkReference(p: BoardPayload) {
     const accounts = new Set<string>();
     pr.accounts.forEach((a, i) => {
       if (!isObj(a) || typeof a.id !== 'string' || !ACCOUNT.test(a.id)) bad(`providers.accounts[${i}].id`, 'is malformed');
+      if (accounts.has(a.id)) bad(`providers.accounts[${i}].id`, `repeats ${a.id}`);
       if (typeof a.name !== 'string' || !TEXT.test(a.name)) bad(`providers.accounts[${i}].name`, 'must be short text');
       if (a.billing !== 'subscription' && a.billing !== 'api') bad(`providers.accounts[${i}].billing`, "must be 'subscription' or 'api'");
       if (a.window_limits !== null && !(isObj(a.window_limits) && Object.values(a.window_limits).every(isNum))) bad(`providers.accounts[${i}].window_limits`, 'must be null or numbers by window');
@@ -171,13 +172,17 @@ function checkReference(p: BoardPayload) {
         Array.isArray(sc.rules.days) && sc.rules.days.every((d) => Number.isInteger(d) && d >= 0 && d <= 6) &&
         Array.isArray(sc.rules.hoursUtc) && sc.rules.hoursUtc.every((h) => Array.isArray(h) && h.length === 2 && Number.isInteger(h[0]) && Number.isInteger(h[1]) && 0 <= h[0] && h[0] < h[1] && h[1] <= 24);
       if (!ok) bad(`providers.peak_schedules[${i}]`, 'needs an id, days 0–6, [start, end) hour pairs and a numeric factor');
+      if (schedules.has(sc.id)) bad(`providers.peak_schedules[${i}].id`, `repeats ${sc.id}`);
       schedules.add(sc.id);
     });
+    const pairs = new Set<string>();
     pr.models.forEach((m, i) => {
       if (!isObj(m) || !accounts.has(m.provider)) bad(`providers.models[${i}].provider`, 'must name an account in providers.accounts');
       if (typeof m.model !== 'string' || !MODEL.test(m.model)) bad(`providers.models[${i}].model`, 'must be a model id');
       if (m.monthly_limit_usd !== null && !isNum(m.monthly_limit_usd)) bad(`providers.models[${i}].monthly_limit_usd`, 'must be a number or null');
       if (m.peak_schedule !== undefined && !schedules.has(m.peak_schedule)) bad(`providers.models[${i}].peak_schedule`, 'must name a schedule in providers.peak_schedules');
+      if (pairs.has(`${m.provider} ${m.model}`)) bad(`providers.models[${i}]`, `repeats ${m.provider} ${m.model}`);
+      pairs.add(`${m.provider} ${m.model}`);
     });
   }
   if (p.matrix !== undefined) {
