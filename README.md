@@ -35,8 +35,10 @@ an item says `infra/baton/<path>`, it means `<path>` in this repository (BATON_S
 ## Deploying
 
 `.github/workflows/baton-deploy.yml` runs the suite and then `wrangler deploy` (production,
-`workitems.immediately.run`) and `wrangler deploy --env staging` on every push to `main`. It
-needs the `CLOUDFLARE_API_TOKEN` secret in the `production` environment (R3-1208).
+`workitems.immediately.run`) and `wrangler deploy --env staging`
+(`workitems-staging.immediately.run`) on every push to `main`. It needs the
+`CLOUDFLARE_API_TOKEN` secret in the `production` environment (R3-1208): Workers Scripts: Edit
+on the account, plus Zone: Read and Workers Routes: Edit on the `immediately.run` zone.
 
 With a sibling docs checkout present, the suite also fails when `src/shared/` or the board
 fixtures have drifted from docs.

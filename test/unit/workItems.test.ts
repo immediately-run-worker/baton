@@ -6,7 +6,9 @@ import { ownerCall, payload, rows, setClock, syncCall } from '../helpers';
 
 const board = inject('board');
 const { A, B } = board.shas;
-const stateA = board.states.A as { items: Record<string, unknown>[]; ready: string[] };
+// The hand-built cases below vary the items alone, so they post them without the fixture's
+// reference data; the reference cases add test/fixtures/reference.json.
+const stateA = { items: board.states.A.state.items as Record<string, unknown>[], ready: board.states.A.ready };
 const post = (sha: string, parent: string | null, state: { items: unknown[]; ready: string[] }, extra: Record<string, unknown> = {}) =>
   syncCall('/v1/sync/board', payload(sha, parent, state, extra));
 const requiresOf = async (id: string) =>

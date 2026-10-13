@@ -81,13 +81,14 @@ describe('POST /v1/sync/board', () => {
     expect(await head()).toBeNull();
   });
 
-  it.skipIf(!inject('liveBoard'))("accepts today's real docs board and data files, as the sync will post them", async () => {
-    const live = inject('liveBoard')!;
-    const res = await syncCall('/v1/sync/board', payload('f'.repeat(40), null, live, inject('liveReference')!));
+  it.skipIf(!inject('liveBoard'))("accepts what the docs sync builds for today's board, reference data included", async () => {
+    // buildPayload(origin/main) from the sibling docs checkout: the real producer's output
+    // through the real validator (R3-386's annotated repos entry was refused before repoName).
+    const live = inject('liveBoard') as { state: { items: unknown[] }; ready: string[]; providers: { accounts: unknown[] }; reviewers: object };
+    const res = await syncCall('/v1/sync/board', payload('f'.repeat(40), null, live));
     expect(res.status).toBe(200);
-    expect(await rows('SELECT count(*) AS n FROM work_items')).toEqual([{ n: live.items.length }]);
-    const ref = inject('liveReference') as { providers: { accounts: unknown[] }; matrix: { agents: object } };
-    expect(await rows('SELECT count(*) AS n FROM model_providers')).toEqual([{ n: ref.providers.accounts.length }]);
-    expect(await rows('SELECT count(*) AS n FROM reviewer_agents')).toEqual([{ n: Object.keys(ref.matrix.agents).length }]);
+    expect(await rows('SELECT count(*) AS n FROM work_items')).toEqual([{ n: live.state.items.length }]);
+    expect(await rows('SELECT count(*) AS n FROM model_providers')).toEqual([{ n: live.providers.accounts.length }]);
+    expect(await rows('SELECT count(*) AS n FROM reviewer_agents')).toEqual([{ n: Object.keys(live.reviewers).length }]);
   });
 });

@@ -1,0 +1,86 @@
+{
+  "accounts": [
+    {
+      "id": "opencode_go_plus",
+      "name": "OpenCode Go Plus",
+      "billing": "subscription",
+      "window_limits": {
+        "5h": 0.2,
+        "week": 0.5,
+        "month": 1
+      }
+    },
+    {
+      "id": "zai",
+      "name": "Z.AI GLM Coding Plan",
+      "billing": "subscription",
+      "window_limits": null
+    }
+  ],
+  "prefixes": {
+    "opencode-go": [
+      "opencode_go_plus"
+    ],
+    "zai-coding-plan": [
+      "zai"
+    ]
+  },
+  "peak_schedules": [
+    {
+      "id": "deepseek",
+      "rules": {
+        "days": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "hoursUtc": [
+          [
+            1,
+            4
+          ],
+          [
+            6,
+            10
+          ]
+        ]
+      },
+      "factor": 0.5
+    },
+    {
+      "id": "zai",
+      "rules": {
+        "days": [
+          1,
+          2,
+          3,
+          4,
+          5
+        ],
+        "hoursUtc": [
+          [
+            6,
+            10
+          ]
+        ]
+      },
+      "factor": 0.5
+    }
+  ],
+  "models": [
+    {
+      "provider": "opencode_go_plus",
+      "model": "opencode-go/deepseek-v4-pro",
+      "monthly_limit_usd": 60,
+      "peak_schedule": "deepseek"
+    },
+    {
+      "provider": "zai",
+      "model": "zai-coding-plan/glm-5.3",
+      "monthly_limit_usd": null,
+      "peak_schedule": "zai"
+    }
+  ]
+}

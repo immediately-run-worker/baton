@@ -1,11 +1,12 @@
 // S-BTN-13 board ordering (BATON_SPEC §13a R-BTN-30): two pushes whose syncs finish out of
 // order, and a force-push. Must hold: the head never moves backwards; the force-push is held.
 //
-// The sync is the REAL one: `syncOnce` and `decide` from docs scripts/lib/batonSync.mjs
-// (vendored, R-BTN-37), the code baton-sync.mjs runs in the workflow, here posting to the real
-// Worker. The git side is real too: global-setup.ts builds the fixture repository
-// (test/lib/fixtureRepo.mjs) and answers ancestry with `git merge-base --is-ancestor`, and the
-// board states come from the real docs factory-state code.
+// The sync is the REAL one, in two halves. Its decisions: `syncOnce` from docs
+// scripts/lib/batonSync.mjs (vendored, R-BTN-37), the code baton-sync.mjs runs in the
+// workflow, posting to the real Worker. Its payloads: docs baton-sync.mjs's own `buildPayload`
+// run over the fixture repository (test/fixtures/boards.json, recomputed and compared wherever
+// docs is a sibling — Baton's CI cannot read docs). Ancestry is real git: global-setup.ts asks
+// `git merge-base --is-ancestor` of the fixture repository.
 import { describe, it, expect, inject } from 'vitest';
 import { syncOnce } from '../../src/shared/batonSync.mjs';
 import { ownerCall, setClock, syncCall } from '../helpers';
@@ -38,7 +39,9 @@ function depsFor(next: Label, seen?: { sha: string | null; unconfirmed: unknown[
     },
     post,
     isAncestor,
-    buildPayload: async () => ({ state: { items: board.states[next].items }, ready: board.states[next].ready }),
+    // The real sync's payload for `next`: docs' buildPayload over the fixture repository
+    // (test/fixtures/boards.json, rechecked against docs wherever docs is a sibling).
+    buildPayload: async () => board.states[next],
     statusOf: () => null,
     sleep: async () => {},
   };

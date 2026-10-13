@@ -52,9 +52,25 @@ export async function confirmations(unconfirmed, next, { isAncestor, statusOf })
  */
 export async function syncOnce(next, deps, { backoffMs = 30_000 } = {}) {
   const steps = [];
-  let head = await deps.readHead();
+  let outages = 0;
+  // A head that could not be read is never "no head": that would post a parent-less snapshot
+  // and drop the unconfirmed list. `unavailable` waits and reads once more; anything else fails.
+  const readHead = async () => {
+    for (;;) {
+      const h = await deps.readHead();
+      if (h.ok !== false) return h;
+      steps.push(`head: ${h.code}`);
+      if (h.code === 'unavailable' && outages++ === 0) {
+        await deps.sleep(backoffMs);
+        continue;
+      }
+      return h;
+    }
+  };
+  let head = await readHead();
+  if (head.ok === false) return { outcome: `failed:${head.code}`, steps };
   let payload = null;
-  for (let headMoves = 0, outages = 0; ;) {
+  for (let headMoves = 0; ;) {
     const d = await decide(head.sha, next, deps.isAncestor);
     steps.push(`${d} over ${head.sha ?? 'no head'}`);
     const confirmed = await confirmations(head.unconfirmed, next, deps);
@@ -71,7 +87,8 @@ export async function syncOnce(next, deps, { backoffMs = 30_000 } = {}) {
     if (res.ok) return { outcome: d === 'confirm-only' ? 'confirmed' : 'advanced', steps };
     if (res.code === 'snapshot-rejected' && d === 'force') return { outcome: 'held', steps };
     if (res.code === 'head-moved' && headMoves++ === 0) {
-      head = await deps.readHead();
+      head = await readHead();
+      if (head.ok === false) return { outcome: `failed:${head.code}`, steps };
       continue;
     }
     if (res.code === 'unavailable' && outages++ === 0) {
@@ -82,7 +99,8 @@ export async function syncOnce(next, deps, { backoffMs = 30_000 } = {}) {
   }
 }
 
-/** The dashboard's Ready order against `claimOrder`, per tier (R3-1209's live check):
+/** The dashboard's Ready order against the local order (`rankReady` per tier — Baton applies
+ *  the expedite bound from its own claims), per tier (R3-1209's live check):
  *  `{tier: {baton: [ids], claimOrder: [ids], same}}`. */
 export function compareReady(readyByTier, claimOrderOf, tiers) {
   const out = {};

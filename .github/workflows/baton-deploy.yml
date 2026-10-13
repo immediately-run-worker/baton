@@ -6,8 +6,10 @@ name: baton-deploy
 # here like any other, so a docs change reaches the Worker only through a re-vendoring PR
 # (R-BTN-37).
 #
-# The one secret is CLOUDFLARE_API_TOKEN (Workers Scripts edit on one account), set by the
-# owner in R3-1208. Until it exists the deploy job fails at its first step, naming it.
+# The one secret is CLOUDFLARE_API_TOKEN, in this repository's `production` environment, set
+# by the owner in R3-1208: Workers Scripts: Edit on the account, plus Zone: Read and Workers
+# Routes: Edit on the immediately.run zone (wrangler resolves the zone and writes both routes).
+# Until it exists the deploy job fails at its first step, naming it.
 on:
   push:
     branches: [main]

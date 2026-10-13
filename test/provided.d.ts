@@ -5,12 +5,11 @@ declare module 'vitest' {
   export interface ProvidedContext {
     board: {
       shas: Record<'A' | 'B' | 'C' | 'D', string>;
-      states: Record<'A' | 'B' | 'C' | 'D', { items: unknown[]; ready: string[] }>;
+      states: Record<'A' | 'B' | 'C' | 'D', { state: { items: unknown[] }; ready: string[]; [k: string]: unknown }>;
       ancestry: Record<string, boolean>;
     };
     shared: { manifest: Record<string, string>; vendored: Record<string, string>; upstream: Record<string, string> | null };
     wranglerToml: string;
-    liveBoard: { items: unknown[]; ready: string[] } | null;
-    liveReference: Record<string, unknown> | null;
+    liveBoard: Record<string, unknown> | null;
   }
 }
