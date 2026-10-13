@@ -1,0 +1,35 @@
+{
+  "families": {
+    "claude": [
+      "claude"
+    ],
+    "glm": [
+      "glm"
+    ],
+    "deepseek": [
+      "deepseek"
+    ]
+  },
+  "agents": {
+    "review-pr-glm": {
+      "reviews_on": "zai-coding-plan/glm-5.3",
+      "bills": [
+        "zai-coding-plan"
+      ],
+      "cost": 0.9
+    },
+    "review-pr-claude": {
+      "reviews_on": "claude-opus-5-5",
+      "bills": [
+        "zai-coding-plan",
+        "anthropic"
+      ],
+      "models": {
+        "zai-coding-plan": "zai-coding-plan/glm-5.3-flash",
+        "anthropic": "claude-opus-5-5"
+      },
+      "cost": 5
+    }
+  },
+  "rows": []
+}

@@ -32,3 +32,27 @@ SYNC_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-sync.yml@refs/
 ACCESS_TEAM_DOMAIN = ""
 ACCESS_AUD = ""
 OWNER_EMAILS = ""
+
+# The staging Worker (BATON_SPEC §13a): its own Durable Object namespace, at its own hostname on
+# the same zone, deployed beside production by baton-deploy.yml. Bindings and vars are not
+# inherited from the top level, so they are repeated here. R3-1208 adds the DNS record and an
+# Access application for the hostname.
+[env.staging]
+name = "baton-staging"
+routes = [{ pattern = "workitems-staging.immediately.run/*", zone_name = "immediately.run" }]
+
+[[env.staging.durable_objects.bindings]]
+name = "BATON"
+class_name = "Baton"
+
+[env.staging.vars]
+PUBLIC_ORIGIN = "https://workitems-staging.immediately.run"
+OIDC_ISSUER = "https://token.actions.githubusercontent.com"
+OIDC_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks"
+OIDC_AUDIENCE = "workitems.immediately.run"
+OIDC_REPOSITORY = "immediately-run/docs"
+OIDC_REF = "refs/heads/main"
+SYNC_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-sync.yml@refs/heads/main"
+ACCESS_TEAM_DOMAIN = ""
+ACCESS_AUD = ""
+OWNER_EMAILS = ""

@@ -1,481 +1,1161 @@
 {
   "shas": {
-    "A": "ecd69cd4f7512571bd2fe423d63052597d0f70d7",
-    "B": "bbfa44274ac7e31c3f2fc675bbae30b84c3a10a4",
-    "C": "d4be7317cec0680e29d913d5e1d2884357ccc988",
-    "D": "696bee63a085b6ee7a9162c5ad67fb18abe60e88"
+    "A": "a8ccae5da79f4067ec0f086181dc5b8b8ff961e3",
+    "B": "c5c7a522e8cbd2b130c16d2a3499a7eb68b6263a",
+    "C": "571762947ffc714c10640406e598eada5d1dd191",
+    "D": "557fe6c4aa722a0994c63ae1b1d885dd37451200"
   },
   "states": {
     "A": {
-      "items": [
-        {
-          "id": "R3-9001",
-          "title": "Fixture: a routine docs change",
-          "status": "available",
-          "project": "baton",
-          "order": 10,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": [
-            "none"
-          ],
-          "tier": "routine",
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 1,
-          "prs": [],
-          "node": "ready-autonomous",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 14,
-          "overdue": false
-        },
-        {
-          "id": "R3-9002",
-          "title": "Fixture: a judgement item that needs the venue",
-          "status": "available",
-          "project": "baton",
-          "order": 20,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": [
-            "agent-venue"
-          ],
-          "tier": "judgement",
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 0,
-          "prs": [],
-          "node": "ready-autonomous",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 14,
-          "overdue": false
-        },
-        {
-          "id": "R3-9003",
-          "title": "[OP] Fixture: an operator leg",
-          "status": "available",
-          "project": "baton",
-          "order": 30,
-          "tags": [
-            "OP",
-            "roadmap-item"
-          ],
-          "requires": [
-            "human-operator",
-            "github-admin"
-          ],
-          "tier": "critical",
-          "queue": "operator",
-          "operatorNeeds": [
-            "human-operator",
-            "github-admin"
-          ],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 0,
-          "prs": [],
-          "node": "ready-operator",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 14,
-          "overdue": false
-        },
-        {
-          "id": "R3-9004",
-          "title": "Fixture: blocked on R3-9001",
-          "status": "available",
-          "project": "baton",
-          "order": 5,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": null,
-          "tier": null,
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [
-            "R3-9001"
-          ],
-          "blockedBy": [
-            "R3-9001"
-          ],
-          "dependents": 0,
-          "prs": [],
-          "node": "blocked",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": null,
-          "overdue": false
-        }
-      ],
+      "state": {
+        "items": [
+          {
+            "id": "R3-9001",
+            "title": "Fixture: a routine docs change",
+            "status": "available",
+            "project": "baton",
+            "order": 10,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": [
+              "none"
+            ],
+            "tier": "routine",
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 1,
+            "prs": [],
+            "node": "ready-autonomous",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 14,
+            "overdue": false,
+            "repos": [
+              "docs"
+            ]
+          },
+          {
+            "id": "R3-9002",
+            "title": "Fixture: a judgement item that needs the venue",
+            "status": "available",
+            "project": "baton",
+            "order": 20,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": [
+              "agent-venue"
+            ],
+            "tier": "judgement",
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 0,
+            "prs": [],
+            "node": "ready-autonomous",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 14,
+            "overdue": false,
+            "repos": [
+              "site-main"
+            ]
+          },
+          {
+            "id": "R3-9003",
+            "title": "[OP] Fixture: an operator leg",
+            "status": "available",
+            "project": "baton",
+            "order": 30,
+            "tags": [
+              "OP",
+              "roadmap-item"
+            ],
+            "requires": [
+              "human-operator",
+              "github-admin"
+            ],
+            "tier": "critical",
+            "queue": "operator",
+            "operatorNeeds": [
+              "human-operator",
+              "github-admin"
+            ],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 0,
+            "prs": [],
+            "node": "ready-operator",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 14,
+            "overdue": false,
+            "repos": [
+              "provisioning"
+            ]
+          },
+          {
+            "id": "R3-9004",
+            "title": "Fixture: blocked on R3-9001",
+            "status": "available",
+            "project": "baton",
+            "order": 5,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": null,
+            "tier": null,
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [
+              "R3-9001"
+            ],
+            "blockedBy": [
+              "R3-9001"
+            ],
+            "dependents": 0,
+            "prs": [],
+            "node": "blocked",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": null,
+            "overdue": false,
+            "repos": [
+              "docs"
+            ]
+          }
+        ]
+      },
       "ready": [
         "R3-9001",
         "R3-9002",
         "R3-9003"
-      ]
+      ],
+      "prices": {
+        "models": [
+          {
+            "match": "deepseek-v4-pro",
+            "input": 1.32,
+            "output": 3.96,
+            "cacheRead": 0.044
+          },
+          {
+            "match": "glm-5\\.[23]",
+            "input": 1.4,
+            "output": 4.4
+          }
+        ]
+      },
+      "providers": {
+        "accounts": [
+          {
+            "id": "opencode_go_plus",
+            "name": "OpenCode Go Plus",
+            "billing": "subscription",
+            "window_limits": {
+              "5h": 0.2,
+              "week": 0.5,
+              "month": 1
+            }
+          },
+          {
+            "id": "zai",
+            "name": "Z.AI GLM Coding Plan",
+            "billing": "subscription",
+            "window_limits": null
+          }
+        ],
+        "prefixes": {
+          "opencode-go": [
+            "opencode_go_plus"
+          ],
+          "zai-coding-plan": [
+            "zai"
+          ]
+        },
+        "peak_schedules": [
+          {
+            "id": "deepseek",
+            "rules": {
+              "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ],
+              "hoursUtc": [
+                [
+                  1,
+                  4
+                ],
+                [
+                  6,
+                  10
+                ]
+              ]
+            },
+            "factor": 0.5
+          },
+          {
+            "id": "zai",
+            "rules": {
+              "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ],
+              "hoursUtc": [
+                [
+                  6,
+                  10
+                ]
+              ]
+            },
+            "factor": 0.5
+          }
+        ],
+        "models": [
+          {
+            "provider": "opencode_go_plus",
+            "model": "opencode-go/deepseek-v4-pro",
+            "monthly_limit_usd": 60,
+            "peak_schedule": "deepseek"
+          },
+          {
+            "provider": "zai",
+            "model": "zai-coding-plan/glm-5.3",
+            "monthly_limit_usd": null,
+            "peak_schedule": "zai"
+          }
+        ]
+      },
+      "matrix": {
+        "families": {
+          "claude": [
+            "claude"
+          ],
+          "glm": [
+            "glm"
+          ],
+          "deepseek": [
+            "deepseek"
+          ]
+        },
+        "agents": {
+          "review-pr-glm": {
+            "reviews_on": "zai-coding-plan/glm-5.3",
+            "bills": [
+              "zai-coding-plan"
+            ],
+            "cost": 0.9
+          },
+          "review-pr-claude": {
+            "reviews_on": "claude-opus-5-5",
+            "bills": [
+              "zai-coding-plan",
+              "anthropic"
+            ],
+            "models": {
+              "zai-coding-plan": "zai-coding-plan/glm-5.3-flash",
+              "anthropic": "claude-opus-5-5"
+            },
+            "cost": 5
+          }
+        },
+        "rows": []
+      },
+      "reviewers": {
+        "review-pr-glm": {
+          "reviews_on": "zai-coding-plan/glm-5.3",
+          "bills": [
+            "zai-coding-plan"
+          ]
+        },
+        "review-pr-claude": {
+          "reviews_on": "claude-opus-5-5",
+          "bills": [
+            "zai-coding-plan",
+            "anthropic"
+          ],
+          "models": {
+            "zai-coding-plan": "zai-coding-plan/glm-5.3-flash",
+            "anthropic": "claude-opus-5-5"
+          }
+        }
+      },
+      "min_skills_version": 3
     },
     "B": {
-      "items": [
-        {
-          "id": "R3-9001",
-          "title": "Fixture: a routine docs change",
-          "status": "in-progress",
-          "project": "baton",
-          "order": 10,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": [
-            "none"
-          ],
-          "tier": "routine",
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 1,
-          "prs": [],
-          "node": "in-progress",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 7,
-          "overdue": false
-        },
-        {
-          "id": "R3-9002",
-          "title": "Fixture: a judgement item that needs the venue",
-          "status": "available",
-          "project": "baton",
-          "order": 20,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": [
-            "agent-venue"
-          ],
-          "tier": "judgement",
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 0,
-          "prs": [],
-          "node": "ready-autonomous",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 14,
-          "overdue": false
-        },
-        {
-          "id": "R3-9003",
-          "title": "[OP] Fixture: an operator leg",
-          "status": "available",
-          "project": "baton",
-          "order": 30,
-          "tags": [
-            "OP",
-            "roadmap-item"
-          ],
-          "requires": [
-            "human-operator",
-            "github-admin"
-          ],
-          "tier": "critical",
-          "queue": "operator",
-          "operatorNeeds": [
-            "human-operator",
-            "github-admin"
-          ],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 0,
-          "prs": [],
-          "node": "ready-operator",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 14,
-          "overdue": false
-        },
-        {
-          "id": "R3-9004",
-          "title": "Fixture: blocked on R3-9001",
-          "status": "available",
-          "project": "baton",
-          "order": 5,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": null,
-          "tier": null,
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [
-            "R3-9001"
-          ],
-          "blockedBy": [
-            "R3-9001"
-          ],
-          "dependents": 0,
-          "prs": [],
-          "node": "blocked",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": null,
-          "overdue": false
-        }
-      ],
+      "state": {
+        "items": [
+          {
+            "id": "R3-9001",
+            "title": "Fixture: a routine docs change",
+            "status": "in-progress",
+            "project": "baton",
+            "order": 10,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": [
+              "none"
+            ],
+            "tier": "routine",
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 1,
+            "prs": [],
+            "node": "in-progress",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 7,
+            "overdue": false,
+            "repos": [
+              "docs"
+            ]
+          },
+          {
+            "id": "R3-9002",
+            "title": "Fixture: a judgement item that needs the venue",
+            "status": "available",
+            "project": "baton",
+            "order": 20,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": [
+              "agent-venue"
+            ],
+            "tier": "judgement",
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 0,
+            "prs": [],
+            "node": "ready-autonomous",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 14,
+            "overdue": false,
+            "repos": [
+              "site-main"
+            ]
+          },
+          {
+            "id": "R3-9003",
+            "title": "[OP] Fixture: an operator leg",
+            "status": "available",
+            "project": "baton",
+            "order": 30,
+            "tags": [
+              "OP",
+              "roadmap-item"
+            ],
+            "requires": [
+              "human-operator",
+              "github-admin"
+            ],
+            "tier": "critical",
+            "queue": "operator",
+            "operatorNeeds": [
+              "human-operator",
+              "github-admin"
+            ],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 0,
+            "prs": [],
+            "node": "ready-operator",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 14,
+            "overdue": false,
+            "repos": [
+              "provisioning"
+            ]
+          },
+          {
+            "id": "R3-9004",
+            "title": "Fixture: blocked on R3-9001",
+            "status": "available",
+            "project": "baton",
+            "order": 5,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": null,
+            "tier": null,
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [
+              "R3-9001"
+            ],
+            "blockedBy": [
+              "R3-9001"
+            ],
+            "dependents": 0,
+            "prs": [],
+            "node": "blocked",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": null,
+            "overdue": false,
+            "repos": [
+              "docs"
+            ]
+          }
+        ]
+      },
       "ready": [
         "R3-9002",
         "R3-9003"
-      ]
+      ],
+      "prices": {
+        "models": [
+          {
+            "match": "deepseek-v4-pro",
+            "input": 1.32,
+            "output": 3.96,
+            "cacheRead": 0.044
+          },
+          {
+            "match": "glm-5\\.[23]",
+            "input": 1.4,
+            "output": 4.4
+          }
+        ]
+      },
+      "providers": {
+        "accounts": [
+          {
+            "id": "opencode_go_plus",
+            "name": "OpenCode Go Plus",
+            "billing": "subscription",
+            "window_limits": {
+              "5h": 0.2,
+              "week": 0.5,
+              "month": 1
+            }
+          },
+          {
+            "id": "zai",
+            "name": "Z.AI GLM Coding Plan",
+            "billing": "subscription",
+            "window_limits": null
+          }
+        ],
+        "prefixes": {
+          "opencode-go": [
+            "opencode_go_plus"
+          ],
+          "zai-coding-plan": [
+            "zai"
+          ]
+        },
+        "peak_schedules": [
+          {
+            "id": "deepseek",
+            "rules": {
+              "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ],
+              "hoursUtc": [
+                [
+                  1,
+                  4
+                ],
+                [
+                  6,
+                  10
+                ]
+              ]
+            },
+            "factor": 0.5
+          },
+          {
+            "id": "zai",
+            "rules": {
+              "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ],
+              "hoursUtc": [
+                [
+                  6,
+                  10
+                ]
+              ]
+            },
+            "factor": 0.5
+          }
+        ],
+        "models": [
+          {
+            "provider": "opencode_go_plus",
+            "model": "opencode-go/deepseek-v4-pro",
+            "monthly_limit_usd": 60,
+            "peak_schedule": "deepseek"
+          },
+          {
+            "provider": "zai",
+            "model": "zai-coding-plan/glm-5.3",
+            "monthly_limit_usd": null,
+            "peak_schedule": "zai"
+          }
+        ]
+      },
+      "matrix": {
+        "families": {
+          "claude": [
+            "claude"
+          ],
+          "glm": [
+            "glm"
+          ],
+          "deepseek": [
+            "deepseek"
+          ]
+        },
+        "agents": {
+          "review-pr-glm": {
+            "reviews_on": "zai-coding-plan/glm-5.3",
+            "bills": [
+              "zai-coding-plan"
+            ],
+            "cost": 0.9
+          },
+          "review-pr-claude": {
+            "reviews_on": "claude-opus-5-5",
+            "bills": [
+              "zai-coding-plan",
+              "anthropic"
+            ],
+            "models": {
+              "zai-coding-plan": "zai-coding-plan/glm-5.3-flash",
+              "anthropic": "claude-opus-5-5"
+            },
+            "cost": 5
+          }
+        },
+        "rows": []
+      },
+      "reviewers": {
+        "review-pr-glm": {
+          "reviews_on": "zai-coding-plan/glm-5.3",
+          "bills": [
+            "zai-coding-plan"
+          ]
+        },
+        "review-pr-claude": {
+          "reviews_on": "claude-opus-5-5",
+          "bills": [
+            "zai-coding-plan",
+            "anthropic"
+          ],
+          "models": {
+            "zai-coding-plan": "zai-coding-plan/glm-5.3-flash",
+            "anthropic": "claude-opus-5-5"
+          }
+        }
+      },
+      "min_skills_version": 3
     },
     "C": {
-      "items": [
-        {
-          "id": "R3-9001",
-          "title": "Fixture: a routine docs change",
-          "status": "in-progress",
-          "project": "baton",
-          "order": 10,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": [
-            "none"
-          ],
-          "tier": "routine",
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 1,
-          "prs": [],
-          "node": "in-progress",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 7,
-          "overdue": false
-        },
-        {
-          "id": "R3-9002",
-          "title": "Fixture: a judgement item that needs the venue",
-          "status": "available",
-          "project": "baton",
-          "order": 20,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": [
-            "agent-venue"
-          ],
-          "tier": "judgement",
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 0,
-          "prs": [],
-          "node": "ready-autonomous",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 14,
-          "overdue": false
-        },
-        {
-          "id": "R3-9003",
-          "title": "[OP] Fixture: an operator leg",
-          "status": "available",
-          "project": "baton",
-          "order": 30,
-          "tags": [
-            "OP",
-            "roadmap-item"
-          ],
-          "requires": [
-            "human-operator",
-            "github-admin"
-          ],
-          "tier": "critical",
-          "queue": "operator",
-          "operatorNeeds": [
-            "human-operator",
-            "github-admin"
-          ],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 0,
-          "prs": [],
-          "node": "ready-operator",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 14,
-          "overdue": false
-        },
-        {
-          "id": "R3-9004",
-          "title": "Fixture: blocked on R3-9001",
-          "status": "available",
-          "project": "baton",
-          "order": 5,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": null,
-          "tier": null,
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [
-            "R3-9001"
-          ],
-          "blockedBy": [
-            "R3-9001"
-          ],
-          "dependents": 0,
-          "prs": [],
-          "node": "blocked",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": null,
-          "overdue": false
-        },
-        {
-          "id": "R3-9005",
-          "title": "Fixture: an outage fix",
-          "status": "available",
-          "project": "baton",
-          "order": 50,
-          "tags": [
-            "FEAT",
-            "EXPEDITE",
-            "roadmap-item"
-          ],
-          "requires": [
-            "none"
-          ],
-          "tier": "routine",
-          "queue": "expedite",
-          "operatorNeeds": [],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 0,
-          "prs": [],
-          "node": "ready-expedite",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 1,
-          "overdue": false
-        }
-      ],
+      "state": {
+        "items": [
+          {
+            "id": "R3-9001",
+            "title": "Fixture: a routine docs change",
+            "status": "in-progress",
+            "project": "baton",
+            "order": 10,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": [
+              "none"
+            ],
+            "tier": "routine",
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 1,
+            "prs": [],
+            "node": "in-progress",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 7,
+            "overdue": false,
+            "repos": [
+              "docs"
+            ]
+          },
+          {
+            "id": "R3-9002",
+            "title": "Fixture: a judgement item that needs the venue",
+            "status": "available",
+            "project": "baton",
+            "order": 20,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": [
+              "agent-venue"
+            ],
+            "tier": "judgement",
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 0,
+            "prs": [],
+            "node": "ready-autonomous",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 14,
+            "overdue": false,
+            "repos": [
+              "site-main"
+            ]
+          },
+          {
+            "id": "R3-9003",
+            "title": "[OP] Fixture: an operator leg",
+            "status": "available",
+            "project": "baton",
+            "order": 30,
+            "tags": [
+              "OP",
+              "roadmap-item"
+            ],
+            "requires": [
+              "human-operator",
+              "github-admin"
+            ],
+            "tier": "critical",
+            "queue": "operator",
+            "operatorNeeds": [
+              "human-operator",
+              "github-admin"
+            ],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 0,
+            "prs": [],
+            "node": "ready-operator",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 14,
+            "overdue": false,
+            "repos": [
+              "provisioning"
+            ]
+          },
+          {
+            "id": "R3-9004",
+            "title": "Fixture: blocked on R3-9001",
+            "status": "available",
+            "project": "baton",
+            "order": 5,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": null,
+            "tier": null,
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [
+              "R3-9001"
+            ],
+            "blockedBy": [
+              "R3-9001"
+            ],
+            "dependents": 0,
+            "prs": [],
+            "node": "blocked",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": null,
+            "overdue": false,
+            "repos": [
+              "docs"
+            ]
+          },
+          {
+            "id": "R3-9005",
+            "title": "Fixture: an outage fix",
+            "status": "available",
+            "project": "baton",
+            "order": 50,
+            "tags": [
+              "FEAT",
+              "EXPEDITE",
+              "roadmap-item"
+            ],
+            "requires": [
+              "none"
+            ],
+            "tier": "routine",
+            "queue": "expedite",
+            "operatorNeeds": [],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 0,
+            "prs": [],
+            "node": "ready-expedite",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 1,
+            "overdue": false,
+            "repos": [
+              "docs"
+            ]
+          }
+        ]
+      },
       "ready": [
         "R3-9005",
         "R3-9002",
         "R3-9003"
-      ]
+      ],
+      "prices": {
+        "models": [
+          {
+            "match": "deepseek-v4-pro",
+            "input": 1.32,
+            "output": 3.96,
+            "cacheRead": 0.044
+          },
+          {
+            "match": "glm-5\\.[23]",
+            "input": 1.4,
+            "output": 4.4
+          }
+        ]
+      },
+      "providers": {
+        "accounts": [
+          {
+            "id": "opencode_go_plus",
+            "name": "OpenCode Go Plus",
+            "billing": "subscription",
+            "window_limits": {
+              "5h": 0.2,
+              "week": 0.5,
+              "month": 1
+            }
+          },
+          {
+            "id": "zai",
+            "name": "Z.AI GLM Coding Plan",
+            "billing": "subscription",
+            "window_limits": null
+          }
+        ],
+        "prefixes": {
+          "opencode-go": [
+            "opencode_go_plus"
+          ],
+          "zai-coding-plan": [
+            "zai"
+          ]
+        },
+        "peak_schedules": [
+          {
+            "id": "deepseek",
+            "rules": {
+              "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ],
+              "hoursUtc": [
+                [
+                  1,
+                  4
+                ],
+                [
+                  6,
+                  10
+                ]
+              ]
+            },
+            "factor": 0.5
+          },
+          {
+            "id": "zai",
+            "rules": {
+              "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ],
+              "hoursUtc": [
+                [
+                  6,
+                  10
+                ]
+              ]
+            },
+            "factor": 0.5
+          }
+        ],
+        "models": [
+          {
+            "provider": "opencode_go_plus",
+            "model": "opencode-go/deepseek-v4-pro",
+            "monthly_limit_usd": 60,
+            "peak_schedule": "deepseek"
+          },
+          {
+            "provider": "zai",
+            "model": "zai-coding-plan/glm-5.3",
+            "monthly_limit_usd": null,
+            "peak_schedule": "zai"
+          }
+        ]
+      },
+      "matrix": {
+        "families": {
+          "claude": [
+            "claude"
+          ],
+          "glm": [
+            "glm"
+          ],
+          "deepseek": [
+            "deepseek"
+          ]
+        },
+        "agents": {
+          "review-pr-glm": {
+            "reviews_on": "zai-coding-plan/glm-5.3",
+            "bills": [
+              "zai-coding-plan"
+            ],
+            "cost": 0.9
+          },
+          "review-pr-claude": {
+            "reviews_on": "claude-opus-5-5",
+            "bills": [
+              "zai-coding-plan",
+              "anthropic"
+            ],
+            "models": {
+              "zai-coding-plan": "zai-coding-plan/glm-5.3-flash",
+              "anthropic": "claude-opus-5-5"
+            },
+            "cost": 5
+          }
+        },
+        "rows": []
+      },
+      "reviewers": {
+        "review-pr-glm": {
+          "reviews_on": "zai-coding-plan/glm-5.3",
+          "bills": [
+            "zai-coding-plan"
+          ]
+        },
+        "review-pr-claude": {
+          "reviews_on": "claude-opus-5-5",
+          "bills": [
+            "zai-coding-plan",
+            "anthropic"
+          ],
+          "models": {
+            "zai-coding-plan": "zai-coding-plan/glm-5.3-flash",
+            "anthropic": "claude-opus-5-5"
+          }
+        }
+      },
+      "min_skills_version": 3
     },
     "D": {
-      "items": [
-        {
-          "id": "R3-9001",
-          "title": "Fixture: a routine docs change",
-          "status": "available",
-          "project": "baton",
-          "order": 10,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": [
-            "none"
-          ],
-          "tier": "routine",
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 1,
-          "prs": [],
-          "node": "ready-autonomous",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 14,
-          "overdue": false
-        },
-        {
-          "id": "R3-9002",
-          "title": "Fixture: a judgement item that needs the venue",
-          "status": "available",
-          "project": "baton",
-          "order": 20,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": [
-            "agent-venue"
-          ],
-          "tier": "judgement",
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [],
-          "blockedBy": [],
-          "dependents": 0,
-          "prs": [],
-          "node": "ready-autonomous",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": 14,
-          "overdue": false
-        },
-        {
-          "id": "R3-9004",
-          "title": "Fixture: blocked on R3-9001",
-          "status": "available",
-          "project": "baton",
-          "order": 5,
-          "tags": [
-            "FEAT",
-            "roadmap-item"
-          ],
-          "requires": null,
-          "tier": null,
-          "queue": "autonomous",
-          "operatorNeeds": [],
-          "dependsOn": [
-            "R3-9001"
-          ],
-          "blockedBy": [
-            "R3-9001"
-          ],
-          "dependents": 0,
-          "prs": [],
-          "node": "blocked",
-          "since": "2026-10-13",
-          "ageDays": 0,
-          "timeoutDays": null,
-          "overdue": false
-        }
-      ],
+      "state": {
+        "items": [
+          {
+            "id": "R3-9001",
+            "title": "Fixture: a routine docs change",
+            "status": "available",
+            "project": "baton",
+            "order": 10,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": [
+              "none"
+            ],
+            "tier": "routine",
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 1,
+            "prs": [],
+            "node": "ready-autonomous",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 14,
+            "overdue": false,
+            "repos": [
+              "docs"
+            ]
+          },
+          {
+            "id": "R3-9002",
+            "title": "Fixture: a judgement item that needs the venue",
+            "status": "available",
+            "project": "baton",
+            "order": 20,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": [
+              "agent-venue"
+            ],
+            "tier": "judgement",
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [],
+            "blockedBy": [],
+            "dependents": 0,
+            "prs": [],
+            "node": "ready-autonomous",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": 14,
+            "overdue": false,
+            "repos": [
+              "site-main"
+            ]
+          },
+          {
+            "id": "R3-9004",
+            "title": "Fixture: blocked on R3-9001",
+            "status": "available",
+            "project": "baton",
+            "order": 5,
+            "tags": [
+              "FEAT",
+              "roadmap-item"
+            ],
+            "requires": null,
+            "tier": null,
+            "queue": "autonomous",
+            "operatorNeeds": [],
+            "dependsOn": [
+              "R3-9001"
+            ],
+            "blockedBy": [
+              "R3-9001"
+            ],
+            "dependents": 0,
+            "prs": [],
+            "node": "blocked",
+            "since": "2026-10-13",
+            "ageDays": 0,
+            "timeoutDays": null,
+            "overdue": false,
+            "repos": [
+              "docs"
+            ]
+          }
+        ]
+      },
       "ready": [
         "R3-9001",
         "R3-9002"
-      ]
+      ],
+      "prices": {
+        "models": [
+          {
+            "match": "deepseek-v4-pro",
+            "input": 1.32,
+            "output": 3.96,
+            "cacheRead": 0.044
+          },
+          {
+            "match": "glm-5\\.[23]",
+            "input": 1.4,
+            "output": 4.4
+          }
+        ]
+      },
+      "providers": {
+        "accounts": [
+          {
+            "id": "opencode_go_plus",
+            "name": "OpenCode Go Plus",
+            "billing": "subscription",
+            "window_limits": {
+              "5h": 0.2,
+              "week": 0.5,
+              "month": 1
+            }
+          },
+          {
+            "id": "zai",
+            "name": "Z.AI GLM Coding Plan",
+            "billing": "subscription",
+            "window_limits": null
+          }
+        ],
+        "prefixes": {
+          "opencode-go": [
+            "opencode_go_plus"
+          ],
+          "zai-coding-plan": [
+            "zai"
+          ]
+        },
+        "peak_schedules": [
+          {
+            "id": "deepseek",
+            "rules": {
+              "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ],
+              "hoursUtc": [
+                [
+                  1,
+                  4
+                ],
+                [
+                  6,
+                  10
+                ]
+              ]
+            },
+            "factor": 0.5
+          },
+          {
+            "id": "zai",
+            "rules": {
+              "days": [
+                1,
+                2,
+                3,
+                4,
+                5
+              ],
+              "hoursUtc": [
+                [
+                  6,
+                  10
+                ]
+              ]
+            },
+            "factor": 0.5
+          }
+        ],
+        "models": [
+          {
+            "provider": "opencode_go_plus",
+            "model": "opencode-go/deepseek-v4-pro",
+            "monthly_limit_usd": 60,
+            "peak_schedule": "deepseek"
+          },
+          {
+            "provider": "zai",
+            "model": "zai-coding-plan/glm-5.3",
+            "monthly_limit_usd": null,
+            "peak_schedule": "zai"
+          }
+        ]
+      },
+      "matrix": {
+        "families": {
+          "claude": [
+            "claude"
+          ],
+          "glm": [
+            "glm"
+          ],
+          "deepseek": [
+            "deepseek"
+          ]
+        },
+        "agents": {
+          "review-pr-glm": {
+            "reviews_on": "zai-coding-plan/glm-5.3",
+            "bills": [
+              "zai-coding-plan"
+            ],
+            "cost": 0.9
+          },
+          "review-pr-claude": {
+            "reviews_on": "claude-opus-5-5",
+            "bills": [
+              "zai-coding-plan",
+              "anthropic"
+            ],
+            "models": {
+              "zai-coding-plan": "zai-coding-plan/glm-5.3-flash",
+              "anthropic": "claude-opus-5-5"
+            },
+            "cost": 5
+          }
+        },
+        "rows": []
+      },
+      "reviewers": {
+        "review-pr-glm": {
+          "reviews_on": "zai-coding-plan/glm-5.3",
+          "bills": [
+            "zai-coding-plan"
+          ]
+        },
+        "review-pr-claude": {
+          "reviews_on": "claude-opus-5-5",
+          "bills": [
+            "zai-coding-plan",
+            "anthropic"
+          ],
+          "models": {
+            "zai-coding-plan": "zai-coding-plan/glm-5.3-flash",
+            "anthropic": "claude-opus-5-5"
+          }
+        }
+      },
+      "min_skills_version": 3
     }
   }
 }

@@ -1,0 +1,15 @@
+{
+  "models": [
+    {
+      "match": "deepseek-v4-pro",
+      "input": 1.32,
+      "output": 3.96,
+      "cacheRead": 0.044
+    },
+    {
+      "match": "glm-5\\.[23]",
+      "input": 1.4,
+      "output": 4.4
+    }
+  ]
+}

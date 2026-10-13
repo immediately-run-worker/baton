@@ -1,80 +1,91 @@
 // S-BTN-13 board ordering (BATON_SPEC §13a R-BTN-30): two pushes whose syncs finish out of
 // order, and a force-push. Must hold: the head never moves backwards; the force-push is held.
 //
-// The git side is real: global-setup.ts builds the fixture repository (test/lib/fixtureRepo.mjs)
-// and answers ancestry with `git merge-base --is-ancestor`; the board states come from the real
-// docs factory-state code. Each sync run below follows §7.1's three steps against the real
-// Worker: read the head, decide by ancestry, post — and on head-moved, re-read and decide again.
+// The sync is the REAL one, in two halves. Its decisions: `syncOnce` from docs
+// scripts/lib/batonSync.mjs (vendored, R-BTN-37), the code baton-sync.mjs runs in the
+// workflow, posting to the real Worker. Its payloads: docs baton-sync.mjs's own `buildPayload`
+// run over the fixture repository (test/fixtures/boards.json, recomputed and compared wherever
+// docs is a sibling — Baton's CI cannot read docs). Ancestry is real git: global-setup.ts asks
+// `git merge-base --is-ancestor` of the fixture repository.
 import { describe, it, expect, inject } from 'vitest';
-import { ownerCall, payload, setClock, syncCall } from '../helpers';
+import { syncOnce } from '../../src/shared/batonSync.mjs';
+import { ownerCall, setClock, syncCall } from '../helpers';
 
 type Label = 'A' | 'B' | 'C' | 'D';
 const board = inject('board');
 const sha = board.shas;
 const labelOf = (s: string | null) => (Object.entries(sha).find(([, v]) => v === s)?.[0] ?? null) as Label | null;
-const ancestor = (x: Label, y: Label) => board.ancestry[`${x}<${y}`];
+const isAncestor = async (a: string, b: string) => board.ancestry[`${labelOf(a)}<${labelOf(b)}`] === true;
 
-const readHead = async () => labelOf(((await (await syncCall('/v1/sync/head')).json()) as { sha: string | null }).sha);
+const readHead = async () => (await (await syncCall('/v1/sync/head')).json()) as { sha: string | null; unconfirmed: unknown[] };
+const post = async (body: unknown) => {
+  const res = await syncCall('/v1/sync/board', body);
+  const json = (await res.json()) as Record<string, unknown>;
+  return res.ok ? { ok: true, ...json } : json;
+};
 
-/** §7.1 step 3: what a sync run that found `head` does with `next`. */
-function decide(head: Label | null, next: Label): 'post' | 'confirm-only' | 'force' {
-  if (head === null) return 'post';
-  if (head === next || ancestor(next, head)) return 'confirm-only';
-  return ancestor(head, next) ? 'post' : 'force';
-}
-
-/** One sync run for `next`, which read the head as `seen` (possibly long ago). Returns what it did. */
-async function syncRun(next: Label, seen: Label | null): Promise<string[]> {
-  const log: string[] = [];
-  let head = seen;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const d = decide(head, next);
-    log.push(`${next}: ${d} over ${head ?? '∅'}`);
-    if (d === 'confirm-only') return log;
-    const res = await syncCall('/v1/sync/board', payload(sha[next], head ? sha[head] : null, board.states[next], d === 'force' ? { force: true } : {}));
-    const out = (await res.json()) as { ok?: boolean; code?: string };
-    log.push(`${next}: ${out.ok ? 'accepted' : out.code}`);
-    if (out.code !== 'head-moved') return log;
-    head = await readHead(); // §7.1: re-read and retry once
-  }
-  return log;
+/** The sync's dependencies for the run that will post `next`; `seen` is the head that run read
+ *  when it started (possibly long ago), after which it reads the live head as the real one does. */
+function depsFor(next: Label, seen?: { sha: string | null; unconfirmed: unknown[] }) {
+  let first = seen;
+  return {
+    readHead: async () => {
+      if (first) {
+        const h = first;
+        first = undefined;
+        return h;
+      }
+      return readHead();
+    },
+    post,
+    isAncestor,
+    // The real sync's payload for `next`: docs' buildPayload over the fixture repository
+    // (test/fixtures/boards.json, rechecked against docs wherever docs is a sibling).
+    buildPayload: async () => board.states[next],
+    statusOf: () => null,
+    sleep: async () => {},
+  };
 }
 
 describe('S-BTN-13 board ordering', () => {
   it('the git history is the one the scenario needs', () => {
-    expect(ancestor('A', 'B') && ancestor('B', 'C') && ancestor('A', 'D')).toBe(true);
-    expect(ancestor('C', 'D') || ancestor('D', 'C')).toBe(false);
+    expect(board.ancestry['A<B'] && board.ancestry['B<C'] && board.ancestry['A<D']).toBe(true);
+    expect(board.ancestry['C<D'] || board.ancestry['D<C']).toBe(false);
   });
 
   it('two syncs finishing out of order never move the head backwards; a force-push is held', async () => {
     await setClock(Date.parse('2026-10-13T12:00:00Z'));
     const heads: (Label | null)[] = [];
-    const record = async () => heads.push(await readHead());
+    const record = async () => heads.push(labelOf((await readHead()).sha));
 
-    expect(await syncRun('A', await readHead())).toEqual(['A: post over ∅', 'A: accepted']);
+    expect(await syncOnce(sha.A, depsFor('A'))).toMatchObject({ outcome: 'advanced' });
     await record();
 
     // B and C are pushed in quick succession. Both runs read the head (A) at start; C's run
     // finishes first.
     const seenByB = await readHead();
     const seenByC = await readHead();
-    expect(await syncRun('C', seenByC)).toEqual(['C: post over A', 'C: accepted']);
+    expect(await syncOnce(sha.C, depsFor('C', seenByC))).toMatchObject({ outcome: 'advanced' });
     await record();
     // B's run, late, loses the compare-and-set, re-reads the head (C), and finds B already
-    // behind it: it posts nothing.
-    expect(await syncRun('B', seenByB)).toEqual(['B: post over A', 'B: head-moved', 'B: confirm-only over C']);
+    // behind it: it posts nothing more.
+    const late = await syncOnce(sha.B, depsFor('B', seenByB));
+    expect(late.outcome).toBe('confirmed');
+    expect(late.steps).toEqual([`advance over ${sha.A}`, 'head-moved', `confirm-only over ${sha.C}`]);
     await record();
 
-    // main is rewritten: D descends from A but not from C.
-    expect(await syncRun('D', await readHead())).toEqual(['D: force over C', 'D: snapshot-rejected']);
+    // main is rewritten: D descends from A but not from C. Its 15-minute re-post changes nothing.
+    expect(await syncOnce(sha.D, depsFor('D'))).toMatchObject({ outcome: 'held' });
+    await setClock(Date.parse('2026-10-13T12:15:00Z'));
+    expect(await syncOnce(sha.D, depsFor('D'))).toMatchObject({ outcome: 'held' });
     await record();
 
     expect(heads).toEqual(['A', 'C', 'C', 'C']);
     // Never backwards: each head descends from the one before it.
-    for (let i = 1; i < heads.length; i++) expect(ancestor(heads[i - 1]!, heads[i]!)).toBe(true);
+    for (let i = 1; i < heads.length; i++) expect(board.ancestry[`${heads[i - 1]}<${heads[i]}`]).toBe(true);
 
-    // The held history is on the dashboard, with its 24-hour auto-accept time.
-    const state = (await (await ownerCall('/v1/ui/state')).json()) as { held: { sha: string; auto_accept_at: number }[]; head: { sha: string } };
+    // The held history is on the dashboard once, with its first 24-hour auto-accept time.
+    const state = (await (await ownerCall('/v1/ui/state')).json()) as { held: { sha: string; head_sha: string; auto_accept_at: number }[]; head: { sha: string } };
     expect(state.head.sha).toBe(sha.C);
     expect(state.held).toEqual([expect.objectContaining({ sha: sha.D, head_sha: sha.C, auto_accept_at: Date.parse('2026-10-14T12:00:00Z') })]);
   });

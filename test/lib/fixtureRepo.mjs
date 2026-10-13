@@ -3,12 +3,13 @@
 // only; test/integration/global-setup.ts and scripts/board-fixtures.mjs use it.
 //
 // The history (commit dates and identity fixed, so every run produces the same shas):
-//   A  R3-9001..9004 filed (R3-9004 blocked on R3-9001)
+//   A  R3-9001..9004 filed (R3-9004 blocked on R3-9001; R3-9003's repos entry is annotated,
+//      `deploy (provisioning)`, as real items' are), plus scripts/data/ (test/fixtures/data)
 //   B  R3-9001 claimed: status in-progress, body edited               (child of A)
 //   C  R3-9005 filed with the EXPEDITE tag                            (child of B)
 //   D  a rewritten main: from A, R3-9003 archived; force-pushed over C (child of A only)
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, renameSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, renameSync, copyFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +47,8 @@ export function buildFixtureRepo() {
   const fixture = (id) => readFileSync(join(FIXTURES, 'roadmap', `${id}.mdx`), 'utf8');
 
   for (const f of readdirSync(join(FIXTURES, 'roadmap'))) put(f.replace(/\.mdx$/, ''), fixture(f.replace(/\.mdx$/, '')));
+  mkdirSync(join(work, 'scripts/data'), { recursive: true });
+  for (const f of readdirSync(join(FIXTURES, 'data'))) copyFileSync(join(FIXTURES, 'data', f), join(work, 'scripts/data', f));
   const A = commit('roadmap: file R3-9001..9004', '2026-10-13T10:00:00Z');
   git(work, ['remote', 'add', 'origin', bare]);
   git(work, ['push', '-q', 'origin', 'main']);
@@ -76,20 +79,16 @@ export function buildFixtureRepo() {
   return { root, bare, work, shas, isAncestor };
 }
 
-/** The board at each commit, computed by the REAL docs code — `readBoardAt` (scripts/board.mjs),
- *  `cardOf`, `buildFactoryState` and `rankReady` — from a docs checkout at `docsDir`. Only the
- *  parts the sync posts are kept: the items and the rankReady order. */
+/** The snapshot the sync posts at each commit, produced by the REAL docs sync —
+ *  `buildPayload` from docs scripts/baton-sync.mjs, run over the fixture repository (it reads
+ *  the board with factory-state's code and the data files at that commit) — minus its
+ *  internal `_state`. */
 export async function boardStates(repo, docsDir) {
-  const imp = (p) => import(join(docsDir, p));
-  const { readBoardAt } = await imp('scripts/board.mjs');
-  const { cardOf } = await imp('scripts/lib/workQueues.mjs');
-  const { buildFactoryState, rankReady } = await imp('scripts/lib/factoryState.mjs');
+  const { buildPayload } = await import(join(docsDir, 'scripts/baton-sync.mjs'));
   const out = {};
   for (const label of LABELS) {
-    const board = readBoardAt(repo.shas[label], repo.work);
-    const items = board.items.map((it) => ({ ...cardOf(it.id, it), body: it.body, project: it.project, order: it.order, updated: it.updated }));
-    const state = buildFactoryState({ items, archivedIds: board.archivedIds, now: NOW, source: {} });
-    out[label] = { items: state.items, ready: rankReady(state).map((r) => r.id) };
+    const { _state, ...payload } = buildPayload(repo.shas[label], { root: repo.work, now: NOW });
+    out[label] = payload;
   }
   return out;
 }

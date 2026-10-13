@@ -63,7 +63,15 @@ export function rows<T = Record<string, unknown>>(query: string, ...params: unkn
   return runInDurableObject(stub(), (_o: Baton, state: DurableObjectState) => state.storage.sql.exec(query, ...(params as SqlStorageValue[])).toArray() as T[]);
 }
 
-/** A board payload as the sync posts it (§7.1, §11). */
-export function payload(sha: string, parent: string | null, state: { items: unknown[]; ready: string[] }, extra: Record<string, unknown> = {}) {
-  return { sha, parent_sha: parent, state: { items: state.items }, ready: state.ready, confirmations: [], ...extra };
+/** A board payload as the sync posts it (§7.1, §11): either a fixture snapshot (the real
+ *  sync's `buildPayload` output — `state`, `ready` and the reference data) or a hand-built
+ *  `{items, ready}`, at `sha` over `parent`. */
+export function payload(
+  sha: string,
+  parent: string | null,
+  snap: { items?: unknown[]; state?: { items: unknown[] }; ready: string[]; [k: string]: unknown },
+  extra: Record<string, unknown> = {},
+) {
+  const { items, state, ready, sha: _s, parent_sha: _p, ...reference } = snap;
+  return { ...reference, sha, parent_sha: parent, state: { items: state?.items ?? items ?? [] }, ready, confirmations: [], ...extra };
 }

@@ -36,19 +36,15 @@ export default async function setup(project: TestProject) {
   project.provide('shared', { manifest: manifest.files, vendored, upstream });
   project.provide('wranglerToml', readFileSync(join(ROOT, 'wrangler.toml'), 'utf8'));
 
-  // One input from the real producer: today's docs board, as factory-state computes it.
-  let liveBoard: { items: unknown[]; ready: string[] } | null = null;
+  // One input from the real producer: what the docs sync would post for today's board —
+  // docs' own buildPayload at its origin/main, reference data included.
+  let liveBoard: Record<string, unknown> | null = null;
   if (haveDocs) {
-    const { computeState } = await import(join(docs, 'scripts/factory-state.mjs'));
-    const { rankReady } = await import(join(docs, 'scripts/lib/factoryState.mjs'));
-    const state = computeState({});
-    liveBoard = { items: state.items, ready: rankReady(state).map((r: { id: string }) => r.id) };
+    const { buildPayload } = await import(join(docs, 'scripts/baton-sync.mjs'));
+    const { execFileSync } = await import('node:child_process');
+    const sha = execFileSync('git', ['-C', docs, 'rev-parse', 'origin/main'], { encoding: 'utf8' }).trim();
+    const { _state, ...payload } = buildPayload(sha, { root: docs });
+    liveBoard = { ...payload, sha };
   }
   project.provide('liveBoard', liveBoard);
-  // …and the real reference data files the sync posts with it (§7.3, §7.4).
-  const data = (f: string) => JSON.parse(readFileSync(join(docs, 'scripts/data', f), 'utf8'));
-  project.provide('liveReference', haveDocs ? {
-    prices: data('model-prices.json'), providers: data('model-providers.json'), matrix: data('reviewer-matrix.json'),
-    min_skills_version: data('baton.json').skills_version,
-  } : null);
 }

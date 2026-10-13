@@ -2,7 +2,7 @@
 // vendor.mjs — copy Baton's decision library from a sibling `docs` checkout (BATON_SPEC §3,
 // R-BTN-37).
 //
-//   npm run vendor                   copy docs/scripts/lib/{baton,vocabulary,sessionUsage}.mjs into
+//   npm run vendor                   copy docs/scripts/lib/{baton,vocabulary,sessionUsage,batonSync}.mjs into
 //                                    src/shared/ and rewrite src/shared/manifest.json
 //   npm run vendor -- --check        exit 1 when a copy differs from the sibling checkout
 //   DOCS_DIR=<path> npm run vendor   use a docs checkout somewhere else (default ../docs)
@@ -18,7 +18,7 @@ import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-export const SHARED = ['baton.mjs', 'vocabulary.mjs', 'sessionUsage.mjs'];
+export const SHARED = ['baton.mjs', 'vocabulary.mjs', 'sessionUsage.mjs', 'batonSync.mjs'];
 export const docsDir = () => resolve(process.env.DOCS_DIR ?? join(ROOT, '..', 'docs'));
 export const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
