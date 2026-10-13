@@ -11,6 +11,29 @@ export const FRESH_BOARD_MS = 15 * 60_000;
 /** §13: a legacy claim is reaped at its claim note's date plus 7 days — the witness's rule. */
 export const LEGACY_REAP_MS = 7 * 24 * 3_600_000;
 
+/**
+ * §13 step 3: one legacy claim of its own legacy worker — the shape the cutover import and the
+ * mirror's foreign-claim report (§12) both make. The worker is named for `preferred` (the claim
+ * note's holder) unless a legacy worker already has that name, else `item-<id>`, else
+ * `item-<id>-<nonce>`; the claim is reaped at `claimedAt` plus 7 days. Logs the `claimed`
+ * (legacy) event the export reads as the claim's record.
+ */
+export function importLegacyClaim(sql: SqlStorage, now: number,
+  o: { item: string; preferred: string | null; nonce: string; claimedAt: number; sha: string; requestId: string; detail?: Record<string, unknown> }) {
+  const taken = (name: string) => sql.exec(`SELECT 1 FROM workers WHERE hostname = 'legacy' AND session_name = ?`, name).toArray().length > 0;
+  sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities) VALUES ('legacy', 'legacy', '[]') ON CONFLICT (id) DO NOTHING`);
+  const session = o.preferred && SESSION_NAME.test(o.preferred) && !taken(o.preferred) ? o.preferred
+    : !taken(`item-${o.item}`) ? `item-${o.item}` : `item-${o.item}-${o.nonce}`;
+  sql.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at)
+            VALUES ('legacy', ?, ?, 'legacy', 'claude-code', 'legacy', 'critical', 0, '', ?, ?)`, session, randomHex(32), now, now);
+  const workerId = sql.exec('SELECT last_insert_rowid() AS id').one().id as number;
+  sql.exec(`INSERT INTO work_item_claims (work_item_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, reap_after)
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`, o.item, workerId, o.requestId, o.nonce, o.sha, o.claimedAt, o.claimedAt + LEGACY_REAP_MS);
+  const claimId = sql.exec('SELECT last_insert_rowid() AS id').one().id as number;
+  logEvent(sql, now, 'claimed', 'baton', { legacy: true, session, ...(o.detail ?? {}) }, o.item, claimId);
+  return { claimId, session };
+}
+
 export interface Ctx {
   storage: DurableObjectStorage;
   now: () => number;
@@ -60,24 +83,17 @@ export class Cutover {
    *  claim note's holder session when the board carries it, else `item-<id>` — holding an
    *  active claim reaped at the note's date plus 7 days. */
   private importLegacy(sha: string, now: number): string[] {
-    this.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities) VALUES ('legacy', 'legacy', '[]') ON CONFLICT (id) DO NOTHING`);
     const items = this.rows<{ id: string; since: string | null; holder: string | null }>(
       `SELECT id, since, holder FROM work_items w WHERE status = 'in-progress'
        AND NOT EXISTS (SELECT 1 FROM work_item_claims c WHERE c.work_item_id = w.id AND c.status = 'active') ORDER BY id`);
     const out: string[] = [];
     for (const it of items) {
-      // The per-hostname session name is unique; a holder session that two notes share falls
-      // back to the item's own name rather than merging two claims into one worker.
-      const named = it.holder && SESSION_NAME.test(it.holder) && !this.rows(`SELECT 1 FROM workers WHERE hostname = 'legacy' AND session_name = ?`, it.holder).length;
-      const session = named ? it.holder! : `item-${it.id}`;
-      this.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at)
-                 VALUES ('legacy', ?, ?, 'legacy', 'claude-code', 'legacy', 'critical', 0, '', ?, ?)`, session, randomHex(32), now, now);
-      const workerId = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
-      const claimedAt = it.since ? Date.parse(`${it.since}T00:00:00Z`) : now;
-      this.exec(`INSERT INTO work_item_claims (work_item_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, reap_after)
-                 VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`, it.id, workerId, `legacy:${it.id}`, randomHex(3), sha, claimedAt, claimedAt + LEGACY_REAP_MS);
-      const claimId = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
-      this.event('claimed', 'baton', { legacy: true, session, since: it.since }, it.id, claimId);
+      // A holder session that two notes share falls back to the item's own name rather than
+      // merging two claims into one worker (the per-hostname session name is unique).
+      importLegacyClaim(this.c.storage.sql, now, {
+        item: it.id, preferred: it.holder, nonce: randomHex(3), sha, requestId: `legacy:${it.id}`,
+        claimedAt: it.since ? Date.parse(`${it.since}T00:00:00Z`) : now, detail: { since: it.since },
+      });
       out.push(it.id);
     }
     return out;

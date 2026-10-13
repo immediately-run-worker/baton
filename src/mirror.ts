@@ -3,8 +3,8 @@
 // dispatches after a transition (§10.3). The mirror workflow itself lives in docs.
 import { BatonError } from './http';
 import { ITEM_ID } from './validate';
-import { logEvent, randomHex } from './db';
-import { LEGACY_REAP_MS } from './cutover';
+import { logEvent } from './db';
+import { importLegacyClaim } from './cutover';
 
 type Row = Record<string, SqlStorageValue>;
 const MAX_PAGE = 200;
@@ -12,7 +12,7 @@ const NONCE = /^[0-9a-f]{6}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
 /** R-BTN-36: the detail keys the feed may carry. Nothing that names a session, worker or host
  *  (`session`, `worker_id`, `request_id`, an owner's email) ever leaves through it. */
-const DETAIL_KEYS = new Set(['end_reason', 'ended_at_sha', 'hold_reason', 'hold', 'expedite', 'retry_after', 'attempts', 'fence_pending',
+const DETAIL_KEYS = new Set(['foreign', 'end_reason', 'ended_at_sha', 'hold_reason', 'hold', 'expedite', 'retry_after', 'attempts', 'fence_pending',
   'by', 'legacy', 'shadow', 'status', 'nonce', 'holder_nonce', 'sha', 'imported', 'snapshot', 'reason', 'action', 'after', 'since', 'claim_id']);
 /** The actor's kind only: `worker:<id>` and `owner:<email>` name people and machines. */
 const actorKind = (actor: string) => actor.split(':')[0];
@@ -91,20 +91,17 @@ export class Mirror {
       `SELECT id, nonce, claimed_at FROM work_item_claims WHERE work_item_id = ? AND status = 'active'`, item)[0];
     if (holder && holder.nonce === nonce) return { imported: true, claim_id: holder.id, nonce };
     if (holder) {
-      logEvent(this.c.storage.sql, now, 'foreign-claim', 'sync', { nonce, holder_nonce: holder.nonce, sha: b.sha }, item, holder.id);
+      // A repeated report of the same commit (a run that failed before its scan point moved)
+      // logs nothing new.
+      const seen = this.rows(`SELECT 1 FROM events WHERE kind = 'foreign-claim' AND work_item_id = ? AND json_extract(detail_json, '$.sha') = ?`, item, b.sha).length;
+      if (!seen) logEvent(this.c.storage.sql, now, 'foreign-claim', 'sync', { nonce, holder_nonce: holder.nonce, sha: b.sha }, item, holder.id);
       return { held: true, claim_id: holder.id, nonce: holder.nonce, claimed_at: holder.claimed_at };
     }
-    // Nobody holds it: a legacy claim of its own legacy worker, as the cutover import makes.
-    this.c.storage.sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities) VALUES ('legacy', 'legacy', '[]') ON CONFLICT (id) DO NOTHING`);
-    const session = this.rows(`SELECT 1 FROM workers WHERE hostname = 'legacy' AND session_name = ?`, `item-${item}`).length
-      ? `item-${item}-${nonce}` : `item-${item}`;
-    this.c.storage.sql.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at)
-                             VALUES ('legacy', ?, ?, 'legacy', 'claude-code', 'legacy', 'critical', 0, '', ?, ?)`, session, randomHex(32), now, now);
-    const workerId = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
+    // Nobody holds it: a legacy claim of its own legacy worker, the shape the cutover import makes.
     const head = this.rows<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? '';
-    this.c.storage.sql.exec(`INSERT INTO work_item_claims (work_item_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, reap_after)
-                             VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`, item, workerId, `foreign:${item}:${nonce}`, nonce, head, b.at, (b.at as number) + LEGACY_REAP_MS);
-    const claimId = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
+    const { claimId } = importLegacyClaim(this.c.storage.sql, now, {
+      item, preferred: null, nonce, claimedAt: b.at as number, sha: head, requestId: `foreign:${item}:${nonce}`, detail: { foreign: true },
+    });
     logEvent(this.c.storage.sql, now, 'foreign-claim', 'sync', { nonce, sha: b.sha, imported: true }, item, claimId);
     return { imported: true, claim_id: claimId, nonce };
   }

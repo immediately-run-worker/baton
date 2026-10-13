@@ -84,6 +84,9 @@ describe('§12: foreign claims', () => {
     expect(await (await report({})).json()).toEqual({ held: true, claim_id: c.claim_id, nonce: c.nonce, claimed_at: T0 });
     expect((await beat('vm-a', secret)).json.claim).toMatchObject({ id: c.claim_id, nonce: c.nonce });
     expect(await rows(`SELECT kind, json_extract(detail_json, '$.nonce') AS nonce FROM events WHERE kind = 'foreign-claim'`)).toEqual([{ kind: 'foreign-claim', nonce: 'f0f0f0' }]);
+     // A repeated report of the same commit logs nothing new.
+    await report({});
+    expect(await rows(`SELECT count(*) AS n FROM events WHERE kind = 'foreign-claim'`)).toEqual([{ n: 1 }]);
   });
 
   it('an unheld item is imported as a legacy claim under the commit’s own nonce; a repeat is idempotent', async () => {
@@ -92,6 +95,9 @@ describe('§12: foreign claims', () => {
     expect(await (await report({})).json()).toEqual({ imported: true, claim_id: expect.any(Number), nonce: 'f0f0f0' });
     expect(await rows(`SELECT c.nonce, c.reap_after, w.kind FROM work_item_claims c JOIN workers w ON w.id = c.worker_id`)).toEqual([
       { nonce: 'f0f0f0', reap_after: T0 + 7 * 24 * 3_600_000, kind: 'legacy' }]);
+    // The cutover import's shape, its claimed (legacy) event included: the export's claim record.
+    const feedKinds = (await feed()).events.filter((e) => e.work_item_id === 'R3-9001').map((e) => [e.kind, e.detail]);
+    expect(feedKinds).toEqual([['claimed', { legacy: true, foreign: true }], ['foreign-claim', { nonce: 'f0f0f0', sha: sha.B, imported: true }]]);
   });
 
   it('refuses a malformed report', async () => {
