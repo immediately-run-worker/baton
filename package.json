@@ -11,7 +11,7 @@
     "fixtures": "node scripts/board-fixtures.mjs",
     "dev": "wrangler dev",
     "model": "node model/check.mjs",
-    "model:verify": "quint verify model/properties.qnt --main=properties --invariant=safety --max-steps=6"
+    "model:verify": "quint verify model/properties.qnt --main=properties --invariant=safety --max-steps=5"
   },
   "dependencies": {
     "jose": "^6.2.12"

@@ -22,7 +22,7 @@ remaining work is listed under *Not yet*.
 
 - `npm run model` — typecheck, the regression runs, 1,000 random runs of 40 steps against
   `safety` (`MODEL_SAMPLES` to change), and the witnesses. No JVM. About a minute.
-- `npm run model:verify` — Apalache's bounded proof of `safety` to depth 6 (depth 6 takes about 15 minutes on 4 CPUs, inside CI's 30-minute job; deepen as the model is tuned). Needs Java
+- `npm run model:verify` — Apalache's bounded proof of `safety` to depth 5 (about 8 minutes on 4 CPUs; a depth-8 run was still checking depth 6 when stopped at 28 minutes, so deepening needs the model tuned first). Needs Java
   (CI installs Temurin 21); the first run downloads Apalache.
 
 Both use Quint's TypeScript backend for simulation, because the Rust evaluator is fetched
