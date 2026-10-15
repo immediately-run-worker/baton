@@ -11,7 +11,6 @@ interface Env {
   PUBLIC_ORIGIN: string;
   OIDC_ISSUER: string;
   OIDC_JWKS_URL: string;
-  OIDC_AUDIENCE: string;
   OIDC_REPOSITORY: string;
   OIDC_REF: string;
   SYNC_WORKFLOW_REF: string;

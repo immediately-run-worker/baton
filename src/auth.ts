@@ -58,7 +58,7 @@ export async function verifySync(req: Request, env: Env, workflowRef: string = e
   const keys = testKeys(env, env.TEST_OIDC_JWKS) ?? remote(env.OIDC_JWKS_URL);
   let claims: Record<string, unknown>;
   try {
-    ({ payload: claims } = await jwtVerify(token, keys, { issuer: env.OIDC_ISSUER, audience: env.OIDC_AUDIENCE }));
+    ({ payload: claims } = await jwtVerify(token, keys, { issuer: env.OIDC_ISSUER, audience: env.PUBLIC_ORIGIN }));
   } catch (e) {
     throw verifyFailure(e, 'OIDC');
   }

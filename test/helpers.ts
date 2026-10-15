@@ -20,7 +20,7 @@ async function sign(claims: Record<string, unknown>, { issuer, audience }: { iss
 
 /** A GitHub Actions OIDC token; `over` replaces any claim (another repo, ref, workflow…). */
 export function syncToken(over: Record<string, unknown> = {}, opts: { issuer?: string; audience?: string } = {}) {
-  return sign({ ...SYNC_CLAIMS, ...over }, { issuer: opts.issuer ?? env.OIDC_ISSUER, audience: opts.audience ?? env.OIDC_AUDIENCE });
+  return sign({ ...SYNC_CLAIMS, ...over }, { issuer: opts.issuer ?? env.OIDC_ISSUER, audience: opts.audience ?? env.PUBLIC_ORIGIN });
 }
 
 /** A Cloudflare Access token for `email`. */
