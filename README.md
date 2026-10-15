@@ -58,19 +58,22 @@ credential's hash revokes it on its next call. Only the credential named `test` 
 
 ## Running locally
 
-For development and CI (BATON_SPEC §3a): the same core, on a SQLite file.
+For development and CI (BATON_SPEC §3a): the same core, on a SQLite file. It needs Node 22.13 or
+later (`node:sqlite` without a flag).
 
 ```
 npm run start:local -- --db ./baton.db --port 8787 [--origin <url>] [--admin-keys <file>] [--config <file>]
 ```
 
-- `--origin` is the instance's own origin (default `http://127.0.0.1:<port>`): the OIDC audience,
-  the dashboard's `Origin` check (R-BTN-56).
+- `--origin` is the instance's own origin (default `http://<host>:<port>`): the OIDC audience,
+  the dashboard's `Origin` check (R-BTN-56). It is required with `--port 0` or a wildcard
+  `--host`, where the address clients use cannot be derived.
 - `--admin-keys` names a file of administrators' OpenSSH public keys, one per line (R-BTN-57).
 - `--config` names a JSON object holding the Worker's other variables and secrets — `OIDC_*`,
   `*_WORKFLOW_REF`, `ACCESS_*`, `OWNER_EMAILS`, `TOKEN_HASHES`, `CREDENTIALS`,
-  `GITHUB_DISPATCH_TOKEN` — as strings. Nothing is read from `.dev.vars`, and the test bindings
-  are refused.
+  `GITHUB_DISPATCH_TOKEN` — as strings. Without it every principal is unconfigured: the sync
+  and the owner are refused and no worker token is known, so the example above serves only
+  refusals. Nothing is read from `.dev.vars`, and the test bindings are refused.
 
 One queue runs every request and alarm tick one at a time, as the Durable Object does. A local
 Baton trusts the hooks of the repositories it serves (R-BTN-59): register only repositories

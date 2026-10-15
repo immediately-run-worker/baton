@@ -3,7 +3,7 @@
 import { describe, it, expect, inject } from 'vitest';
 import { env } from 'cloudflare:test';
 import { errors, generateKeyPair, SignJWT } from 'jose';
-import { verifyFailure, verifySync } from '../../src/core/auth';
+import { parseAdminKeys, verifyFailure, verifySync } from '../../src/core/auth';
 import { accessToken, call, ORIGIN, ownerCall, syncCall, syncToken } from '../helpers';
 
 const code = async (res: Response) => ((await res.json()) as { code: string }).code;
@@ -136,5 +136,12 @@ describe('a key-set outage is not a credential failure', () => {
     for (const e of [new errors.JWTExpired('exp', {}), new errors.JWTClaimValidationFailed('aud', {}), new errors.JWSSignatureVerificationFailed(), new errors.JWSInvalid(), new errors.JWTInvalid(), new errors.JWKSNoMatchingKey()]) {
       expect(verifyFailure(e, 'OIDC').code).toBe('unauthenticated');
     }
+  });
+});
+
+describe('administrator keys (R-BTN-57)', () => {
+  it('one OpenSSH key per line on both hosts; blank lines and # comments are not keys', () => {
+    expect(parseAdminKeys('# owner\nssh-ed25519 AAAA one\r\n\n  ssh-ed25519 BBBB two  \n#ssh-ed25519 CCCC off\n')).toEqual(['ssh-ed25519 AAAA one', 'ssh-ed25519 BBBB two']);
+    expect(parseAdminKeys('')).toEqual([]);
   });
 });

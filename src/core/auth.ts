@@ -133,3 +133,10 @@ export function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
   for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
   return diff === 0;
 }
+
+/** The administrators' keys (R-BTN-57) from `BATON_ADMIN_KEYS` or an `--admin-keys` file: one
+ *  OpenSSH public key per line; blank lines and `#` comments are not keys. Both hosts read
+ *  them through this one parse. */
+export function parseAdminKeys(text: string): string[] {
+  return text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
+}

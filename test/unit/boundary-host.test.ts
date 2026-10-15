@@ -21,10 +21,11 @@ const PLATFORM = [
   /\bSqlStorage[A-Za-z]*\b/,
   /\bExportedHandler\b/,
   /\bwaitUntil\s*\(/,
+  /from\s+['"]\.\.?\/(\.\.\/)*(cloudflare|local)\b/,
 ];
 
 describe('the host boundary (R-BTN-55)', () => {
-  it('src/core/ imports nothing from Cloudflare and reads no ctx', () => {
+  it('src/core/ imports nothing from Cloudflare or either host, and reads no ctx', () => {
     const hits = files(join(ROOT, 'src/core')).flatMap((p) => {
       const text = code(p);
       return PLATFORM.filter((re) => re.test(text)).map((re) => `${relative(ROOT, p)}: ${re}`);
@@ -39,5 +40,8 @@ describe('the host boundary (R-BTN-55)', () => {
 
   it('the scan sees a violation when there is one', () => {
     expect(PLATFORM.some((re) => re.test(code(join(ROOT, 'src/cloudflare/baton.ts'))))).toBe(true);
+    for (const line of [`import { durableStore } from '../cloudflare/baton';`, `import { LocalHost } from '../local/host';`]) {
+      expect([line, PLATFORM.some((re) => re.test(line))]).toEqual([line, true]);
+    }
   });
 });

@@ -17,7 +17,7 @@ sections it cites before changing anything. See `README.md` for the layout.
 - **Filter fields only (R-BTN-33).** No item body, note, exit criterion or PR list is ever
   stored.
 - **Validate before you write.** Every worker- or owner-supplied field goes through
-  `src/core/validate.ts` before any SQL; a heartbeat's writes run in one `transactionSync`.
+  `src/core/validate.ts` before any SQL; a heartbeat's writes run in one `store.transaction`.
 - **Every behaviour change names its `S-BTN-n` scenario** (R-BTN-31) and keeps `npm test` green.
 
 ## Commands

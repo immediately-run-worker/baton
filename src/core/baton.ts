@@ -34,8 +34,8 @@ export class BatonCore {
   private pendingDispatch = new Set<Workflow>();
   /** The dispatch call; tests replace it (as they replace `now`) to see what would be sent. */
   dispatcher: (workflow: Workflow) => Promise<unknown>;
-  /** §3: await a signature check or a hook call through this, so another request may run
-   *  meanwhile on both hosts alike (R-BTN-55). */
+  /** §3: a signature check (R3-1239) or a hook call (R3-1236) is awaited through this, so
+   *  another request may run meanwhile on both hosts alike (R-BTN-55). No caller yet. */
   readonly outside: <T>(work: () => Promise<T>) => Promise<T>;
 
   constructor(private readonly ports: Ports) {

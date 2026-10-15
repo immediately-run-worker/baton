@@ -7,9 +7,9 @@ import type { AddressInfo } from 'node:net';
 import { claimItem, cutover, hbBody, payload, register, rows, setClock, sha256, syncCall } from '../helpers';
 import { current } from '../hosts/local';
 import { RequestQueue } from '../../src/local/queue';
-import { serve } from '../../src/local/server';
+import { MAX_BODY, serve } from '../../src/local/server';
 import { openStore } from '../../src/local/store';
-import { localConfig } from '../../src/local/main';
+import { localConfig, main } from '../../src/local/main';
 import { SECURITY_HEADERS } from '../../src/core/http';
 
 const board = inject('board');
@@ -46,6 +46,46 @@ describe('the request queue', () => {
     });
     await Promise.all([a, b]);
     expect(log).toEqual(['a+', 'b+', 'b-', 'a: signature checked', 'a-']);
+  });
+
+  it('overlapping outside calls by one holder release once and come back once; later runs still run', async () => {
+    const q = new RequestQueue();
+    const log: string[] = [];
+    const a = q.run(async () => {
+      log.push('a+');
+      await Promise.all([q.outside(() => later(10)), q.outside(() => later(20))]);
+      log.push('a-');
+    });
+    const b = q.run(async () => {
+      log.push('b');
+    });
+    await Promise.all([a, b]);
+    expect(log).toEqual(['a+', 'b', 'a-']);
+    expect(await q.run(() => 'next')).toBe('next');
+  });
+
+  it('refuses outside from code that does not hold the queue, so nothing runs beside the holder', async () => {
+    const q = new RequestQueue();
+    await expect(q.outside(async () => 1)).rejects.toThrow(/does not hold/);
+    const log: string[] = [];
+    let stray: Promise<unknown> | null = null;
+    const b = q.run(async () => {
+      log.push('b+');
+      stray = q.outside(async () => 0).catch((e) => e);
+      await later(10);
+      log.push('b-');
+    });
+    await b;
+    // b's own call is allowed; once b has settled, a late one is refused and takes no slot.
+    await stray;
+    await expect(q.run(() => q.outside(async () => 'inner'))).resolves.toBe('inner');
+    let late: () => Promise<unknown> = async () => null;
+    await q.run(() => {
+      late = () => q.outside(async () => 'late');
+    });
+    await expect(late()).rejects.toThrow(/does not hold/);
+    expect(log).toEqual(['b+', 'b-']);
+    expect(await q.run(() => 'next')).toBe('next');
   });
 
   it('releases the queue when the holder throws', async () => {
@@ -103,6 +143,17 @@ describe('the local host', () => {
         body: JSON.stringify(hbBody('vm-a', { secret_hash: await sha256(secret) })),
       });
       expect(ok.status).toBe(200);
+      // A target that looks like another authority stays a path, as on the Worker.
+      const odd = await fetch(`${origin}:${port}//x/v1/sync/head`);
+      expect([odd.status, ((await odd.json()) as { code: string }).code]).toEqual([404, 'not-found']);
+      // A body over the limit is refused with the §11 envelope and the security headers.
+      const big = await fetch(`${origin}:${port}/v1/worker/heartbeat`, { method: 'POST', body: 'x'.repeat(MAX_BODY + 1) }).catch(() => null);
+      expect(big).not.toBeNull();
+      if (big) {
+        expect(big.status).toBe(400);
+        expect(await big.json()).toMatchObject({ ok: false, code: 'invalid-params' });
+        for (const [k, v] of Object.entries(SECURITY_HEADERS)) expect(big.headers.get(k)).toBe(v);
+      }
       expect(await ok.json()).toMatchObject({ worker_id: 1, mode: 'cut-over' });
     } finally {
       await new Promise((r) => server.close(r));
@@ -128,6 +179,11 @@ describe('the local store', () => {
 });
 
 describe('a local start', () => {
+  it('needs --origin where the address clients use cannot be derived', async () => {
+    await expect(main(['--db', ':memory:', '--port', '0'])).rejects.toThrow(/--origin is required/);
+    await expect(main(['--db', ':memory:', '--port', '8787', '--host', '0.0.0.0'])).rejects.toThrow(/--origin is required/);
+  });
+
   it('refuses the test bindings and non-string values', () => {
     expect(() => localConfig({ BATON_TEST_BINDINGS: 'true' }, 'http://127.0.0.1:8787')).toThrow(/test bindings/);
     expect(() => localConfig({ TEST_OIDC_JWKS: '{}' }, 'http://127.0.0.1:8787')).toThrow(/test bindings/);

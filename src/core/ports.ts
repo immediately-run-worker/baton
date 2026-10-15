@@ -31,7 +31,8 @@ export interface Scheduler {
   set(at: number): Promise<void>;
 }
 
-/** Baton's clock (R-BTN-32): epoch milliseconds. Core reads time only through its `now`. */
+/** Baton's clock (R-BTN-32): epoch milliseconds. Core reads time only through its `now`;
+ *  without one the core uses the system clock, on both hosts alike. */
 export type Clock = () => number;
 
 /** The administrators' public keys (R-BTN-57): the `BATON_ADMIN_KEYS` secret, or the file
@@ -84,8 +85,10 @@ export interface Config {
   TEST_SIGNING_JWK?: string;
 }
 
-/** §3: the two awaits at which another request may run — a signature check and a hook call.
- *  The Durable Object's input gate opens there by itself; the local queue is released. */
+/** §3: the two awaits at which another request may run — a request's signature check, once
+ *  R3-1239 moves it inside the core, and a hook call (R3-1236); their callers await through
+ *  this. The Durable Object's input gate opens there by itself; the local queue is released.
+ *  Today the front verifies its JWTs before a request reaches the core, and nothing calls it. */
 export interface Gate {
   outside<T>(work: () => Promise<T>): Promise<T>;
 }

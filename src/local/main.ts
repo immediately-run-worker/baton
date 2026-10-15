@@ -6,6 +6,7 @@
 // in-process, may set them.
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
+import { parseAdminKeys } from '../core/auth';
 import type { Config } from '../core/ports';
 import { LocalHost } from './host';
 import { serve } from './server';
@@ -54,10 +55,16 @@ export async function main(argv: string[]) {
   if (!values.db) throw new Error('--db <path> is required (the SQLite file; created if absent)');
   const port = Number(values.port);
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('--port must be a port number');
-  const origin = (values.origin ?? `http://127.0.0.1:${port}`).replace(/\/+$/, '');
+  // The origin is the OIDC audience and the dashboard's Origin (R-BTN-56): it must be the
+  // address clients use, so it is derived only from a concrete host and port.
+  if (!values.origin && (port === 0 || ['0.0.0.0', '::', ''].includes(values.host!))) {
+    throw new Error('--origin is required with --port 0 or a wildcard --host: the origin must be the address clients use');
+  }
+  const bind = values.host!.includes(':') ? `[${values.host}]` : values.host;
+  const origin = (values.origin ?? `http://${bind}:${port}`).replace(/\/+$/, '');
   const file = values.config ? JSON.parse(readFileSync(values.config, 'utf8')) : {};
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error('--config must hold a JSON object');
-  const keys = values['admin-keys'] ? readFileSync(values['admin-keys'], 'utf8').split('\n').map((l) => l.trim()).filter((l) => l && !l.startsWith('#')) : [];
+  const keys = parseAdminKeys(values['admin-keys'] ? readFileSync(values['admin-keys'], 'utf8') : '');
 
   const { store } = openStore(values.db);
   const host = new LocalHost({ store, config: localConfig(file, origin), adminKeys: { list: () => keys } });
