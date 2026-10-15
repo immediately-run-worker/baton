@@ -58,7 +58,7 @@ export async function verifySync(req: Request, env: Env, workflowRef: string = e
   const keys = testKeys(env, env.TEST_OIDC_JWKS) ?? remote(env.OIDC_JWKS_URL);
   let claims: Record<string, unknown>;
   try {
-    ({ payload: claims } = await jwtVerify(token, keys, { issuer: env.OIDC_ISSUER, audience: env.OIDC_AUDIENCE }));
+    ({ payload: claims } = await jwtVerify(token, keys, { issuer: env.OIDC_ISSUER, audience: env.BATON_ORIGIN }));
   } catch (e) {
     throw verifyFailure(e, 'OIDC');
   }
@@ -93,7 +93,7 @@ export async function verifyOwner(req: Request, env: Env): Promise<string> {
 /** R-BTN-16: a state-changing `/v1/ui/*` request needs a JSON body and our own Origin. */
 export function checkStateChanging(req: Request, env: Env): void {
   const type = (req.headers.get('Content-Type') ?? '').split(';')[0].trim().toLowerCase();
-  if (type !== 'application/json' || req.headers.get('Origin') !== env.PUBLIC_ORIGIN) {
+  if (type !== 'application/json' || req.headers.get('Origin') !== env.BATON_ORIGIN) {
     throw new BatonError('forbidden', 'a state-changing request needs Content-Type: application/json and the dashboard Origin');
   }
 }

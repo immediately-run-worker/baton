@@ -5,7 +5,7 @@ import { exports } from 'cloudflare:workers';
 import { importJWK, SignJWT } from 'jose';
 import type { Baton } from '../src/baton';
 
-export const ORIGIN = 'https://workitems.immediately.run';
+export const ORIGIN = env.BATON_ORIGIN;
 const SYNC_CLAIMS = {
   repository: 'immediately-run/docs',
   ref: 'refs/heads/main',
@@ -20,7 +20,7 @@ async function sign(claims: Record<string, unknown>, { issuer, audience }: { iss
 
 /** A GitHub Actions OIDC token; `over` replaces any claim (another repo, ref, workflow…). */
 export function syncToken(over: Record<string, unknown> = {}, opts: { issuer?: string; audience?: string } = {}) {
-  return sign({ ...SYNC_CLAIMS, ...over }, { issuer: opts.issuer ?? env.OIDC_ISSUER, audience: opts.audience ?? env.OIDC_AUDIENCE });
+  return sign({ ...SYNC_CLAIMS, ...over }, { issuer: opts.issuer ?? env.OIDC_ISSUER, audience: opts.audience ?? env.BATON_ORIGIN });
 }
 
 /** A Cloudflare Access token for `email`. */
