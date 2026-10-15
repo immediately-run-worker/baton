@@ -1,0 +1,21 @@
+{
+  "start": "filed",
+  "start_leg": "implement",
+  "end": ["merged"],
+  "short_waits": ["ci"],
+  "stations": {
+    "filed": { "label": "Filed, not started" },
+    "pr-open": { "label": "PRs open" },
+    "reviewed": { "label": "Reviewed" },
+    "fixed": { "label": "Findings addressed" },
+    "adjudicated": { "label": "Open findings adjudicated" },
+    "merged": { "label": "Merged and archived" }
+  },
+  "legs": {
+    "implement": { "from": ["filed"], "to": "pr-open" },
+    "review": { "from": ["pr-open", "fixed"], "to": "reviewed", "max_runs": 3 },
+    "fix": { "from": ["reviewed"], "to": "fixed", "max_runs": 2 },
+    "adjudicate": { "from": ["reviewed"], "to": "adjudicated" },
+    "merge": { "from": ["reviewed", "adjudicated"], "to": "merged" }
+  }
+}
