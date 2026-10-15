@@ -36,7 +36,12 @@ export interface Delivery {
   author_email?: string | null;
 }
 
-const DELIVERY_ID = /^[A-Za-z0-9-]{1,64}$/;
+// Bounds on the fields forwarded in X-Baton-Webhook: generous for what GitHub sends, small
+// enough that a hostile value cannot bloat the header or the stored row.
+const DELIVERY_ID = /^[A-Za-z0-9-]{1,64}$/; // a GUID
+const MAX_WORKFLOW_PATH = 300;
+const MAX_PUSHER = 100; // a login, or `github-actions[bot]`
+const MAX_EMAIL = 320; // RFC 5321's limit
 const enc = new TextEncoder();
 
 /** `X-Hub-Signature-256` of `body` under `secret`: `sha256=` and the HMAC's hex. */
@@ -77,16 +82,16 @@ export function pickDelivery(event: string | null, id: string | null, payload: u
   const d: Delivery = { event: event as WebhookEvent, id, repository };
   if (event === 'workflow_run') {
     const path = str(at(at(payload, 'workflow_run'), 'path'));
-    if (!path || path.length > 300) return null;
+    if (!path || path.length > MAX_WORKFLOW_PATH) return null;
     d.workflow_path = path;
   }
   if (event === 'push') {
     const pusher = str(at(at(payload, 'pusher'), 'name'));
-    if (!pusher || pusher.length > 100) return null;
+    if (!pusher || pusher.length > MAX_PUSHER) return null;
     d.pusher = pusher;
     const head = at(payload, 'head_commit');
     const email = head === null ? null : str(at(at(head, 'author'), 'email'));
-    if (email === undefined || (email !== null && email.length > 320)) return null;
+    if (email === undefined || (email !== null && email.length > MAX_EMAIL)) return null;
     d.author_email = email;
   }
   return d;

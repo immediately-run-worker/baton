@@ -54,17 +54,23 @@ describe('the signature comes first (R-BTN-73)', () => {
 });
 
 describe('the one parser (R-BTN-73)', () => {
-  const ALLOWED = new Set(['repository', 'repository.full_name', 'workflow_run', 'workflow_run.path', 'pusher', 'pusher.name', 'head_commit', 'head_commit.author', 'head_commit.author.email']);
+  // Each event's own paths (round 2, 2-A-0): a push's fields are never read from a review.
+  const COMMON = ['repository', 'repository.full_name'];
+  const ALLOWED: Record<string, Set<string>> = {
+    pull_request_review: new Set(COMMON),
+    workflow_run: new Set([...COMMON, 'workflow_run', 'workflow_run.path']),
+    push: new Set([...COMMON, 'pusher', 'pusher.name', 'head_commit', 'head_commit.author', 'head_commit.author.email']),
+  };
 
   it.each([
-    ['pull_request_review', { repository: { full_name: 'o/r', owner: { login: 'o' } }, review: { body: 'b' }, sender: { login: 's' } }, { repository: 'o/r' }],
+    ['pull_request_review', { repository: { full_name: 'o/r', owner: { login: 'o' } }, review: { body: 'b' }, sender: { login: 's' }, pusher: { name: 'p' }, workflow_run: { path: 'x' } }, { repository: 'o/r' }],
     ['workflow_run', { repository: { full_name: 'o/r' }, workflow_run: { path: '.github/workflows/ci.yml', head_sha: 'x', name: 'ci' } }, { repository: 'o/r', workflow_path: '.github/workflows/ci.yml' }],
     ['push', { repository: { full_name: 'o/r' }, pusher: { name: 'p', email: 'e' }, head_commit: { author: { email: 'a@x', name: 'n' }, message: 'm' }, commits: [{}] }, { repository: 'o/r', pusher: 'p', author_email: 'a@x' }],
     ['push', { repository: { full_name: 'o/r' }, pusher: { name: 'p' }, head_commit: null }, { repository: 'o/r', pusher: 'p', author_email: null }],
   ])('%s: returns its fields and reads nothing else', (event, payload, want) => {
     const reads = new Set<string>();
     expect(pickDelivery(event, 'id-1', recording(payload, reads))).toEqual({ event, id: 'id-1', ...want });
-    expect([...reads].filter((r) => !ALLOWED.has(r))).toEqual([]);
+    expect([...reads].filter((r) => !ALLOWED[event].has(r))).toEqual([]);
   });
 
   it.each([
@@ -94,8 +100,10 @@ describe('the core: self-filter, repository map, window (R-BTN-73)', () => {
       expect(w.receive(d({ event: 'workflow_run', workflow_path: '.github/workflows/baton-mirror.yml' }))).toEqual({ outcome: 'own-work' });
       expect(w.receive(d({ event: 'workflow_run', repository: 'Immediately-Run/Docs', workflow_path: '.github/workflows/baton-sync.yml' }))).toEqual({ outcome: 'own-work' });
       expect(w.receive(d({ event: 'push', pusher: 'github-actions[bot]', author_email: 'baton-mirror@immediately.run' }))).toEqual({ outcome: 'own-work' });
-      // A push by the bot as anyone else, or by anyone as the mirror, is a trigger.
+      // A push by the bot as anyone else, or by anyone as the mirror, is a trigger (2-A-0).
       expect(w.receive(d({ event: 'push', pusher: 'github-actions[bot]', author_email: 'x@y' }))).toMatchObject({ now: ['docs'] });
+      const later = new Webhooks({ store: c.store, now: () => 2_000_000 });
+      expect(later.receive(d({ event: 'push', pusher: 'alice', author_email: 'baton-mirror@immediately.run' }))).toMatchObject({ now: ['docs'] });
     });
   });
 
