@@ -1,7 +1,8 @@
 // store.ts — `node:sqlite` as the core's Store (BATON_SPEC §3a R-BTN-55): synchronous like the
 // Durable Object's SQLite, so no logic changes. Transactions nest as savepoints, as
 // `transactionSync` does; rows come back as plain objects and blobs as ArrayBuffers, as the
-// object returns them.
+// object returns them — an integer past 2^53 as the nearest number, as the object does, never
+// a throw.
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import type { Cursor, Row, SqlValue, Store } from '../core/ports';
 
@@ -16,7 +17,11 @@ function cursor<T>(rows: T[]): Cursor<T> {
 }
 
 const toSqlite = (v: unknown) => (v instanceof ArrayBuffer ? new Uint8Array(v) : v);
-const fromSqlite = (v: unknown): SqlValue => (v instanceof Uint8Array ? (v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) as ArrayBuffer) : (v as SqlValue));
+function fromSqlite(v: unknown): SqlValue {
+  if (typeof v === 'bigint') return Number(v);
+  if (v instanceof Uint8Array) return v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength) as ArrayBuffer;
+  return v as SqlValue;
+}
 
 export function sqliteStore(db: DatabaseSync): Store {
   const statements = new Map<string, StatementSync>();
@@ -26,6 +31,8 @@ export function sqliteStore(db: DatabaseSync): Store {
       let stmt = statements.get(query);
       if (!stmt) {
         stmt = db.prepare(query);
+        // Integers read as bigint, so none past 2^53 throws; fromSqlite makes each a number.
+        stmt.setReadBigInts(true);
         statements.set(query, stmt);
       }
       const rows = stmt.all(...(params.map(toSqlite) as never[])).map((r) => {

@@ -4,7 +4,7 @@
 // refused. The hooks clause — a repository's hooks give the same results in a local `workerd`
 // with no outbound network — arrives with the hook runners (R3-1236).
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { HOST, ORIGIN, ownerCall, payload, setClock, syncCall, syncToken } from '../helpers';
+import { claimItem, cutover, HOST, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, syncToken } from '../helpers';
 
 const board = inject('board');
 
@@ -29,6 +29,15 @@ describe(`S-BTN-31 both hosts (${HOST})`, () => {
     const state = (await (await ownerCall('/v1/ui/state')).json()) as { head: { sha: string }; ready: { id: string }[] };
     expect(state.head.sha).toBe(board.shas.A);
     expect(state.ready.map((r) => r.id)).toEqual(board.states.A.ready);
+  });
+
+  it('an integer past 2^53 that validation accepts reads back alike: a claim and the dashboard still answer', async () => {
+    expect(await rows('SELECT ? AS v', 2 ** 60)).toEqual([{ v: 2 ** 60 }]);
+    await syncCall('/v1/sync/board', payload(board.shas.A, null, board.states.A));
+    await cutover();
+    const a = await register('vm-a', { skills_version: 2 ** 60 });
+    expect((await claimItem('vm-a', a.secret, { ticket_id: 'R3-9002' })).status).toBe(200);
+    expect((await ownerCall('/v1/ui/state')).status).toBe(200);
   });
 
   it.todo('a repository\'s hooks give the same results on both hosts, locally in workerd with no outbound network (R3-1236)');

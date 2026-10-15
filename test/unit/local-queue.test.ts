@@ -9,7 +9,7 @@ import { current } from '../hosts/local';
 import { RequestQueue } from '../../src/local/queue';
 import { MAX_BODY, serve } from '../../src/local/server';
 import { openStore } from '../../src/local/store';
-import { localConfig, main } from '../../src/local/main';
+import { concreteHost, localConfig, main } from '../../src/local/main';
 import { SECURITY_HEADERS } from '../../src/core/http';
 
 const board = inject('board');
@@ -162,6 +162,12 @@ describe('the local host', () => {
 });
 
 describe('the local store', () => {
+  it('reads an integer past 2^53 as the nearest number, as the Durable Object does, never a throw', () => {
+    const { store } = openStore(':memory:');
+    expect(store.exec('SELECT 9007199254740993 AS v').one()).toEqual({ v: 9007199254740992 });
+    expect(store.exec('SELECT ? AS v, ? AS w', 2 ** 60, 7).one()).toEqual({ v: 2 ** 60, w: 7 });
+  });
+
   it('rolls a failed transaction back, nested ones included, as transactionSync does', () => {
     const { store } = openStore(':memory:');
     store.script('CREATE TABLE t (x INTEGER); CREATE TABLE u (y INTEGER)');
@@ -181,7 +187,10 @@ describe('the local store', () => {
 describe('a local start', () => {
   it('needs --origin where the address clients use cannot be derived', async () => {
     await expect(main(['--db', ':memory:', '--port', '0'])).rejects.toThrow(/--origin is required/);
-    await expect(main(['--db', ':memory:', '--port', '8787', '--host', '0.0.0.0'])).rejects.toThrow(/--origin is required/);
+    for (const host of ['0.0.0.0', '0', '::', '::0', '0:0::0', '[::1]', 'example.test']) {
+      await expect(main(['--db', ':memory:', '--port', '8787', '--host', host])).rejects.toThrow(/--origin is required/);
+    }
+    expect(['127.0.0.1', '::1', 'localhost', '10.0.0.2'].map(concreteHost)).toEqual([true, true, true, true]);
   });
 
   it('refuses the test bindings and non-string values', () => {

@@ -5,6 +5,7 @@
 // CREDENTIALS, GITHUB_DISPATCH_TOKEN). The test bindings are refused: only the test harness,
 // in-process, may set them.
 import { readFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { parseArgs } from 'node:util';
 import { parseAdminKeys } from '../core/auth';
 import type { Config } from '../core/ports';
@@ -13,6 +14,15 @@ import { serve } from './server';
 import { openStore } from './store';
 
 const TEST_ONLY = /^(BATON_TEST_BINDINGS|TEST_.*)$/;
+
+/** Whether `--host` names one address clients can use, so the default origin can be built
+ *  from it: an IP address that is not the unspecified one (in any spelling), or `localhost`. */
+export function concreteHost(host: string): boolean {
+  if (host === 'localhost') return true;
+  if (isIP(host) === 4) return !host.split('.').every((o) => Number(o) === 0);
+  if (isIP(host) === 6) return new URL(`http://[${host}]`).hostname !== '[::]';
+  return false;
+}
 
 /** The instance's Config from the `--config` object and the origin; refuses test bindings and
  *  anything that is not a string. */
@@ -57,8 +67,8 @@ export async function main(argv: string[]) {
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('--port must be a port number');
   // The origin is the OIDC audience and the dashboard's Origin (R-BTN-56): it must be the
   // address clients use, so it is derived only from a concrete host and port.
-  if (!values.origin && (port === 0 || ['0.0.0.0', '::', ''].includes(values.host!))) {
-    throw new Error('--origin is required with --port 0 or a wildcard --host: the origin must be the address clients use');
+  if (!values.origin && (port === 0 || !concreteHost(values.host!))) {
+    throw new Error('--origin is required with --port 0, or a --host that is not one IP address or localhost: the origin must be the address clients use');
   }
   const bind = values.host!.includes(':') ? `[${values.host}]` : values.host;
   const origin = (values.origin ?? `http://${bind}:${port}`).replace(/\/+$/, '');

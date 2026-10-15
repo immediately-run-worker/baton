@@ -1,5 +1,5 @@
 // board.ts — what a board snapshot becomes in the `tickets` cache (BATON_SPEC §4, §7.1,
-// R-BTN-33/35). Pure: the Durable Object does the SQL. Only filter fields survive — an item's
+// R-BTN-33/35). Pure: the core does the SQL, on either host. Only filter fields survive — an item's
 // body, Status notes, exit criteria and PR list never reach Baton; the dashboard links each
 // item to its file on GitHub instead.
 import { capabilitiesOf } from '../shared/vocabulary.mjs';
