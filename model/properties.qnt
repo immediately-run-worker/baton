@@ -1,71 +1,110 @@
-// The properties R3-1243 asks for, each with the requirement it checks.
+// The properties R3-1243 asks for, each naming the requirement it checks, over any
+// instance of the model (instances.qnt fixes the sizes).
 module properties {
-  import baton.* from "./baton"
+  const P_TICKETS: Set[str]
+  const P_WORKERS: Set[str]
+  const P_SLOTS: Set[int]
+  const P_MAX_CLAIMS: int
+  const P_GIT_BUDGET: int
+  const P_OWNER_BUDGET: int
+  import baton(TICKETS = P_TICKETS, WORKERS = P_WORKERS, SLOTS = P_SLOTS,
+               MAX_CLAIMS = P_MAX_CLAIMS, GIT_BUDGET = P_GIT_BUDGET,
+               OWNER_BUDGET = P_OWNER_BUDGET).* from "./baton"
+  action pinit = init
+  action pstep = step
 
-  // R-BTN-4: at most one live claim per ticket, and one per worker.
-  val oneClaimPerTicket = TICKETS.forall(t => activeOf(t).size() <= 1)
+  // R-BTN-4, R-BTN-19, R-BTN-26: at most one live holder per ticket — an active claim, or a
+  // force-reaped one whose worker has not cleared its fence — and one active claim per worker.
+  val oneLiveHolderPerTicket = TICKETS.forall(t => activeOf(t).size() + fencedOf(t).size() <= 1)
   val oneClaimPerWorker = WORKERS.forall(w => workerClaim(w).size() <= 1)
 
-  // R-BTN-62: accepted observations strictly increase, and none exceeds what was handed out.
+  // R-BTN-62: accepted observations strictly increase; none exceeds what was handed out.
   val observationsIncrease =
-    accepted.indices().forall(i => i == 0 or accepted[i - 1] < accepted[i])
-      and lastAccepted <= counter
+    st.accepted.indices().forall(i => i == 0 or st.accepted[i - 1] < st.accepted[i])
+      and st.lastAccepted <= st.counter
 
-  // R-BTN-10, -62: an end is confirmed only by an observation greater than the claim's own
+  // R-BTN-10, R-BTN-62: an end is confirmed only by an observation greater than the claim's
   // (and, unless a recorded closure confirmed a done end, greater than the end's); the
   // owner's confirmation is marked -1.
-  val confirmationAfterEnd = claims.keys().forall(i => {
-    val c = claims.get(i)
+  val confirmationAfterEnd = st.claims.keys().forall(i => {
+    val c = st.claims.get(i)
     not(c.confirmed) or c.confirmObs == -1 or
       (c.confirmObs > c.claimObs and (c.kind == "done" or c.confirmObs > c.endObs))
   })
 
-  // R-BTN-10, -71: monotone confirmation — a confirmed suspension's expected path is in git
-  // (a prefix of git's path) unless git has since regressed or the claim ended regressed.
-  val confirmedIsInGit = claims.keys().forall(i => {
-    val c = claims.get(i)
+  // R-BTN-10, R-BTN-71: monotone confirmation — a confirmed suspension's path is in git,
+  // unless git has since regressed or the claim ended regressed.
+  val confirmedIsInGit = st.claims.keys().forall(i => {
+    val c = st.claims.get(i)
     not(c.confirmed and c.kind == "suspended" and c.confirmObs != -1)
-      or c.endedRegressed or gitRegressedEver.get(c.ticket)
-      or isPrefix(expected(c), gitPath.get(c.ticket))
+      or c.endedRegressed or st.gitRegressedEver.get(c.ticket)
+      or isPrefix(expected(c), st.gitPath.get(c.ticket))
   })
 
   // R-BTN-35: a claim is ended stale only when git took the ticket away.
-  val staleOnlyWhenTakenAway = claims.keys().forall(i => {
-    val c = claims.get(i)
-    c.kind != "stale" or withdrawn.get(c.ticket)
+  val staleOnlyWhenTakenAway = st.claims.keys().forall(i => {
+    val c = st.claims.get(i)
+    c.kind != "stale" or st.withdrawn.get(c.ticket)
   })
 
-  // §2e: a claim is flagged regressed only when git really lost a leg — a lagging or
-  // out-of-order sync never flags it.
-  val regressedOnlyWhenGitRegressed = claims.keys().forall(i => {
-    val c = claims.get(i)
-    not(c.regressed) or gitRegressedEver.get(c.ticket)
+  // §2e: a claim is flagged regressed only when git really lost a leg — lag never is.
+  val regressedOnlyWhenGitRegressed = st.claims.keys().forall(i => {
+    val c = st.claims.get(i)
+    not(c.regressed) or st.gitRegressedEver.get(c.ticket)
   })
 
-  // R-BTN-63, -69: bounded loops — no claim's path runs a leg more than its max_runs.
-  val boundedLoops = claims.keys().forall(i => {
-    val c = claims.get(i)
+  // R-BTN-63, R-BTN-69: bounded loops — no claim runs a leg past its max_runs.
+  val boundedLoops = st.claims.keys().forall(i => {
+    val c = st.claims.get(i)
     val p = if (c.leg == "") expected(c) else expected(c).append(c.leg)
     LEGS.forall(l => runs(p, l) <= MAX_RUNS.get(l))
   })
 
-  // No deadlock: a ticket git has not finished or withdrawn, with every sync idle and the
-  // head as fresh as git, is held, claimable, or flagged for the owner (an unconfirmed
-  // completion) — never stuck where nobody can claim it and nobody is told.
+  // R-BTN-45, R-BTN-60, R-BTN-67: every writing leg started under docs' required bar — some
+  // family barred, by the sync or the holder — and never by a worker of a barred family.
+  val writingLegsBarred = st.claims.keys().forall(i => {
+    val c = st.claims.get(i)
+    c.status != "active" or not(REQUIRED.contains(c.leg)) or
+      (c.startBars.intersect(FAMILIES).size() > 0 and c.startBars.intersect(TAGS.get(c.worker)).size() == 0)
+  })
+
+  // No deadlock: a ticket git has not finished or withdrawn, once the syncs are idle and the
+  // head matches git, is held by a claim, fenced (clears at fence-cleared or the timeout),
+  // held by the owner, waiting on `policy` or flagged unconfirmed (both under Needs you), or
+  // claimable — never stuck where nobody can claim it and nobody is told.
   def quiescent(t: str): bool = and {
-    SLOTS.forall(s => syncs.get(s).phase == "idle"),
-    posted.get(t) == gitPath.get(t),
-    postedGone.get(t) == withdrawn.get(t),
-    lastAccepted > maxEndObs(t),
+    SLOTS.forall(s => st.syncs.get(s).phase == "idle"),
+    st.posted.get(t) == st.gitPath.get(t),
+    st.postedGone.get(t) == st.withdrawn.get(t),
+    st.lastAccepted > maxEndObs(t),
   }
   val noStuckTicket = TICKETS.forall(t =>
-    atEnd(gitPath.get(t)) or withdrawn.get(t) or not(quiescent(t))
-      or activeOf(t).size() > 0 or unconfirmedOf(t).size() > 0 or claimable(t)
-      or nextId > MAX_CLAIMS)
+    atEnd(st.gitPath.get(t)) or st.withdrawn.get(t) or not(quiescent(t))
+      or activeOf(t).size() > 0 or fencedOf(t).size() > 0 or unconfirmedOf(t).size() > 0
+      or st.held.get(t) or (nextLegs(st.posted.get(t)).size() > 0 and readyLegs(t).size() == 0)
+      or ticketClaimable(t) or st.nextId > MAX_CLAIMS)
 
   val safety = and {
-    oneClaimPerTicket, oneClaimPerWorker, observationsIncrease, confirmationAfterEnd,
+    oneLiveHolderPerTicket, oneClaimPerWorker, observationsIncrease, confirmationAfterEnd,
     confirmedIsInGit, staleOnlyWhenTakenAway, regressedOnlyWhenGitRegressed, boundedLoops,
-    noStuckTicket,
+    writingLegsBarred, noStuckTicket,
   }
+
+  // ---- liveness (Apalache, under fairness of Baton's alarm, the syncs and live workers) ----
+  // R-BTN-19: every fence clears — at fence-cleared, or at the dead worker's timeout.
+  temporal fencesClear = always(TICKETS.forall(t =>
+    fencedOf(t).size() > 0 implies eventually(fencedOf(t).size() == 0)))
+  // R-BTN-10, §6.7: every completed end is eventually confirmed (by a sync, or by the owner
+  // once it is flagged).
+  temporal endsResolve = always(st.claims.keys().forall(i =>
+    (st.claims.get(i).status == "completed") implies
+      eventually(st.claims.keys().contains(i) and st.claims.get(i).confirmed)))
+
+  // ---- reachability witnesses: each is expected to be VIOLATED by simulation ----
+  val noConfirmedSuspension = st.claims.keys().forall(i =>
+    not(st.claims.get(i).confirmed and st.claims.get(i).kind == "suspended" and st.claims.get(i).confirmObs > 0))
+  val noRegressedClaim = st.claims.keys().forall(i => not(st.claims.get(i).regressed))
+  val noResumedClaim = st.claims.keys().forall(i => st.claims.get(i).startPath.length() == 0)
+  val noFence = TICKETS.forall(t => fencedOf(t).size() == 0)
+  val noRefusedClaim = st.lastStep != "claim-refused"
 }
