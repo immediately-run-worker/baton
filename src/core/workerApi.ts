@@ -146,15 +146,31 @@ export class WorkerApi {
    *  carries the claim, the messages, the suspensions, the stale courses and the mode. */
   async heartbeat(credentialId: string, secretHeader: string | null, body: unknown) {
     const hb = checkHeartbeat(body, this.transcriptRepos());
+    // R-BTN-66: a per-repository ceiling names a tier of that registered repository's ladder.
+    // One for a repository Baton does not serve (unknown or retired) is kept and reported, never
+    // refusing the heartbeat — which would cost the worker its leases everywhere — and, once that
+    // repository registers, holds if its ladder has the name and is its bottom if not (ceilingIn).
+    const ignoredCeilings: string[] = [];
+    for (const [repo, tier] of Object.entries(hb.tier_ceilings)) {
+      const r = this.rows<{ tiers: string }>('SELECT tiers FROM repositories WHERE id = ? AND retired_at IS NULL', repo)[0];
+      if (!r) {
+        ignoredCeilings.push(repo);
+        continue;
+      }
+      const ladder = JSON.parse(r.tiers) as string[];
+      if (!ladder.includes(tier)) throw new BatonError('invalid-params', `tier_ceilings.${repo}: must be one of ${ladder.join(', ')}`);
+    }
     // Every hash first; then every read and write in one synchronous transaction (§3).
     const presented = secretHeader ? await sha256Hex(secretHeader) : null;
     const settingsHash = await sha256Hex(JSON.stringify({
       harness: hb.harness, kind: hb.kind, model_id: hb.model_id ?? null, model_provider_id: hb.model_provider_id ?? null,
       billing: Object.entries(hb.billing).sort(), capabilities: [...hb.capabilities].sort(), tier: hb.tier_ceiling,
+      tiers: Object.entries(hb.tier_ceilings).sort(),
       lease: hb.lease_timeout_s,
       courses: hb.courses.map((c) => `${c.repository}:${c.course}@${c.version}`).sort(),
     }));
-    return this.c.store.transaction(() => this.heartbeatTx(credentialId, presented, settingsHash, hb));
+    const answer = this.c.store.transaction(() => this.heartbeatTx(credentialId, presented, settingsHash, hb));
+    return ignoredCeilings.length ? { ...answer, tier_ceilings_unregistered: ignoredCeilings } : answer;
   }
 
   private heartbeatTx(credentialId: string, presented: string | null, settingsHash: string, hb: Heartbeat) {
@@ -176,10 +192,10 @@ export class WorkerApi {
     if (!w) {
       if (!hb.secret_hash) bad('secret_hash', 'the first heartbeat of a session carries its SHA-256');
       this.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, model_id, model_provider_id,
-                   tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at, last_activity_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
+                   tier_ceiling, tier_ceilings, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at, last_activity_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
         hb.hostname, hb.session_name, hb.secret_hash, cred.id, hb.harness, hb.kind, hb.model_id ?? null, modelProvider,
-        hb.tier_ceiling, hb.lease_timeout_s * 1000, now, now, hb.last_activity_at ?? null);
+        hb.tier_ceiling, JSON.stringify(hb.tier_ceilings), hb.lease_timeout_s * 1000, now, now, hb.last_activity_at ?? null);
       w = this.rows<typeof w>('SELECT id, secret_hash, credential_id, reaped_at, incarnation, settings_hash, secret_seen FROM workers WHERE hostname = ? AND session_name = ?', hb.hostname, hb.session_name)[0];
     } else {
       if (w.credential_id !== cred.id) throw new BatonError('forbidden', 'this session is registered under another credential');
@@ -210,8 +226,8 @@ export class WorkerApi {
     const current = rekeyed ? hb.secret_hash : w.secret_hash; // the hash stored now
     const secretSeen = presented != null && presented === current ? 1 : 0;
     this.exec(`UPDATE workers SET last_seen_at = ?, secret_seen = MAX(secret_seen, ?), last_activity_at = COALESCE(?, last_activity_at), harness = ?, kind = ?,
-                 model_id = ?, model_provider_id = ?, tier_ceiling = ?, lease_timeout_ms = ? WHERE id = ?`,
-      now, secretSeen, hb.last_activity_at ?? null, hb.harness, hb.kind, hb.model_id ?? null, modelProvider, hb.tier_ceiling,
+                 model_id = ?, model_provider_id = ?, tier_ceiling = ?, tier_ceilings = ?, lease_timeout_ms = ? WHERE id = ?`,
+      now, secretSeen, hb.last_activity_at ?? null, hb.harness, hb.kind, hb.model_id ?? null, modelProvider, hb.tier_ceiling, JSON.stringify(hb.tier_ceilings),
       hb.lease_timeout_s * 1000, w.id);
     // The stored hash also covers which billed accounts the reference data knows, so a prefix
     // skipped while its account was unknown is written once the account arrives (§7.4).
@@ -578,7 +594,7 @@ export class WorkerApi {
   // ── the dashboard's Workers view (§14) ──────────────────────────────────────────────────
 
   workersView(now: number) {
-    const workers = this.rows<Row>(`SELECT id, hostname, session_name, harness, kind, model_id, model_provider_id, tier_ceiling, lease_timeout_ms,
+    const workers = this.rows<Row>(`SELECT id, hostname, session_name, harness, kind, model_id, model_provider_id, tier_ceiling, tier_ceilings, lease_timeout_ms,
                                        first_seen_at, last_seen_at, last_activity_at, reaped_at, incarnation FROM workers ORDER BY hostname, id`);
     return workers.map((w) => {
       const id = w.id as number;
@@ -588,6 +604,7 @@ export class WorkerApi {
          UNION ALL SELECT repo, path, COALESCE(last_pushed_at, first_seen_at) FROM pending_transcripts WHERE worker_id = ?) ORDER BY t DESC LIMIT 1`, id, id)[0];
       return {
         ...w,
+        tier_ceilings: JSON.parse(w.tier_ceilings as string) as Record<string, string>,
         alive,
         capabilities: this.rows<{ capability: string; declared: string }>('SELECT capability, declared FROM worker_capabilities WHERE worker_id = ? ORDER BY capability', id),
         providers: this.rows<{ prefix: string; provider_id: string }>('SELECT prefix, provider_id FROM worker_providers WHERE worker_id = ? ORDER BY prefix', id),

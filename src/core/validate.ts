@@ -17,6 +17,13 @@ export const REPOSITORY_ID = new RegExp(`^${REPOSITORY_SRC}$`);
 /** A course id (R-BTN-48), the form course files give their stations and legs (R-BTN-69); a
  *  §6.9 step kind has the same form (R-BTN-50). Spelled once, in the pure course.ts. */
 export { COURSE_ID };
+/** A GitHub repository, `owner/name` (R-BTN-47), and a branch name as a push names it (§6.3). */
+export const GIT_REPO = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
+/** What `git check-ref-format --branch` allows, in short: no control, space, `~ ^ : ? * [ \`,
+ *  no `..` or `@{`, at most 255 characters. A legal branch the hook asks about is never refused. */
+export const GIT_BRANCH = /^(?!.*\.\.)(?!.*@\{)(?![/.])(?!.*[/.]$)[^\u0000-\u0020\u007f~^:?*[\\]{1,255}$/;
+/** Repositories one heartbeat may name a tier ceiling for (spec-silent, recorded on R3-1231). */
+export const TIER_CEILINGS_MAX = 64;
 /** A course's `version` and a worker's declared one: non-negative, at most this. */
 export const COURSE_VERSION_MAX = 1_000_000_000;
 /** Courses in one registry, and courses one heartbeat declares (spec-silent, recorded on R3-1231). */
@@ -82,6 +89,8 @@ export interface Heartbeat {
   billing: Record<string, string>;
   capabilities: string[];
   tier_ceiling: (typeof TIERS)[number];
+  /** Per repository (R-BTN-66): `{repository: tier}`, checked against each ladder at the heartbeat. */
+  tier_ceilings: Record<string, string>;
   lease_timeout_s: number;
   /** The courses the worker's checkouts run, at their versions (R-BTN-22, R-BTN-48): rule 9. */
   courses: { repository: string; course: string; version: number }[];
@@ -155,6 +164,7 @@ export function checkHeartbeat(body: unknown, transcriptRepos: string[]): Heartb
     billing,
     capabilities,
     tier_ceiling: tier as Heartbeat['tier_ceiling'],
+    tier_ceilings: checkTierCeilings(b.tier_ceilings),
     lease_timeout_s: clampLease(b.lease_timeout_s),
     courses,
     last_activity_at: b.last_activity_at as number | undefined,
@@ -177,6 +187,19 @@ export function checkHeartbeat(body: unknown, transcriptRepos: string[]): Heartb
       return { provider_id: matches(ACCOUNT, `rate_limits[${i}].provider_id`)(x.provider_id), model_id: optional(x.model_id, matches(MODEL, `rate_limits[${i}].model_id`)), resets_at: x.resets_at as number | undefined };
     }),
   };
+}
+
+/** A tier name, as a repository's ladder spells it (R-BTN-66). */
+export const TIER_NAME = /^[a-z][a-z0-9-]{0,39}$/;
+
+function checkTierCeilings(v: unknown): Record<string, string> {
+  if (v === undefined) return {};
+  if (!isObj(v) || Object.keys(v).length > TIER_CEILINGS_MAX) bad('tier_ceilings', `must map at most ${TIER_CEILINGS_MAX} repositories to a tier`);
+  const out: Record<string, string> = {};
+  for (const [repo, tier] of Object.entries(v as object)) {
+    out[checkRepositoryId(repo, `tier_ceilings key ${repo}`)] = matches(TIER_NAME, `tier_ceilings.${repo}`)(tier);
+  }
+  return out;
 }
 
 function splitTranscripts(list: unknown[], allowed: string[]) {

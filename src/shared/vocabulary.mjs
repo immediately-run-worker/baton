@@ -75,13 +75,15 @@ export const AGENT_HOLDS = new Set([...CAPABILITIES, 'agent-venue', 'mcp-chrome'
  *  same enum, and a test pins them to it. */
 export const TIERS = ['routine', 'judgement', 'critical'];
 
-/** Whether an item of `itemTier` may be claimed under the ceiling `ceiling`. An item with
- *  no tier counts as `critical`: an unlabelled item handed to a cheap line is the failure
- *  the tier exists to prevent. An unknown ceiling throws — never "no filter". */
-export function fitsTier(itemTier, ceiling) {
-  const c = TIERS.indexOf(ceiling);
-  if (c < 0) throw new Error(`unknown tier ceiling "${ceiling}" — one of ${TIERS.join(', ')}`);
-  const t = itemTier == null ? TIERS.length - 1 : TIERS.indexOf(itemTier);
+/** Whether an item of `itemTier` may be claimed under the ceiling `ceiling`, in `ladder` — a
+ *  repository's tiers, lowest first (BATON_SPEC R-BTN-66; docs' is TIERS). An item with no
+ *  tier counts as the top: an unlabelled item handed to a cheap line is the failure the tier
+ *  exists to prevent. An unknown item tier fits nothing; an unknown ceiling throws — never
+ *  "no filter". */
+export function fitsTier(itemTier, ceiling, ladder = TIERS) {
+  const c = ladder.indexOf(ceiling);
+  if (c < 0) throw new Error(`unknown tier ceiling "${ceiling}" — one of ${ladder.join(', ')}`);
+  const t = itemTier == null ? ladder.length - 1 : ladder.indexOf(itemTier);
   return t >= 0 && t <= c;
 }
 

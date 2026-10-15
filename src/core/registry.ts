@@ -5,14 +5,16 @@
 // repository Baton already knows. The sync principal is bound to one repository here.
 import { BatonError } from './http';
 import type { Config, Store } from './ports';
-import { REPOSITORY_ID } from './validate';
+import { GIT_REPO, REPOSITORY_ID, TIER_NAME } from './validate';
 
 export { REPOSITORY_ID, TICKET_ID, qualify, repositoryOf, localOf } from './validate';
 
-const GITHUB = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
+const GITHUB = GIT_REPO;
+/** A default branch, registered by the administrator: stricter than any branch a push may name
+ *  (GIT_BRANCH), as it goes unencoded into the dashboard's GitHub links. */
 const BRANCH = /^(?!.*\.\.)[A-Za-z0-9._/-]{1,100}$/;
 const WORKFLOW = /^\.github\/workflows\/[A-Za-z0-9._-]{1,100}\.ya?ml$/;
-const TIER = /^[a-z][a-z0-9-]{0,39}$/;
+const TIER = TIER_NAME;
 const DEFAULT_TIERS = ['routine', 'judgement', 'critical'];
 
 export interface Repository {
@@ -83,6 +85,23 @@ export function transcriptReposOf(store: Store, repo: string): string[] {
   const list = raw ? (JSON.parse(raw) as string[]) : [];
   return list.length ? list : DEFAULT_TRANSCRIPT_REPOS;
 }
+
+/** A worker's ceiling in one repository's ladder (§7.2 rule 5, R-BTN-66): the one it declared
+ *  for that repository; else its single `tier_ceiling` where the ladder has that name; else the
+ *  ladder's top if that ceiling is the unrestricted default (`critical`, docs' top), and the
+ *  ladder's bottom otherwise — a restricted worker is never widened by a ladder it did not name.
+ *  An interim until grants' `max_tier` (R3-1240) caps it. */
+export function ceilingIn(repo: string, ladder: string[], ceilings: Record<string, string>, legacy: string): string {
+  const named = ceilings[repo];
+  if (named !== undefined) return ladder.includes(named) ? named : ladder[0]; // a ceiling it named, never widened
+  if (ladder.includes(legacy)) return legacy;
+  return legacy === 'critical' ? ladder[ladder.length - 1] : ladder[0];
+}
+
+/** A ticket tier's position in its repository's ladder: null untiered (fits only the top); a name
+ *  the ladder lacks is the ladder's length, which fits nothing. */
+export const tierPosition = (ladder: string[], tier: string | null) =>
+  tier == null ? null : ladder.includes(tier) ? ladder.indexOf(tier) : ladder.length;
 
 /** The claims of a verified GitHub Actions OIDC token that bind it (R-BTN-15). */
 export interface SyncClaims {

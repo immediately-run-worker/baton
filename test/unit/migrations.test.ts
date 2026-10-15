@@ -195,3 +195,29 @@ describe('migration 0008: observations (R3-1231)', () => {
     });
   });
 });
+
+// R3-1231 part 4 — migration 0009 stores each ticket's tier as its position in its repository's
+// ladder (R-BTN-66), and gives workers per-repository ceilings.
+describe('migration 0009: tiers per repository (R3-1231)', () => {
+  it('backfills every ticket’s position: a known name its index, an unknown one the ladder’s length, none null', async () => {
+    const id = env.BATON.idFromName('migrations-0009');
+    await runInDurableObject(env.BATON.get(id), (_o: unknown, state: DurableObjectState) => {
+      const sql = state.storage.sql;
+      sql.exec('PRAGMA foreign_keys = OFF');
+      const objects = sql.exec("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND type = 'table'").toArray() as { name: string }[];
+      for (const o of objects) sql.exec(`DROP TABLE IF EXISTS "${o.name}"`);
+      for (const m of MIGRATIONS.filter((x) => x.id <= 8)) sql.exec(m.sql);
+      sql.exec(`INSERT INTO repositories (id, github, default_branch, sync_workflow) VALUES ('docs', 'immediately-run/docs', 'main', '.github/workflows/baton-sync.yml')`);
+      const ticket = (local: string, tier: string | null) => sql.exec(`INSERT INTO tickets (id, repository_id, local_id, path, title, status, node, queue, tags, tier, requires_clause, depends_on, blocked_by, repos, snapshot_sha, row_hash)
+        VALUES (?, 'docs', ?, 'p', 't', 'available', 'blocked', 'autonomous', '[]', ?, 'none', '[]', '[]', '[]', 'aaa', 'h')`, `docs:${local}`, local, tier);
+      ticket('A', 'routine');
+      ticket('B', 'critical');
+      ticket('C', null);
+      ticket('D', 'someday');
+      sql.exec(MIGRATIONS.find((x) => x.id === 9)!.sql);
+      expect(sql.exec('SELECT local_id, tier_position FROM tickets ORDER BY local_id').toArray()).toEqual([
+        { local_id: 'A', tier_position: 0 }, { local_id: 'B', tier_position: 2 }, { local_id: 'C', tier_position: null }, { local_id: 'D', tier_position: 3 }]);
+      expect(sql.exec(`SELECT dflt_value FROM pragma_table_info('workers') WHERE name = 'tier_ceilings'`).toArray()).toEqual([{ dflt_value: "'{}'" }]);
+    });
+  });
+});

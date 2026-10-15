@@ -1,10 +1,12 @@
-// S-BTN-26 two repositories (BATON_SPEC §2a R-BTN-47, §7.1, §10.3 R-BTN-15, R-BTN-61), the
-// registry half R3-1231 part 2a delivers: a second repository `ops` with weight 50 and a ticket
-// whose local id docs also has. Must hold: `docs:R3-9001` and `ops:R3-9001` are distinct
-// tickets; `ops`' sync token cannot post `docs`' board; head, cutover and events are each
-// repository's own; every `docs` candidate ranks above every `ops` one. The course clauses
-// (W1 never offered `ops`, per-group limits, `min_worker_version`) and the branch clause arrive
-// with part 2b and R3-1232.
+// S-BTN-26 two repositories, two courses (BATON_SPEC §2a R-BTN-47, R-BTN-48, §7.1, §10.3
+// R-BTN-15, R-BTN-61, §6.3), the clauses R3-1231 delivers: a second repository `ops` with weight
+// 50, its own course `runbook`, and tickets whose local ids docs also has. Must hold: `docs:T-1`
+// and `ops:T-1` are distinct tickets; `ops`' sync token cannot post `docs`' board; head, cutover
+// and events are each repository's own; every `docs` candidate ranks above every `ops` one; W1
+// (roadmap-pr only) is never offered `ops`' tickets; a `runbook` change raising
+// `min_worker_version` stops W2 there until it declares that version; a branch both `T-1`s map to
+// is refused while either is held. The recommendation clauses — each repository in its own
+// hook's or default order, the per-group limit with 60 ready docs legs — are R3-1232's.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
 import {
   beat, captureDispatches, claimItem, claimRow, course, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, syncToken, withCore, workerCall,
@@ -28,7 +30,8 @@ const RUNBOOK_FILE = {
   stations: { filed: { label: 'Filed' }, prepared: { label: 'Prepared' }, done: { label: 'Done' } },
   legs: { prepare: { from: ['filed'], to: 'prepared' }, run: { from: ['prepared'], to: 'done' } },
 };
-const runbook = (version = 1, min = version) => course(version, min, { id: 'runbook', skill: 'run-runbook', course: RUNBOOK_FILE, step_kinds: ['orient', 'other-step'] });
+const runbook = (version = 1, min = version, branch_pattern = 'claude/{ticket}-*', previous_branch_pattern?: string) =>
+  course(version, min, { id: 'runbook', skill: 'run-runbook', course: RUNBOOK_FILE, step_kinds: ['orient', 'other-step'], branch_pattern, ...(previous_branch_pattern ? { previous_branch_pattern } : {}) });
 const opsBoard = {
   items: [{ ...fixture, title: 'ops: same local id', course: 'runbook' }, { ...fixture, id: 'T-1', title: 'ops: its own ticket', order: 20, course: 'runbook' }],
   ready: ['R3-9001', 'T-1'],
@@ -261,4 +264,52 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     expect(((await unnamed.json()) as { message: string }).message).toMatch(/course runbook is not in other's registry/);
     expect(await rows(`SELECT count(*) AS n FROM courses WHERE repository_id = 'other'`)).toEqual([{ n: 0 }]);
   });
+
+  it('§6.3: a branch both repositories’ T-1 map to is refused while either is held by another worker', async () => {
+    const code = { repos: ['immediately-run/sandbox'] }; // a code repository both tickets list
+    const docsItems = [...(board.states.A.state.items as Record<string, unknown>[]), { ...fixture, id: 'T-1', title: 'docs: T-1', ...code }];
+    await syncCall('/v1/sync/board', payload(sha.B, sha.A, { ...board.states.A, state: { items: docsItems }, ready: [...board.states.A.ready, 'T-1'] }));
+    await opsCall('/v1/sync/board', payload('e'.repeat(40), OPS_SHA, { ...opsBoard, items: opsBoard.items.map((i) => ((i as { id?: string }).id === 'T-1' ? { ...i, ...code } : i)) }));
+    await cutover(1, 'ops');
+    const w1 = await register('vm-b');
+    const w2 = await register('vm-a', BOTH);
+    const ask = async (branch: string, secret?: string, repo = 'immediately-run/sandbox') =>
+      (await workerCall(`/v1/runner/branch-holder?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}`, { cred: secret === w2.secret ? 'vm-a' : 'vm-b', secret })).json();
+    expect(await ask('claude/T-1-fix')).toEqual({ tickets: ['docs:T-1', 'ops:T-1'], held_by_other: false, fence_pending: false });
+    expect((await claimItem('vm-a', w2.secret, { ticket_id: 'ops:T-1' })).status).toBe(200);
+    expect(await ask('claude/T-1-fix', w1.secret)).toMatchObject({ held_by_other: true });
+    expect(await ask('claude/t-1-fix', w1.secret)).toMatchObject({ held_by_other: true }); // GitHub branch case
+    expect(await ask('claude/T-1-fix#2', w1.secret)).toMatchObject({ held_by_other: true }); // any legal git name (1-A-1)
+    // git's own spellings, as a pre-push hook has them (round 2, 2-A-0).
+    expect(await ask('refs/heads/claude/T-1-fix', w1.secret, 'immediately-run/sandbox.git')).toMatchObject({ tickets: ['docs:T-1', 'ops:T-1'], held_by_other: true });
+    expect(await ask('claude/T-1-fix', w2.secret)).toMatchObject({ held_by_other: false }); // its own claim
+    // A branch no pattern maps, or a repository neither ticket lists, maps to nothing.
+    expect(await ask('claude/T-1')).toMatchObject({ tickets: [] });
+    expect(await ask('claude/T-1-fix', undefined, 'immediately-run/other')).toMatchObject({ tickets: [] });
+    // docs' own repository is its tickets' home; ops' R3-9001 lists docs among its repos, so the
+    // branch maps to both — the collision failing safe.
+    expect(await ask('claude/R3-9001-x', undefined, 'immediately-run/docs')).toMatchObject({ tickets: ['docs:R3-9001', 'ops:R3-9001'] });
+    for (const bad of ['repo=x&branch=claude/T-1-x', 'repo=immediately-run/sandbox&branch=a..b']) {
+      expect((await workerCall(`/v1/runner/branch-holder?${bad}`, { cred: 'vm-b' })).status).toBe(400);
+    }
+  });
+
+  it('§6.3: a course’s previous pattern still maps its branches, and a reaped claim’s fence is reported (round 3, 3-A-0)', async () => {
+    // ops renames its branches; live ones keep the previous pattern (R-BTN-51).
+    const renamed = { ...opsBoard, registry: [runbook(1, 1, 'work/{ticket}', 'claude/{ticket}-*')] };
+    await opsCall('/v1/sync/board', payload('e'.repeat(40), OPS_SHA, renamed));
+    await cutover(1, 'ops');
+    const w2 = await register('vm-a', BOTH);
+    const ask = async (branch: string) =>
+      (await workerCall(`/v1/runner/branch-holder?repo=immediately-run/ops&branch=${encodeURIComponent(branch)}`, { cred: 'vm-b' })).json();
+    expect(await ask('work/T-1')).toMatchObject({ tickets: ['ops:T-1'] });
+    expect(await ask('claude/T-1-x')).toMatchObject({ tickets: ['ops:T-1'] }); // the previous pattern
+    const { json: c } = await claimItem('vm-a', w2.secret, { ticket_id: 'ops:T-1' });
+    expect(await ask('claude/T-1-x')).toMatchObject({ held_by_other: true, fence_pending: false });
+    // The owner reaps the live holder: its claim is fence-pending until its sidecar confirms.
+    expect(await (await owner(`/v1/ui/claims/${c.claim_id}/reap`, { confirm: true })).json()).toMatchObject({ fence_pending: true });
+    expect(await ask('claude/T-1-x')).toEqual({ tickets: ['ops:T-1'], held_by_other: false, fence_pending: true });
+  });
+
+  it.todo('R3-1232: each repository in its own hook’s or default order, and with 60 ready docs legs ops’ first five still reach the merge (per-group limit)');
 });
