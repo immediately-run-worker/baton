@@ -110,10 +110,10 @@ export class WorkerApi {
    *  `revoked` — and a seeded key the list no longer names is revoked; a key an owner granted
    *  (R3-1240) is never the seed's. The whole list is checked before anything is written: a
    *  malformed entry, a key twice, or two keys for one name throws and changes nothing. */
-  async seedKeys(): Promise<{ seeded: number; revoked: string[] }> {
+  async seedKeys(): Promise<{ unchanged: boolean; seeded: number; revoked: string[] }> {
     const raw = this.c.config.BATON_KEYS;
     const marker = fnv1a(raw ?? '');
-    if (this.setting('keys_marker') === marker) return { seeded: 0, revoked: [] };
+    if (this.setting('keys_marker') === marker) return { unchanged: true, seeded: 0, revoked: [] };
     let list: unknown = [];
     try {
       if (raw) list = JSON.parse(raw);
@@ -152,7 +152,7 @@ export class WorkerApi {
       revoked.push(...this.rows<{ id: string }>(`SELECT id FROM credentials WHERE revoked_at IS NOT NULL AND id IN (SELECT value FROM json_each(?))`, JSON.stringify(keys.map((k) => k.id))).map((r) => r.id));
       this.exec(`INSERT INTO baton_settings (key, value) VALUES ('keys_marker', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, marker);
     });
-    return { seeded: keys.length, revoked };
+    return { unchanged: false, seeded: keys.length, revoked };
   }
 
   /** The public key a fingerprint names, if it is registered and not revoked. */

@@ -15,9 +15,9 @@ describe('BATON_KEYS (R3-1239)', () => {
   it('a key the list no longer names is revoked, and listing it again does not bring it back', async () => {
     const [a, b] = [SSH_KEYS['vm-ed'], SSH_KEYS['vm-p256']];
     await withCore(async (c) => {
-      expect(await api(c as never, [entry(a, 'vm-ed')], 5_000).seedKeys()).toEqual({ seeded: 1, revoked: [] });
+      expect(await api(c as never, [entry(a, 'vm-ed')], 5_000).seedKeys()).toEqual({ unchanged: false, seeded: 1, revoked: [] });
       expect(c.workers.publicKey(b.fingerprint)).toBeNull();
-      expect(await api(c as never, [entry(a, 'vm-ed'), entry(b, 'vm-p256')], 6_000).seedKeys()).toEqual({ seeded: 2, revoked: [b.fingerprint] });
+      expect(await api(c as never, [entry(a, 'vm-ed'), entry(b, 'vm-p256')], 6_000).seedKeys()).toEqual({ unchanged: false, seeded: 2, revoked: [b.fingerprint] });
       expect(c.workers.publicKey(b.fingerprint)).toBeNull();
     });
     expect(await rows(`SELECT hostname, revoked_at FROM credentials WHERE kind = 'worker' ORDER BY hostname`)).toEqual([
@@ -78,6 +78,9 @@ describe('BATON_KEYS (R3-1239)', () => {
     expect(await state()).toEqual({ refused: 'BATON_KEYS is not JSON' });
     // The keys in force stayed.
     await withCore((c) => expect(c.workers.publicKey(SSH_KEYS['vm-p256'].fingerprint)).not.toBeNull());
+    // The list that last seeded, back: the refusal is over (round 2, 2-A-1).
+    await reseed([entry(SSH_KEYS['vm-ed'], 'vm-ed'), entry(SSH_KEYS['vm-p256'], 'vm-p256')]);
+    expect(await state()).toBeNull();
   });
 
   it('the bearer mirror leaves the keys alone', async () => {
@@ -92,15 +95,18 @@ describe('BATON_KEYS (R3-1239)', () => {
 });
 
 describe('the replay cache (R-BTN-13)', () => {
-  it('a nonce is refused again for the same key, not for another, and is pruned after 10 minutes', async () => {
+  it('a nonce is refused again for the same key, not for another, and is pruned after 11 minutes', async () => {
     await withCore((c) => {
       const at = (now: number) => new WorkerApi({ store: c.store, config: env, now: () => now });
       at(0).acceptNonce('SHA256:a', 'n1');
       expect(() => at(1).acceptNonce('SHA256:a', 'n1')).toThrow(/replayed/);
       at(1).acceptNonce('SHA256:b', 'n1');
-      at(10 * 60_000 + 1).acceptNonce('SHA256:c', 'n2');
+      at(10 * 60_000 + 1).acceptNonce('SHA256:c', 'n0');
+      // Twice the window and a minute (round 2, 2-A-2): at 10 minutes the first is still there.
+      expect(() => at(10 * 60_000 + 2).acceptNonce('SHA256:a', 'n1')).toThrow(/replayed/);
+      at(11 * 60_000 + 1).acceptNonce('SHA256:c', 'n2');
     });
     expect(await rows(`SELECT key_fingerprint, nonce FROM request_nonces ORDER BY key_fingerprint`)).toEqual([
-      { key_fingerprint: 'SHA256:b', nonce: 'n1' }, { key_fingerprint: 'SHA256:c', nonce: 'n2' }]);
+      { key_fingerprint: 'SHA256:b', nonce: 'n1' }, { key_fingerprint: 'SHA256:c', nonce: 'n0' }, { key_fingerprint: 'SHA256:c', nonce: 'n2' }]);
   });
 });

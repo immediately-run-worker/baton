@@ -143,6 +143,38 @@ describe(`S-BTN-30 signed requests (${HOST})`, () => {
     expect((await call('/v1/runner/mode?repository=docs', { headers: { Authorization: 'Bearer tok-vm-a', 'X-Worker-Secret': secret } })).status).toBe(401);
   });
 
+  it('a session under a key the seed revoked continues under its new key; nothing moves it back, and a token never takes it (round 2, 2-A-3)', async () => {
+    const seed = (k: Awaited<ReturnType<typeof makeKey>>) => withCore(async (c) => {
+      await new WorkerApi({ store: c.store, config: { ...config, BATON_KEYS: JSON.stringify([{ key: k.publicKey, name: 'vm-a', allowed_capabilities: ['agent-venue'] }]) }, now: () => T0 }).seedKeys();
+    });
+    const beat = async (k: Awaited<ReturnType<typeof makeKey>>, secret: string, body: unknown) =>
+      hostCall(await signedRequest(k, `${ORIGIN}/v1/runner/heartbeat`, { created: T0 / 1000, headers: secret ? { 'X-Worker-Secret': secret } : {}, body: JSON.stringify(body) }));
+    const old = await makeKey('ssh-ed25519', 'vm-a');
+    await seed(old);
+    const secret = 'secret-rotated';
+    expect((await beat(old, '', hbBody('vm-a', { secret_hash: await sha256(secret) }))).status).toBe(200);
+    // The machine's key is replaced: the old one is revoked by the seed.
+    const fresh = await makeKey('sk-ecdsa-sha2-nistp256@openssh.com', 'vm-a');
+    await seed(fresh);
+    const moved = await beat(fresh, secret, hbBody('vm-a'));
+    expect(moved.status, JSON.stringify(await moved.clone().json())).toBe(200);
+    expect(await rows('SELECT credential_id FROM workers')).toEqual([{ credential_id: fresh.fingerprint }]);
+    // The old key is refused outright; the bearer token for that name may not take the session.
+    expect((await beat(old, secret, hbBody('vm-a'))).status).toBe(401);
+    const back = await call('/v1/runner/heartbeat', { method: 'POST', headers: { Authorization: 'Bearer tok-vm-a', 'X-Worker-Secret': secret, 'Content-Type': 'application/json' }, body: JSON.stringify(hbBody('vm-a')) });
+    expect(back.status).toBe(403);
+    expect(await rows('SELECT credential_id FROM workers')).toEqual([{ credential_id: fresh.fingerprint }]);
+  });
+
+  it('a session never moves between two bearer tokens, even for one name (round 2, 2-A-3)', async () => {
+    const { secret } = await register('vm-a');
+    await withCore((c) => {
+      c.store.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities) VALUES ('vm-a-2', 'vm-a', '["agent-venue"]')`);
+      return expect(c.workers.heartbeat('vm-a-2', secret, hbBody('vm-a'))).rejects.toMatchObject({ code: 'forbidden' });
+    });
+    expect(await rows('SELECT credential_id FROM workers')).toEqual([{ credential_id: 'vm-a' }]);
+  });
+
   it.todo('a probe reading for an instance outside its binding is refused forbidden (R3-1251)');
   it.todo('an admin request signed by a key not in BATON_ADMIN_KEYS is refused unauthenticated (R3-1240)');
 });

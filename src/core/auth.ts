@@ -160,8 +160,10 @@ export const REQUEST_NAMESPACE = 'baton-request';
 /** `created` may be this far either side of Baton's clock. */
 export const SIGNATURE_WINDOW_MS = 5 * 60_000;
 /** A nonce is remembered this long per key: the window on both sides of the clock, so no
- *  request that could carry it is still fresh once it is forgotten. */
-export const NONCE_TTL_MS = 10 * 60_000;
+ *  request that could carry it is still fresh once it is forgotten, and a minute more — a
+ *  request awaiting its crypto was judged by an earlier clock reading than a concurrent one
+ *  that prunes (round 2, 2-A-2). */
+export const NONCE_TTL_MS = 2 * SIGNATURE_WINDOW_MS + 60_000;
 /** A signed body is read whole to digest it; no API body comes near this. */
 export const MAX_SIGNED_BODY = 1 << 20;
 

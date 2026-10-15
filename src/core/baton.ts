@@ -78,8 +78,10 @@ export class BatonCore {
     let notice: { refused?: string; revoked_listed?: string[] } | null = null;
     try {
       const r = await this.workers.seedKeys();
-      if (r.revoked.length) notice = { revoked_listed: r.revoked };
-      else if (r.seeded === 0) return; // unchanged since the last seed: keep its notice
+      if (r.unchanged) {
+        // The list that last seeded is back (a refused one never seeds): its refusal is over.
+        if (!this.keysNotice()?.refused) return;
+      } else if (r.revoked.length) notice = { revoked_listed: r.revoked };
     } catch (e) {
       notice = { refused: (e instanceof Error ? e.message : String(e)).slice(0, 500) };
     }
@@ -209,17 +211,17 @@ export class BatonCore {
     }
   }
 
-  /** A signed request (R3-1239), verified whole by the one verifier: the key its keyid names
-   *  among the keys in force, the SSHSIG in the `baton-request` namespace, `created` within 5
-   *  minutes of this clock — then its nonce, unseen for that key. The crypto runs outside the
-   *  turn (§3); the nonce is checked and written after it. Returns the request with its body
-   *  put back and the credential: the key's fingerprint. */
   /** Needs you: a BATON_KEYS list that was refused, or that names a revoked key (R3-1239). */
   private keysNotice(): { refused?: string; revoked_listed?: string[] } | null {
     const raw = this.sql<{ value: string }>(`SELECT value FROM baton_settings WHERE key = 'keys_notice'`)[0]?.value;
     return raw ? JSON.parse(raw) : null;
   }
 
+  /** A signed request (R3-1239), verified whole by the one verifier: the key its keyid names
+   *  among the keys in force, the SSHSIG in the `baton-request` namespace, `created` within 5
+   *  minutes of this clock — then its nonce, unseen for that key. The crypto runs outside the
+   *  turn (§3); the nonce is checked and written after it. Returns the request with its body
+   *  put back and the credential: the key's fingerprint. */
   private async verifySigned(req: Request): Promise<{ req: Request; cred: string }> {
     const now = this.now();
     const v = await this.outside(() => verifyRequest(req, (fp) => this.workers.publicKey(fp), { origin: this.ports.config.BATON_ORIGIN, now }));
