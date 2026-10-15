@@ -115,6 +115,8 @@ export async function syncOnce(next, deps, { backoffMs = 30_000 } = {}) {
     if ((res.code === 'head-moved' || res.code === 'stale-observation') && retries++ === 0) {
       obs = await take();
       if (obs.ok === false) return ended(obs.code);
+      // Everything posted under the new number is read after it (§7.1 step 2): the payload too.
+      payload = null;
       head = await readHead();
       if (head.ok === false) return { outcome: `failed:${head.code}`, steps };
       continue;

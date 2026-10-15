@@ -61,4 +61,16 @@ describe('S-BTN-36 (observation half)', () => {
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'released', end_reason: 'released:stale-board' });
     expect(await rows('SELECT claim_observation, end_observation FROM claims WHERE id = ?', c.claim_id)).toEqual([{ claim_observation: n, end_observation: m }]);
   });
+
+  it('a refresh at the head judges a claim the post that moved the head could not (round 1, 1-B-1)', async () => {
+    const { secret } = await register('vm-a');
+    const n = (await observe()).json.observation;
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9002' });
+    await syncCall('/v1/sync/board', doneBoard('e'.repeat(40), sha.A, n));
+    expect((await claimRow(c.claim_id)).status).toBe('active');
+    // main does not move; the next run posts a refresh of the same head under a later number.
+    const m = (await observe()).json.observation;
+    expect(await (await syncCall('/v1/sync/board', doneBoard('e'.repeat(40), 'e'.repeat(40), m))).json()).toMatchObject({ ok: true, unchanged: true, stale_released: 1 });
+    expect(await claimRow(c.claim_id)).toMatchObject({ status: 'released', end_reason: 'released:stale-board' });
+  });
 });

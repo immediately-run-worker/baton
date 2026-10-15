@@ -3,6 +3,7 @@
 // is the outstanding one and above the last accepted reading's.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
 import { MIRROR_WORKFLOW_REF, observe, payload, rows, setClock, syncCall, syncToken, withCore } from '../helpers';
+import { checkPayload } from '../../src/core/board';
 
 const board = inject('board');
 const sha = board.shas;
@@ -72,5 +73,25 @@ describe('a board post carries its number (R-BTN-62)', () => {
     expect(await code(held)).toBe('snapshot-rejected');
     expect(await rows('SELECT sha, observation FROM held_snapshots')).toEqual([{ sha: sha.D, observation: n }]);
     expect(await rows(`SELECT observation FROM board_head WHERE repository_id = 'docs'`)).toEqual([{ observation: n }]);
+  });
+});
+
+describe('two posts judged at once (round 1, 1-B-2)', () => {
+  it('a post whose number another run overtook while its rows were hashed is refused; one wins, the head never goes back', async () => {
+    await syncCall('/v1/sync/board', payload(sha.A, null, board.states.A));
+    const out = await withCore(async (c) => {
+      const repo = c.registry.get('docs')!;
+      const first = c.observations.observe('docs').observation;
+      const p1 = c.board(repo, checkPayload({ ...payload(sha.B, sha.A, board.states.B), observation: first })).then((r) => ({ ok: r }), (e) => ({ code: (e as { code: string }).code }));
+      // p1 used its number and is awaiting its row hashes: a second run takes the next and posts.
+      const second = c.observations.observe('docs').observation;
+      const p2 = c.board(repo, checkPayload({ ...payload(sha.C, sha.A, board.states.C), observation: second })).then((r) => ({ ok: r }), (e) => ({ code: (e as { code: string }).code }));
+      return Promise.all([p1, p2]);
+    });
+    const won = out.filter((r) => 'ok' in r);
+    expect(won).toHaveLength(1);
+    expect(out.find((r) => 'code' in r)).toMatchObject({ code: expect.stringMatching(/^(head-moved|stale-observation)$/) });
+    const h = await rows<{ sha: string; observation: number }>(`SELECT sha, observation FROM board_head WHERE repository_id = 'docs'`);
+    expect([sha.B, sha.C]).toContain(h[0].sha);
   });
 });

@@ -59,6 +59,12 @@ export class Observations {
     this.c.store.exec('UPDATE board_head SET handed_out_at = NULL WHERE repository_id = ? AND last_handed_out = ?', repo, n);
   }
 
+  /** Whether `n` is still above the last accepted reading's: re-checked in a post's writing
+   *  transaction, after its awaits. */
+  newest(repo: string, n: number): boolean {
+    return this.row(repo).observation < n;
+  }
+
   /** Record an accepted reading's number (the post's own transaction). */
   accept(repo: string, n: number): void {
     this.c.store.exec('UPDATE board_head SET observation = ? WHERE repository_id = ? AND observation < ?', n, repo, n);

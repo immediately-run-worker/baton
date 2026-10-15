@@ -385,11 +385,13 @@ export class BatonCore {
       // ancestor of the head, and an older registry would roll a course back. A head that
       // predates the registry (migration 0007) gets its courses with the next new head; until
       // then its tickets fit no worker (rule 9), failing closed.
-      const confirmed = this.store.transaction(() => {
+      // A refresh is a reading like any other: it confirms ends and judges claims made before its
+      // number (R-BTN-62, R-BTN-35), not only the post that moved the head.
+      return this.store.transaction(() => {
         this.observations.accept(r, n);
-        return this.claims.confirm(confirmations, n);
+        const confirmed = this.claims.confirm(confirmations, n);
+        return { ok: true, unchanged: true, confirmed, stale_released: this.claims.staleBoard(r, n) };
       });
-      return { ok: true, unchanged: true, confirmed };
     }
     if (!accepted && p.parent_sha !== head) throw new BatonError('head-moved', `the head is ${head ?? 'unset'}; re-read it and retry`);
 
@@ -401,6 +403,10 @@ export class BatonCore {
     }));
     const changed: { upserted: number; deleted: number; confirmed?: number; stale_released?: number; courses_refused?: string[]; fleet_ignored?: boolean } = { upserted: 0, deleted: 0 };
     this.store.transaction(() => {
+      // The row hashes were awaited after the number was used, so another run may have posted
+      // meanwhile: this reading must still be the newest, over the head it was judged against.
+      if (!this.observations.newest(r, n)) throw new BatonError('stale-observation', `a newer reading than ${n} was accepted while this post was judged; take a new number and retry (R-BTN-62)`);
+      if (this.headOf(r) !== head) throw new BatonError('head-moved', `the head moved to ${this.headOf(r) ?? 'unset'} while this post was judged; re-read it and retry`);
       // The course registry first (R-BTN-48, R-BTN-69): every ticket must name a course in
       // force, and a refused file with none to keep refuses the whole post.
       const refused = this.applyRegistry(r, p, rows.map(({ row }) => row.course_id), at);
