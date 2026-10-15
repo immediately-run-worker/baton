@@ -12,6 +12,7 @@ module properties {
                OWNER_BUDGET = P_OWNER_BUDGET).* from "./baton"
   action pinit = init
   action pstep = step
+  action pprogress = progressStep
 
   // R-BTN-4, R-BTN-19, R-BTN-26: at most one live holder per ticket — an active claim, or a
   // force-reaped one whose worker has not cleared its fence — and one active claim per worker.
@@ -68,6 +69,14 @@ module properties {
       (c.startBars.intersect(FAMILIES).size() > 0 and c.startBars.intersect(TAGS.get(c.worker)).size() == 0)
   })
 
+  // R-BTN-45, R-BTN-52, rules 3, 8, 12: every claim and every advance was granted with every
+  // gate in force holding, hook refusal included — recorded at the grant, apart from the guard.
+  val gatesHeld = st.claims.keys().forall(i => not(st.claims.get(i).gateViolation))
+
+  // R-BTN-6, R-BTN-26: no worker pushes for a claim Baton reaped without a fence — its own
+  // fence check stops it first, given drift below the margin (baton.qnt, time).
+  val noActAfterLoss = not(st.actedAfterLoss)
+
   // No deadlock: a ticket git has not finished or withdrawn, once the syncs are idle and the
   // head matches git, is held by a claim, fenced (clears at fence-cleared or the timeout),
   // held by the owner, waiting on `policy` or flagged unconfirmed (both under Needs you), or
@@ -87,28 +96,9 @@ module properties {
   val safety = and {
     oneLiveHolderPerTicket, oneClaimPerWorker, observationsIncrease, confirmationAfterEnd,
     confirmedIsInGit, staleOnlyWhenTakenAway, regressedOnlyWhenGitRegressed, boundedLoops,
-    writingLegsBarred, noStuckTicket,
+    writingLegsBarred, gatesHeld, noActAfterLoss, noStuckTicket,
   }
 
-  // ---- liveness (Apalache --temporal, small instance): under weak fairness of the steps
-  // that resolve each — a live worker's fence-cleared or the alarm's timeout; the owner's
-  // resolution of a flagged end — nothing waits forever (R-BTN-19, R-BTN-10, §6.7).
-  action fenceProgress = { nondet w = WORKERS.oneOf()
-                           any { fenceCleared(w), reapDead(w) } }
-  action resolveProgress = { nondet i = 1.to(MAX_CLAIMS).oneOf()
-                             ownerResolve(i) }
-  temporal fencesClear = weakFair(fenceProgress, st) implies
-    always(TICKETS.forall(t => fencedOf(t).size() > 0 implies eventually(fencedOf(t).size() == 0)))
-  temporal endsResolve = weakFair(resolveProgress, st) implies
-    always(st.claims.keys().forall(i => st.claims.get(i).status == "completed" implies
-      eventually(st.claims.get(i).confirmed)))
+  // ---- liveness: in liveness.qnt, so the safety proof does not carry the fairness terms ----
 
-  // ---- reachability witnesses: each is expected to be VIOLATED by simulation ----
-  val noConfirmedSuspension = st.claims.keys().forall(i =>
-    not(st.claims.get(i).confirmed and st.claims.get(i).kind == "suspended" and st.claims.get(i).confirmObs > 0))
-  // reached deterministically by regressions.qnt (regressedSuspensionIsConfirmedTest)
-  val noRegressedClaim = st.claims.keys().forall(i => not(st.claims.get(i).regressed))
-  val noResumedClaim = st.claims.keys().forall(i => st.claims.get(i).startPath.length() == 0)
-  val noFence = TICKETS.forall(t => fencedOf(t).size() == 0)
-  val noRefusedClaim = st.lastStep != "claim-refused"
 }

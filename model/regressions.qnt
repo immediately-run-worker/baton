@@ -7,6 +7,8 @@ module regressions {
   val c1 = st.claims.get(1)
   val c2 = st.claims.get(2)
   val NONE: Set[str] = Set()
+  // a deterministic start: no worker's clock drifts
+  action start: bool = initWith(WORKERS.mapBy(w => 0))
   // a claim whose hook orders it (no refusal)
   action claim(w: str, t: str): bool = claimStart(w, t).then(claimFinish(w, "order"))
   // start `l` and push its evidence so it lands; a writing leg bars family b (w1 is family a)
@@ -19,14 +21,14 @@ module regressions {
   // Fifth review B3 / R-BTN-52: a hook call is an await. Two workers start claims on one
   // ticket; both hooks return; the gates re-checked after the second find the first's claim.
   run claimDuringHookCallTest =
-    init.then(claimStart("w1", "t1")).then(claimStart("w2", "t1"))
+    start.then(claimStart("w1", "t1")).then(claimStart("w2", "t1"))
       .then(claimFinish("w1", "order")).then(claimFinish("w2", "order"))
-      .expect(activeOf("t1").size() == 1 and c1.worker == "w1" and st.lastStep == "claim-refused")
+      .expect(activeOf("t1").size() == 1 and c1.worker == "w1" and st.pending.get("w2") == "" and workerClaim("w2").size() == 0)
 
   // R-BTN-52: a failing hook falls back to the default order and changes no gate; a refusing
   // hook refuses.
   run hookFailureFallsBackTest =
-    init.then(claimStart("w1", "t1")).then(claimFinish("w1", "fail"))
+    start.then(claimStart("w1", "t1")).then(claimFinish("w1", "fail"))
       .expect(c1.status == "active")
       .then(claimStart("w2", "t2")).then(claimFinish("w2", "refuse"))
       .expect(activeOf("t2").size() == 0)
@@ -34,14 +36,14 @@ module regressions {
   // Fourth review B1: an advance into a leg no sync has posted yet (the review loop) is fine;
   // the course file's edges are the check.
   run advanceIntoUnpostedLegTest =
-    init.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
+    start.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
       .then(leg("w1", "fix")).then(leg("w1", "review"))
       .expect(c1.leg == "review" and c1.finished.length() == 3 and st.lastAccepted == 0)
 
   // Sixth review M8: a suspension whose ticket git has already moved past is confirmed by
   // path extension.
   run gitAheadOfSuspensionConfirmsTest =
-    init.then(claim("w1", "t1")).then(leg("w1", "implement"))
+    start.then(claim("w1", "t1")).then(leg("w1", "implement"))
       .then(endClaim("w1", "suspended", true))
       .then(foreignPush("t1", "review"))
       .then(sync1)
@@ -49,7 +51,7 @@ module regressions {
 
   // Fifth review B2 / R-BTN-62: a sync numbered before the claim may not judge it.
   run earlyNumberCannotJudgeClaimTest =
-    init.then(withdraw("t1"))
+    start.then(withdraw("t1"))
       .then(syncNumber(1)).then(syncRead(1, TICKETS.mapBy(t => NONE)))
       .then(claim("w1", "t1"))
       .then(syncPost(1))
@@ -60,7 +62,7 @@ module regressions {
   // Fourth review B4: a holder that advanced past what a slow sync read is neither stale nor
   // regressed when that sync posts.
   run lagIsNotRegressionTest =
-    init.then(claim("w1", "t1")).then(leg("w1", "implement"))
+    start.then(claim("w1", "t1")).then(leg("w1", "implement"))
       .then(syncNumber(1)).then(syncRead(1, TICKETS.mapBy(t => NONE)))
       .then(leg("w1", "review"))
       .then(syncPost(1)).then(sync1)
@@ -68,7 +70,7 @@ module regressions {
 
   // Sixth review M9: a push that never landed is lag, never a regression.
   run lostPushIsNotRegressionTest =
-    init.then(claim("w1", "t1")).then(advance("w1", "implement", NONE, false))
+    start.then(claim("w1", "t1")).then(advance("w1", "implement", NONE, false))
       .then(pushEvidence("w1", false))
       .then(advance("w1", "review", NONE, false))
       .then(sync1)
@@ -76,7 +78,7 @@ module regressions {
 
   // Fifth review B2: max_runs counted from start_path plus the claim's own legs.
   run maxRunsSurviveResumptionTest =
-    init.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
+    start.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
       .then(leg("w1", "fix")).then(leg("w1", "review")).then(leg("w1", "fix"))
       .then(leg("w1", "review"))
       .then(endClaim("w1", "suspended", true))
@@ -88,7 +90,7 @@ module regressions {
       .expect(c2.leg == "adjudicate")
 
   run fixRefusedAtItsLimitTest =
-    init.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
+    start.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
       .then(leg("w1", "fix")).then(leg("w1", "review")).then(leg("w1", "fix"))
       .then(leg("w1", "review"))
       .then(advance("w1", "fix", Set("family:b"), false))
@@ -96,7 +98,7 @@ module regressions {
 
   // Sixth review M9: a suspension made while regressed is confirmed by the next snapshot.
   run regressedSuspensionIsConfirmedTest =
-    init.then(claim("w1", "t1")).then(leg("w1", "implement"))
+    start.then(claim("w1", "t1")).then(leg("w1", "implement"))
       .then(advance("w1", "review", NONE, false))
       .then(sync1).then(regress("t1")).then(sync1)
       .expect(c1.regressed)
@@ -106,7 +108,7 @@ module regressions {
 
   // Third review B1: the closure of a `done` ticket, seen before /end, confirms it.
   run doneSeenBeforeEndTest =
-    init.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
+    start.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
       .then(leg("w1", "merge"))
       .then(sync1)
       .then(endClaim("w1", "done", true))
@@ -114,7 +116,7 @@ module regressions {
 
   // A pushed leg whose evidence never landed is flagged for the owner, never stuck silently.
   run lostWriteIsFlaggedNotStuckTest =
-    init.then(claim("w1", "t1")).then(advance("w1", "implement", NONE, false))
+    start.then(claim("w1", "t1")).then(advance("w1", "implement", NONE, false))
       .then(pushEvidence("w1", false))
       .then(endClaim("w1", "suspended", true))
       .then(sync1)
@@ -124,7 +126,7 @@ module regressions {
 
   // R-BTN-19: a force-reaped ticket is not re-issued until the live worker clears its fence.
   run forceReapFencesTest =
-    init.then(claim("w1", "t1")).then(forceReap("w1")).then(sync1)
+    start.then(claim("w1", "t1")).then(forceReap("w1")).then(sync1)
       .expect(not(ticketClaimable("t1")) and fencedOf("t1").size() == 1)
       .then(fenceCleared("w1"))
       .expect(ticketClaimable("t1"))
@@ -132,24 +134,24 @@ module regressions {
   // Fifth review B3 / R-BTN-67: the holder's own bars meet the required bar in one session;
   // without them, before any sync, the advance into `fix` is refused (`policy`).
   run requiredBarMetByHolderBarsTest =
-    init.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
+    start.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
       .then(advance("w1", "fix", Set("family:b"), false))
       .expect(c1.leg == "fix")
 
   run requiredBarRefusesUnbarredFixTest =
-    init.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
+    start.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
       .then(advance("w1", "fix", NONE, false))
       .fail()
 
   // Rule 8: a holder cannot bar a family and be of it; a claim+advance owner bar on the
   // holder's tag refuses its advance, a claim-only one does not.
   run holderOfBarredFamilyRefusedTest =
-    init.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
+    start.then(claim("w1", "t1")).then(leg("w1", "implement")).then(leg("w1", "review"))
       .then(advance("w1", "fix", Set("family:a"), false))
       .fail()
 
   run claimOnlyOwnerBarLetsHolderAdvanceTest =
-    init.then(claim("w1", "t1")).then(setOwnerBar("family:a", "claim"))
+    start.then(claim("w1", "t1")).then(setOwnerBar("family:a", "claim"))
       .then(advance("w1", "implement", NONE, false))
       .expect(c1.leg == "implement")
       .then(claimStart("w3", "t2"))        // w3 is family a: refused new claims
@@ -157,7 +159,46 @@ module regressions {
 
   // §8, rule 3: a hold refuses the holder's next advance.
   run holdRefusesAdvanceTest =
-    init.then(claim("w1", "t1")).then(setHold("t1", true))
+    start.then(claim("w1", "t1")).then(setHold("t1", true))
       .then(advance("w1", "implement", NONE, false))
+      .fail()
+
+  // baton#10 review, round 1 (1-A-0): with two sync runs overlapping, a higher number read
+  // earlier could be posted later and flag a holder's progress as a regression. BATON_SPEC
+  // R-BTN-62 (amended 2026-10-15) refuses a second number while one is outstanding.
+  run overlappingSyncRunsRefusedTest =
+    start.then(claim("w1", "t1")).then(advance("w1", "implement", NONE, false))
+      .then(syncNumber(1)).then(syncNumber(2))
+      .fail()
+
+  // ... and a number Baton voided (left outstanding too long) is refused when it is posted.
+  run voidedNumberRefusedTest =
+    start.then(syncNumber(1)).then(syncRead(1, TICKETS.mapBy(t => NONE))).then(syncVoid(1))
+      .then(syncPost(1))
+      .expect(st.lastAccepted == 0)
+      .then(syncNumber(2))
+      .expect(st.syncs.get(2).phase == "numbered")
+
+  // baton#10 review (1-A-3, 1-B-3): a sleeping worker whose lease the alarm reaped wakes and
+  // cannot push — its own fence check, at MARGIN before the lease's end by its clock, stops it.
+  run sleepingWorkerReapedCannotActTest =
+    start.then(claim("w1", "t1")).then(advance("w1", "implement", NONE, false))
+      .then(sleep("w1")).then(tick).then(tick).then(tick).then(tick)
+      .then(alarmReap(1)).then(wake("w1"))
+      .expect(c1.status == "reaped")
+      .then(pushEvidence("w1", true))
+      .fail()
+
+  // The drift edge: a worker whose clock runs MAX_DRIFT behind may act until its clock
+  // reaches lease end − MARGIN, which is still before Baton's reap.
+  run driftEdgeTest =
+    initWith(WORKERS.mapBy(w => if (w == "w1") MAX_DRIFT else 0))
+      .then(claim("w1", "t1")).then(advance("w1", "implement", NONE, false))
+      .then(tick).then(tick)
+      .then(pushEvidence("w1", true))
+      .expect(not(st.actedAfterLoss))
+      .then(advance("w1", "review", NONE, false))
+      .then(tick)
+      .then(pushEvidence("w1", true))
       .fail()
 }

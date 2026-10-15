@@ -2,9 +2,9 @@
   "name": "@immediately-run/baton",
   "private": true,
   "type": "module",
-  "description": "Baton \u2014 work-item leases, workers and the factory dashboard on a Cloudflare Durable Object (BATON_SPEC).",
+  "description": "Baton — work-item leases, workers and the factory dashboard on a Cloudflare Durable Object (BATON_SPEC).",
   "scripts": {
-    "test": "vitest run && npm run model",
+    "test": "vitest run && MODEL_SAMPLES=1000 npm run model",
     "test:baton": "vitest run",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "vendor": "node scripts/vendor.mjs",

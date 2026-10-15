@@ -12,14 +12,16 @@ defect: it is filed against BATON_SPEC with the trace, never fixed by weakening 
 | `baton.qnt` | the state (one record, `st`) and every action; the sizes are constants |
 | `properties.qnt` | the safety invariants (conjoined as `safety`), the liveness properties, the reachability witnesses — over any instance |
 | `instances.qnt` | `sim` (R3-1243's bounds: 3 workers, 2 tickets, 2 overlapping sync runs) and `small` (2 workers, 1 ticket, 1 sync run, for Apalache) |
-| `regressions.qnt` | one deterministic run per defect the reviews found, each asserting the merged spec does not reach it |
+| `regressions.qnt` | one deterministic run per defect the reviews found (22), each asserting the merged spec does not reach it |
 | `check.mjs` | `npm run model` |
 
 ## Commands
 
-- `npm run model` — typecheck, the 18 regression runs, 1,000 random runs of 40 steps of `sim`
-  against `safety` (`MODEL_SAMPLES` to change), and four reachability witnesses. No JVM; about
-  45 seconds. Part of `npm test`.
+- `npm run model` — typecheck, the 22 regression runs, 10,000 random runs of 40 steps of `sim`
+  against `safety` with the full `step` and 3,000 with `progressStep` (the happy path's actors,
+  so runs reach merges, fix loops and regressions; every run of it is a run of `step`), and
+  eight reachability witnesses. No JVM; about 6 minutes, run by CI's `model` job. `npm test`
+  runs it with `MODEL_SAMPLES=1000` (about a minute).
 - `npm run model:verify` — Apalache's bounded proof of `safety` on `small` to depth 5, about
   5 minutes on 4 CPUs (depth 6 had not finished after 14 more minutes). Needs
   Java (CI installs Temurin 21); the first run downloads Apalache.
@@ -43,11 +45,17 @@ releases at first use, which a sandboxed agent cannot always reach.
   pushed before the advance that finishes it, and may land, be rejected or be lost.
 - **Ends** (R-BTN-71, §6.5): `done` at an end station, `suspended` at the `to` reached or the
   `from` given up, `release`.
-- **The lease** (§6.6, R-BTN-19, R-BTN-26): a dead worker's claim is reaped at its timeout; the
-  owner force-reaps a live worker's claim, which stays fenced — the ticket not re-issued —
-  until that worker reports `fence-cleared` or dies and times out.
+- **Time and the lease** (§6.3, §6.6, R-BTN-4, R-BTN-6, R-BTN-19, R-BTN-26): abstract ticks;
+  a claim's lease lasts `TIMEOUT` ticks from the last heartbeat and the alarm reaps it then —
+  its worker dead, or alive and silent (asleep). A worker acts on the claim *it believes* it
+  holds, and its own fence check stops it `MARGIN` ticks before its lease ends by its own
+  clock, which runs up to `MAX_DRIFT` behind Baton's. The owner force-reaps a live worker's
+  claim, which stays fenced — the ticket not re-issued — until that worker reports
+  `fence-cleared` or dies and times out.
 - **The sync** (§7.1, R-BTN-62): number, then read, then post, as three actions, so every
-  interleaving with workers and git is explored; the barred tags it posts are any set
+  interleaving with workers and git is explored — with at most one reading in flight per
+  repository: a second number is refused while one is outstanding, and a voided number's post
+  is refused (R-BTN-62 as amended 2026-10-15, after this model found the overlap); the barred tags it posts are any set
   consistent with the contract (course logic is nondeterministic, R-BTN-50). A post is accepted
   whole only when its number is greater than the last accepted; an accepted snapshot judges a
   claim only when its number is greater than the claim's or its end's: staleness only on
@@ -71,29 +79,53 @@ releases at first use, which a sandboxed agent cannot always reach.
 | `regressedOnlyWhenGitRegressed` — lag is never a regression | §2e |
 | `boundedLoops` — no claim runs a leg past its `max_runs` | R-BTN-63, R-BTN-69 |
 | `writingLegsBarred` — every writing leg started under the required bar, by a worker of no barred family | R-BTN-45, R-BTN-60, R-BTN-67 |
+| `gatesHeld` — every claim and advance was granted with every gate in force holding (hold, barred tags, required bar, hook refusal), recorded at the grant apart from the guard | R-BTN-45, R-BTN-52, rules 3, 8, 12 |
+| `noActAfterLoss` — no worker pushes for a claim the alarm reaped (unfenced) | R-BTN-6, R-BTN-26 |
 | `noStuckTicket` — no deadlock: a ticket git has not finished or withdrawn, once the syncs are idle and the head matches git, is held, fenced, owner-held, waiting on `policy`, flagged, or claimable | §6.7, R-BTN-10, R-BTN-35, R-BTN-67 |
 
-**Liveness** (`fencesClear`, `endsResolve`) is stated in `properties.qnt` under weak fairness of
-the steps that resolve each, for Apalache's `--temporal` mode. It has not been model-checked
-yet: checking it, and adding it to CI if it fits the budget, is filed as R3-1243's remainder.
-Meanwhile the deterministic runs `forceReapFencesTest` and `lostWriteIsFlaggedNotStuckTest`
-show each resolving path.
+**Liveness** — `fencesClear`, `endsResolve`, `barsLiftClaimable`, `readyIsClaimed` — is stated
+in `properties.qnt` under weak fairness of each resolving step, per worker. The item's fifth,
+a held history accepted within 24 hours, is not stated: held histories are not modelled. See
+*Checked how* for what has been run.
 
-**Mutation checks** made while drafting: restoring the fifth revision's regression rule fails
-`lostPushIsNotRegressionTest`; dropping the gate re-check after the hook fails
-`claimDuringHookCallTest`; dropping the fence from the claim gate fails `forceReapFencesTest`.
+**What found something.** On its first review this model found a real spec gap: with two
+overlapping sync runs, a higher observation number read earlier could be posted later and
+make a holder's progress look like a regression. BATON_SPEC R-BTN-62 relied on Actions'
+concurrency group, which agents can edit; it now has Baton refuse a second number while one is
+outstanding (`sync-busy`). `overlappingSyncRunsRefusedTest` keeps it.
+
+**Mutation checks** — each mutant fails the run or probe that names its defect:
+- restoring the fifth revision's regression rule fails `lostPushIsNotRegressionTest`;
+- dropping the gate re-check after the hook fails `claimDuringHookCallTest`;
+- dropping the fence from the claim gate fails `forceReapFencesTest`;
+- dropping the advance's gate guard reaches a `gateViolation` (`gatesHeld`);
+- `MAX_DRIFT = 3`, above `MARGIN = 2`, lets a reaped worker push (`noActAfterLoss`); at
+  `MAX_DRIFT = 2` it cannot — the spec's assumption is drift ≤ the margin.
+
+## Checked how
+
+| Check | Instance | Result |
+|---|---|---|
+| 22 regression runs | `sim` sizes, zero drift | pass |
+| `safety`, 10,000 × 40 steps of `step`; 3,000 × 40 of `progressStep` | `sim` | no violation |
+| witnesses (a confirmed suspension, a resumed claim, a fence, a refused claim, an alarm reap; a fix leg, a regression, a merge) | `sim` | all reached |
+| a second review, a confirmed `done` | — | reached by regression runs only |
+| Apalache, `safety` | `small`, depth 5 | being measured (round-1 fixes) |
+| Apalache, liveness | `small` | being measured (round-1 fixes) |
+
+Depth 5 on `small` reaches claims, advances, pushes and a sync; it does not reach a judged
+snapshot (a confirmation, a stale release or a regression needs 6–8 steps), so for those
+invariants the evidence is the simulation and the regression runs, not the proof.
 
 ## Bounds and assumptions
 
 - `sim`: 3 workers (two of family `a`, one of `b`), 2 tickets, 2 overlapping sync runs, at most
   6 claims, 2 git events and 2 owner acts per run. `small`: 2 workers, 1 ticket, 1 sync run, 3
   claims, 1 git event, 1 owner act.
-- **Time is abstract.** Lease timeouts, the 30-minute regression flag and the 6-hour
-  unconfirmed flag are "eventually". **The drift assumption**: the fencing margin of R-BTN-6
-  holds only while a worker's clock drifts from Baton's by less than the 4 minutes left between
-  the sidecar's own deadline and Baton's reap; the model, with no clocks, assumes it — a worker
-  never acts on a lease Baton has already reaped, except through the force-reap path modelled
-  as the fence.
+- **Time** is abstract ticks: `TIMEOUT = 4`, `MARGIN = 2`, `MAX_DRIFT = 1`, at most 12 ticks
+  a run. The 30-minute regression flag and the 6-hour unconfirmed flag are "eventually".
+  **The drift assumption**, checked: R-BTN-6's fence holds while a worker's clock runs behind
+  Baton's by at most the margin (4 minutes in the spec); above it, a reaped worker can push.
 
 ## Not modelled, and why
 
@@ -105,4 +137,8 @@ show each resolving path.
   one ends the claim `released:course-changed`, a release the model already has.
 - **Tiers, grants and requires** (rules 4–7): column comparisons with no interleaving of their
   own; matching tests cover them (G-BTN-40).
+- **R-BTN-39** (where a ticket is, replayed from git) is the sync's `syncRead` taking any git
+  state as given; **R-BTN-40** (suspend rather than wait on the lease) is a worker's choice, so
+  `endClaim(…, "suspended", …)` may happen at any point — both are modelled as nondeterminism,
+  not as rules of their own.
 - **Blocks** (BATON_SPEC §2g, R-BTN-75–77; docs#213, in review): to be added when it merges.
