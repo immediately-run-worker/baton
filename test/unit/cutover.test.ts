@@ -53,7 +53,7 @@ describe('the cutover’s refusals and the import’s names', () => {
   it('adopt before cutover is not-cut-over', async () => {
     await syncCall('/v1/sync/board', payload(sha.A, null, board.states.A));
     const { secret } = await register('vm-a');
-    const res = await workerCall('/v1/worker/adopt', { secret, body: { ticket_id: 'R3-9001' } });
+    const res = await workerCall('/v1/runner/adopt', { secret, body: { ticket_id: 'R3-9001' } });
     expect([res.status, ((await res.json()) as { code: string }).code]).toEqual([409, 'not-cut-over']);
   });
 
@@ -76,7 +76,7 @@ describe('adoption requests that went stale', () => {
     await syncCall('/v1/sync/board', boardB(() => {}));
     await owner('/v1/ui/cutover', { confirm: true });
     const a = await register('vm-a');
-    expect((await workerCall('/v1/worker/adopt', { secret: a.secret, body: { ticket_id: 'R3-9001' } })).status).toBe(200);
+    expect((await workerCall('/v1/runner/adopt', { secret: a.secret, body: { ticket_id: 'R3-9001' } })).status).toBe(200);
     return a;
   };
   const adoptions = async () => ((await (await ownerCall('/v1/ui/state')).json()) as { needs_you: { adoptions: unknown[] } }).needs_you.adoptions;
@@ -99,8 +99,8 @@ describe('adoption requests that went stale', () => {
     expect([res.status, ((await res.json()) as { rule: string }).rule]).toEqual([409, 'requester-silent']);
     expect(await rows(`SELECT w.kind FROM claims c JOIN workers w ON w.id = c.worker_id`)).toEqual([{ kind: 'legacy' }]);
     // Alive again (a heartbeat), and asking again: the owner can confirm.
-    await workerCall('/v1/worker/heartbeat', { secret: a.secret, body: hbBody('vm-a') });
-    await workerCall('/v1/worker/adopt', { secret: a.secret, body: { ticket_id: 'R3-9001' } });
+    await workerCall('/v1/runner/heartbeat', { secret: a.secret, body: hbBody('vm-a') });
+    await workerCall('/v1/runner/adopt', { secret: a.secret, body: { ticket_id: 'R3-9001' } });
     expect((await owner('/v1/ui/adoptions/R3-9001/confirm', { confirm: true })).status).toBe(200);
   });
 

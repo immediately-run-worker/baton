@@ -30,7 +30,7 @@ async function route(req: Request, env: Config, to: Forward): Promise<Response> 
     await verifySync(req, env, mirror ? env.MIRROR_WORKFLOW_REF : env.SYNC_WORKFLOW_REF);
     return forward(req, to, {});
   }
-  if (pathname.startsWith('/v1/worker/')) {
+  if (pathname.startsWith('/v1/runner/')) {
     const credential = await verifyWorker(req, env);
     return forward(req, to, { 'X-Baton-Credential': credential });
   }

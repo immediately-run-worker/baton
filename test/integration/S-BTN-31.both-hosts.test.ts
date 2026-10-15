@@ -4,7 +4,7 @@
 // refused. The hooks clause — a repository's hooks give the same results in a local `workerd`
 // with no outbound network — arrives with the hook runners (R3-1236).
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { claimItem, cutover, HOST, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, syncToken } from '../helpers';
+import { call, claimItem, cutover, HOST, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, syncToken, TOKENS } from '../helpers';
 
 const board = inject('board');
 
@@ -38,6 +38,14 @@ describe(`S-BTN-31 both hosts (${HOST})`, () => {
     const a = await register('vm-a', { skills_version: 2 ** 60 });
     expect((await claimItem('vm-a', a.secret, { ticket_id: 'R3-9002' })).status).toBe(200);
     expect((await ownerCall('/v1/ui/state')).status).toBe(200);
+  });
+
+  it('the runner API is under /v1/runner only: the old /v1/worker prefix is not served (R3-1261)', async () => {
+    for (const [method, path] of [['POST', '/v1/worker/heartbeat'], ['GET', '/v1/worker/mode'], ['GET', '/v1/worker/next']] as const) {
+      const res = await call(path, { method, headers: { Authorization: `Bearer ${TOKENS['vm-a']}`, 'Content-Type': 'application/json' }, body: method === 'POST' ? '{}' : undefined });
+      expect([path, res.status, ((await res.json()) as { code: string }).code]).toEqual([path, 404, 'not-found']);
+    }
+    expect((await call('/v1/runner/mode', { headers: { Authorization: `Bearer ${TOKENS['vm-a']}` } })).status).not.toBe(404);
   });
 
   it.todo('a repository\'s hooks give the same results on both hosts, locally in workerd with no outbound network (R3-1236)');

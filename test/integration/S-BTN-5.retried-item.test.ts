@@ -23,13 +23,13 @@ describe('S-BTN-5 retried item (server)', () => {
     const creds = ['vm-a', 'vm-b', 'test'] as const;
     const attempt = async (i: number, at: number) => {
       await setClock(at);
-      await workerCall('/v1/worker/heartbeat', { cred: creds[i], secret: workers[i].secret, body: hbBody(creds[i]) });
+      await workerCall('/v1/runner/heartbeat', { cred: creds[i], secret: workers[i].secret, body: hbBody(creds[i]) });
       const c = await claimItem(creds[i], workers[i].secret, { ticket_id: 'R3-9001' });
       expect([i, c.status]).toEqual([i, 200]);
       return c.json;
     };
     const work = async (i: number, claimId: number, at: number, round: number) => {
-      await workerCall('/v1/worker/activities', { cred: creds[i], secret: workers[i].secret, body: { activities: [
+      await workerCall('/v1/runner/activities', { cred: creds[i], secret: workers[i].secret, body: { activities: [
         { id: `push-${i}`, claim_id: claimId, kind: 'push', source: 'hook', started_at: at, ended_at: at + 1, outcome: 'succeeded', detail: { branch: 'claude/r3-9001-fixture', sha: 'abc' } },
         { id: `pr-${i}`, claim_id: claimId, kind: 'open-pr', source: 'hook', started_at: at + 2, ended_at: at + 3, outcome: 'succeeded', detail: { pr: PR } },
         { id: `round-${i}`, claim_id: claimId, kind: 'review-round', seq: round, source: 'skill', started_at: at + 4, detail: { findings: 3, blocking: 1 } },

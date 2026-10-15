@@ -233,7 +233,7 @@ describe('§9: two stale releases reap a claim once', () => {
 describe('the holder query takes only an item id', () => {
   it('a malformed escape or a non-id is invalid-params, never a 500', async () => {
     for (const bad of ['%E0%A4%A', 'not-an-item', '..%2F..']) {
-      const res = await workerCall(`/v1/worker/tickets/${bad}/holder`, { cred: 'vm-a' });
+      const res = await workerCall(`/v1/runner/tickets/${bad}/holder`, { cred: 'vm-a' });
       expect([bad, res.status]).toEqual([bad, 400]);
     }
   });
@@ -309,7 +309,7 @@ describe('the hold override and legacy claims', () => {
     const lw = (await rows<{ id: number }>(`SELECT id FROM workers WHERE kind = 'legacy'`))[0].id;
     await rows(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, reap_after)
                 VALUES ('R3-9001', ?, 'legacy:R3-9001', 'abc123', '', 0, 'active', ?)`, lw, T0 + 7 * 24 * H);
-    expect(await (await workerCall('/v1/worker/tickets/R3-9001/holder', { cred: 'vm-b' })).json()).toEqual({ held_by_other: false, fence_pending: false });
+    expect(await (await workerCall('/v1/runner/tickets/R3-9001/holder', { cred: 'vm-b' })).json()).toEqual({ held_by_other: false, fence_pending: false });
     await alarmAt(T0 + 7 * 24 * H - 1);
     expect(await rows(`SELECT status FROM claims WHERE worker_id = ?`, lw)).toEqual([{ status: 'active' }]);
     await alarmAt(T0 + 7 * 24 * H);
@@ -333,7 +333,7 @@ describe('§14: Running, Timeline and Needs you', () => {
   it('Timeline: alive lanes only, with each activity’s detail and transcript link', async () => {
     const { secret } = await register('vm-a');
     const { json: c } = await claimItem('vm-a', secret);
-    await workerCall('/v1/worker/activities', { secret, body: { activities: [
+    await workerCall('/v1/runner/activities', { secret, body: { activities: [
       { id: 'r1', claim_id: c.claim_id, kind: 'review-round', seq: 1, source: 'skill', started_at: T0 },
       { id: 'rv', claim_id: c.claim_id, parent_id: 'r1', kind: 'reviewer', label: 'review-pr-glm', source: 'hook', started_at: T0 },
       { id: 'pr', claim_id: c.claim_id, kind: 'open-pr', source: 'hook', started_at: T0, ended_at: T0 + 1, outcome: 'succeeded', detail: { pr: 'https://github.com/immediately-run/baton/pull/5' } },
@@ -354,7 +354,7 @@ describe('§14: Running, Timeline and Needs you', () => {
     await owner('/v1/ui/messages', { to_worker_id: a.id, kind: 'release', payload: { ticket_id: 'R3-9001', reason: 'requested' } });
     expect((await uiState()).needs_you.unacknowledged_releases).toHaveLength(1);
     const msg = (await beat('vm-a', a.secret)).json.messages[0];
-    await workerCall(`/v1/worker/messages/${msg.id}/ack`, { secret: a.secret, method: 'POST' });
+    await workerCall(`/v1/runner/messages/${msg.id}/ack`, { secret: a.secret, method: 'POST' });
     expect((await uiState()).needs_you.unacknowledged_releases).toEqual([]);
     await owner(`/v1/ui/claims/${c.claim_id}/reap`, { confirm: true });
     expect((await uiState()).needs_you.fence_pending).toEqual([expect.objectContaining({ id: c.claim_id })]);

@@ -101,7 +101,7 @@ export function hbBody(cred: keyof typeof TOKENS, over: Record<string, unknown> 
 /** Register a worker with a fresh secret; returns its id and secret. */
 export async function register(cred: keyof typeof TOKENS = 'vm-a', over: Record<string, unknown> = {}) {
   const secret = `secret-${cred}-${Math.random().toString(16).slice(2)}`;
-  const res = await workerCall('/v1/worker/heartbeat', { cred, body: hbBody(cred, { secret_hash: await sha256(secret), ...over }) });
+  const res = await workerCall('/v1/runner/heartbeat', { cred, body: hbBody(cred, { secret_hash: await sha256(secret), ...over }) });
   const json = (await res.json()) as Record<string, unknown>;
   if (res.status !== 200) throw new Error(`register ${cred}: ${res.status} ${JSON.stringify(json)}`);
   return { id: json.worker_id as number, secret, first: json };
@@ -109,7 +109,7 @@ export async function register(cred: keyof typeof TOKENS = 'vm-a', over: Record<
 
 /** A later heartbeat, authenticated by the secret. */
 export async function beat(cred: keyof typeof TOKENS, secret: string, over: Record<string, unknown> = {}) {
-  const res = await workerCall('/v1/worker/heartbeat', { cred, secret, body: hbBody(cred, over) });
+  const res = await workerCall('/v1/runner/heartbeat', { cred, secret, body: hbBody(cred, over) });
   return { status: res.status, json: (await res.json()) as Record<string, any> };
 }
 
@@ -131,15 +131,15 @@ let requests = 0;
 /** A fresh client-generated `request_id`. */
 export const requestId = () => `req-${++requests}-${Math.random().toString(16).slice(2, 10)}`;
 
-/** `POST /v1/worker/claim`; returns the status and the body. */
+/** `POST /v1/runner/claim`; returns the status and the body. */
 export async function claimItem(cred: keyof typeof TOKENS, secret: string, body: Record<string, unknown> = {}) {
-  const res = await workerCall('/v1/worker/claim', { cred, secret, body: { request_id: requestId(), ...body } });
+  const res = await workerCall('/v1/runner/claim', { cred, secret, body: { request_id: requestId(), ...body } });
   return { status: res.status, json: (await res.json()) as Record<string, any> };
 }
 
-/** `POST /v1/worker/claims/{id}/end`. */
+/** `POST /v1/runner/claims/{id}/end`. */
 export async function endClaim(cred: keyof typeof TOKENS, secret: string, claimId: number, body: Record<string, unknown>) {
-  const res = await workerCall(`/v1/worker/claims/${claimId}/end`, { cred, secret, body });
+  const res = await workerCall(`/v1/runner/claims/${claimId}/end`, { cred, secret, body });
   return { status: res.status, json: (await res.json()) as Record<string, any> };
 }
 

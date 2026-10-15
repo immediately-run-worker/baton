@@ -135,12 +135,12 @@ describe('the local host', () => {
     await new Promise<void>((r) => server.listen(0, '127.0.0.1', () => r()));
     try {
       const port = (server.address() as AddressInfo).port;
-      const refused = await fetch(`${origin}:${port}/v1/worker/heartbeat`, { method: 'POST', body: '{}' });
+      const refused = await fetch(`${origin}:${port}/v1/runner/heartbeat`, { method: 'POST', body: '{}' });
       expect(refused.status).toBe(401);
       expect(await refused.json()).toMatchObject({ code: 'unauthenticated' });
       for (const [k, v] of Object.entries(SECURITY_HEADERS)) expect(refused.headers.get(k)).toBe(v);
       const secret = 'secret-http';
-      const ok = await fetch(`${origin}:${port}/v1/worker/heartbeat`, {
+      const ok = await fetch(`${origin}:${port}/v1/runner/heartbeat`, {
         method: 'POST',
         headers: { Authorization: 'Bearer tok-vm-a', 'Content-Type': 'application/json' },
         body: JSON.stringify(hbBody('vm-a', { secret_hash: await sha256(secret) })),
@@ -150,7 +150,7 @@ describe('the local host', () => {
       const odd = await fetch(`${origin}:${port}//x/v1/sync/head`);
       expect([odd.status, ((await odd.json()) as { code: string }).code]).toEqual([404, 'not-found']);
       // A body over the limit is refused with the §11 envelope and the security headers.
-      const big = await fetch(`${origin}:${port}/v1/worker/heartbeat`, { method: 'POST', body: 'x'.repeat(MAX_BODY + 1) }).catch(() => null);
+      const big = await fetch(`${origin}:${port}/v1/runner/heartbeat`, { method: 'POST', body: 'x'.repeat(MAX_BODY + 1) }).catch(() => null);
       expect(big).not.toBeNull();
       if (big) {
         expect(big.status).toBe(400);

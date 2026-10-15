@@ -227,13 +227,13 @@ export class Claims {
 
   // ── the worker calls (§11) ──────────────────────────────────────────────────────────────
 
-  /** `GET /v1/worker/next`: what a claim would return, without claiming (for next-available.sh). */
+  /** `GET /v1/runner/next`: what a claim would return, without claiming (for next-available.sh). */
   next(workerId: number) {
     const { item, reason } = this.decide(this.worker(workerId), null, this.c.now());
     return { ticket_id: item.id, rank_reason: reason };
   }
 
-  /** `POST /v1/worker/claim` (§6.2): idempotent by `request_id`; the lock is the index. */
+  /** `POST /v1/runner/claim` (§6.2): idempotent by `request_id`; the lock is the index. */
   claim(workerId: number, body: unknown) {
     const b = checkClaim(body);
     if (!this.cutOver()) throw new BatonError('not-cut-over', 'claims go through git until cutover (R-BTN-28)');
@@ -280,7 +280,7 @@ export class Claims {
     };
   }
 
-  /** `POST /v1/worker/claims/{id}/end` (§6.5, R-BTN-8). A retried identical end is a no-op. */
+  /** `POST /v1/runner/claims/{id}/end` (§6.5, R-BTN-8). A retried identical end is a no-op. */
   end(workerId: number, claimId: number, body: unknown) {
     const e = checkEnd(body);
     if (!this.cutOver()) throw new BatonError('not-cut-over', 'claims end through git until cutover (R-BTN-28)');
@@ -431,7 +431,7 @@ export class Claims {
     return !it || GIT_ENDS.has(it.status);
   }
 
-  /** `GET /v1/worker/tickets/{ticket}/holder` (R-BTN-7): whether another live, non-legacy worker
+  /** `GET /v1/runner/tickets/{ticket}/holder` (R-BTN-7): whether another live, non-legacy worker
    *  holds the item, and whether a reaped claim on it is still fence-pending. `callerId` is
    *  null for a token-only caller (the witness), for whom every holder is another. */
   holder(callerId: number | null, item: string) {

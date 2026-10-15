@@ -33,7 +33,7 @@ describe('§12: the event feed', () => {
     await cutover(T0);
     const { secret } = await register('vm-a');
     const { json: c } = await claimItem('vm-a', secret);
-    await workerCall('/v1/worker/activities', { secret, body: { activities: [
+    await workerCall('/v1/runner/activities', { secret, body: { activities: [
       { id: 'p', claim_id: c.claim_id, kind: 'push', source: 'hook', started_at: T0, ended_at: T0 + 1, outcome: 'succeeded', detail: { branch: 'claude/r3-9001-x', sha: 'abc' } }] } });
     await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'cc/s.jsonl' }] });
     await endClaim('vm-a', secret, c.claim_id, { end_reason: 'released:cannot-finish:transient' });
@@ -114,9 +114,9 @@ describe('§10.3: Baton dispatches the workflows after a transition', () => {
   it('nothing before cutover; after it, a claim and an end dispatch the mirror, a completion the sync too', async () => {
     const sent = await captureDispatches();
     const { secret } = await register('vm-a');
-    await workerCall('/v1/worker/shadow-report', { secret, body: { transition: 'claim', ticket_id: 'R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 } });
+    await workerCall('/v1/runner/shadow-report', { secret, body: { transition: 'claim', ticket_id: 'R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 } });
     expect(sent).toEqual([]);
-    await workerCall('/v1/worker/shadow-report', { secret, body: { transition: 'set', ticket_id: 'R3-9001', status: 'available', at: T0 } });
+    await workerCall('/v1/runner/shadow-report', { secret, body: { transition: 'set', ticket_id: 'R3-9001', status: 'available', at: T0 } });
     expect(sent).toEqual([]);
     await cutover(T0);
     const { json: c } = await claimItem('vm-a', secret);

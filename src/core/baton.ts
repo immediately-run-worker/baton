@@ -151,18 +151,18 @@ export class BatonCore {
     const cred = req.headers.get('X-Baton-Credential');
     const secret = req.headers.get('X-Worker-Secret');
     const tx = <T>(f: () => T): T => this.store.transaction(f);
-    if (p.startsWith('/v1/worker/')) {
+    if (p.startsWith('/v1/runner/')) {
       if (!cred) throw new BatonError('unauthenticated', 'no worker principal');
-      if (m === 'POST' && p === '/v1/worker/heartbeat') {
+      if (m === 'POST' && p === '/v1/runner/heartbeat') {
         const body = await readJson(req);
         // The hashing is async; the writes happen in one transaction after it (§3: atomic).
         return json(await this.workers.heartbeat(cred, secret, body));
       }
-      if (m === 'GET' && p === '/v1/worker/mode') {
+      if (m === 'GET' && p === '/v1/runner/mode') {
         await this.workers.authWorker(cred, secret);
         return json(this.workers.mode());
       }
-      const holder = /^\/v1\/worker\/tickets\/([^/]+)\/holder$/.exec(p);
+      const holder = /^\/v1\/runner\/tickets\/([^/]+)\/holder$/.exec(p);
       if (m === 'GET' && holder) {
         // R-BTN-7: callable with the token alone (the witness has no sidecar); with a secret, the
         // caller's own claim is not "another".
@@ -177,31 +177,31 @@ export class BatonCore {
         return json(this.claims.holder(caller, item));
       }
       const workerId = await this.workers.authWorker(cred, secret);
-      if (m === 'POST' && p === '/v1/worker/claim') {
+      if (m === 'POST' && p === '/v1/runner/claim') {
         const body = await readJson(req);
         return json(tx(() => this.claims.claim(workerId, body)));
       }
-      if (m === 'GET' && p === '/v1/worker/next') return json(this.claims.next(workerId));
-      if (m === 'POST' && p === '/v1/worker/adopt') {
+      if (m === 'GET' && p === '/v1/runner/next') return json(this.claims.next(workerId));
+      if (m === 'POST' && p === '/v1/runner/adopt') {
         const body = await readJson(req);
         return json(tx(() => this.cutover.adopt(workerId, body)));
       }
-      const end = /^\/v1\/worker\/claims\/(\d+)\/end$/.exec(p);
+      const end = /^\/v1\/runner\/claims\/(\d+)\/end$/.exec(p);
       if (m === 'POST' && end) {
         const body = await readJson(req);
         return json(tx(() => this.claims.end(workerId, Number(end[1]), body)));
       }
-      if (m === 'POST' && p === '/v1/worker/activities') {
+      if (m === 'POST' && p === '/v1/runner/activities') {
         const body = await readJson(req);
         return json(this.workers.activities(workerId, body));
       }
-      const ack = /^\/v1\/worker\/messages\/(\d+)\/ack$/.exec(p);
+      const ack = /^\/v1\/runner\/messages\/(\d+)\/ack$/.exec(p);
       if (m === 'POST' && ack) {
         // An absent body is an acknowledgement with no reply; a malformed one is refused.
         const body = req.headers.get('Content-Length') === '0' || !req.body ? null : await readJson(req);
         return json(tx(() => this.workers.ack(workerId, Number(ack[1]), body)));
       }
-      if (m === 'POST' && p === '/v1/worker/shadow-report') {
+      if (m === 'POST' && p === '/v1/runner/shadow-report') {
         const body = await readJson(req);
         return json(tx(() => this.workers.shadowReport(workerId, body)));
       }
