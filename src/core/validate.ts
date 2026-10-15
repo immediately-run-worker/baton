@@ -8,10 +8,25 @@ import { FREE_TEXT_MAX, isFreeText } from './text';
 export const SESSION_NAME = /^[A-Za-z0-9_.:-]{1,128}$/;
 export const HOSTNAME = /^[A-Za-z0-9.-]{1,253}$/;
 export const SHA256_HEX = /^[0-9a-f]{64}$/;
+// The id forms of R-BTN-47, each spelled once.
+const REPOSITORY_SRC = '[a-z][a-z0-9-]{0,39}';
+const LOCAL_SRC = '[A-Za-z0-9][A-Za-z0-9._-]{0,63}';
+/** A registered repository's id: `docs`. No colon, so a qualified id splits at its first. */
+export const REPOSITORY_ID = new RegExp(`^${REPOSITORY_SRC}$`);
 /** A ticket's id in its home repository, as git writes it: `R3-1205` (R-BTN-47). */
-export const LOCAL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+export const LOCAL_ID = new RegExp(`^${LOCAL_SRC}$`);
 /** A ticket's qualified id, `<repository>:<local>`: what Baton's API, events and dashboard use. */
-export const TICKET_ID = /^([a-z][a-z0-9-]{0,39}):([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/;
+export const TICKET_ID = new RegExp(`^(${REPOSITORY_SRC}):(${LOCAL_SRC})$`);
+/** A qualified ticket id and its two halves. Every caller holds an id `TICKET_ID` accepted. */
+export const qualify = (repository: string, local: string) => `${repository}:${local}`;
+export const repositoryOf = (ticketId: string) => ticketId.slice(0, ticketId.indexOf(':'));
+export const localOf = (ticketId: string) => ticketId.slice(ticketId.indexOf(':') + 1);
+
+/** A repository named by a worker or the owner (`?repository=`, a cutover, a held accept). */
+export function checkRepositoryId(v: unknown, field = 'repository'): string {
+  if (typeof v !== 'string' || !REPOSITORY_ID.test(v)) throw new BatonError('invalid-params', `${field}: must be a repository id`);
+  return v;
+}
 const ACCOUNT = /^[a-z0-9_]{1,64}$/;
 const PREFIX = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const MODEL = /^[A-Za-z0-9._/:-]{1,200}$/;
@@ -387,7 +402,7 @@ export function checkConfirm(body: unknown): void {
 export function checkAccept(body: unknown): { repository: string; sha: string } {
   if (!isObj(body)) bad('body', 'must be a JSON object');
   const b = body as Record<string, unknown>;
-  return { repository: matches(/^[a-z][a-z0-9-]{0,39}$/, 'repository')(b.repository), sha: matches(GIT_SHA, 'sha')(b.sha) };
+  return { repository: checkRepositoryId(b.repository), sha: matches(GIT_SHA, 'sha')(b.sha) };
 }
 
 /** §6.7: the owner's resolution of an unconfirmed completion. */

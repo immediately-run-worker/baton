@@ -7,7 +7,7 @@
 // with part 2b and R3-1232.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
 import {
-  captureDispatches, claimItem, cutover, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, syncToken, withCore, workerCall,
+  captureDispatches, claimItem, claimRow, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, syncToken, withCore, workerCall,
 } from '../helpers';
 
 const board = inject('board');
@@ -99,5 +99,42 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     expect(got.slice(firstOps)).toEqual(['ops:R3-9001', 'ops:T-1']); // ops' own order within it
     await rows(`UPDATE repositories SET weight = 200 WHERE id = 'ops'`);
     expect((await candidates()).slice(0, 2)).toEqual(['ops:R3-9001', 'ops:T-1']);
+  });
+
+  it('one repository’s sync confirms no completion of another’s (R-BTN-47)', async () => {
+    const { secret } = await register('vm-a');
+    await cutover(1, 'docs');
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' });
+    await endClaim('vm-a', secret, c.claim_id, { end_reason: 'done', ended_at_sha: sha.A });
+    const confirm = { claim_id: c.claim_id, sha: OPS_SHA };
+    expect((await opsCall('/v1/sync/board', payload(OPS_SHA, null, opsBoard, { confirmations: [confirm] }))).status).toBe(200);
+    expect((await claimRow(c.claim_id)).confirmed_at).toBeNull();
+    // ops' head lists none of docs' unconfirmed completions; docs' does, and docs' sync confirms it.
+    expect(await (await opsCall('/v1/sync/head')).json()).toEqual({ sha: OPS_SHA, unconfirmed: [] });
+    expect(((await (await syncCall('/v1/sync/head')).json()) as { unconfirmed: { claim_id: number }[] }).unconfirmed.map((u) => u.claim_id)).toEqual([c.claim_id]);
+    await syncCall('/v1/sync/board', payload(sha.A, null, board.states.A, { confirmations: [{ claim_id: c.claim_id, sha: sha.A }] }));
+    expect((await claimRow(c.claim_id)).confirmed_at).toBe(T0);
+  });
+
+  it('a mirror reports foreign claims only on its own repository’s tickets', async () => {
+    await cutover(1, 'ops');
+    const report = (ticket_id: string) => opsCall('/v1/sync/foreign-claim', { ticket_id, nonce: 'abc123', sha: 'a'.repeat(40), at: T0 }, 'baton-mirror.yml');
+    const refused = await report('docs:R3-9001');
+    expect(refused.status).toBe(403);
+    expect(await rows(`SELECT count(*) AS n FROM claims`)).toEqual([{ n: 0 }]);
+    expect(await (await report('ops:R3-9001')).json()).toMatchObject({ imported: true });
+    expect(await rows(`SELECT ticket_id FROM claims`)).toEqual([{ ticket_id: 'ops:R3-9001' }]);
+  });
+
+  it('only the fleet repository writes the instance’s fleet data (interim until part 2b)', async () => {
+    const before = await rows(`SELECT key, value FROM baton_settings WHERE key IN ('min_skills_version', 'reviewer_matrix') ORDER BY key`);
+    expect(before.length).toBe(2);
+    const res = await opsCall('/v1/sync/board', payload('e'.repeat(40), OPS_SHA, opsBoard, { min_skills_version: 99, matrix: board.states.A.matrix, providers: board.states.A.providers }));
+    expect(await res.json()).toMatchObject({ ok: true, fleet_ignored: true });
+    expect(await rows(`SELECT key, value FROM baton_settings WHERE key IN ('min_skills_version', 'reviewer_matrix') ORDER BY key`)).toEqual(before);
+    // docs' own post still writes it, and says nothing was ignored.
+    const docs = await (await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B, { min_skills_version: 4 }))).json();
+    expect(docs).not.toHaveProperty('fleet_ignored');
+    expect(await rows(`SELECT value FROM baton_settings WHERE key = 'min_skills_version'`)).toEqual([{ value: '4' }]);
   });
 });

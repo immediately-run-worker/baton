@@ -15,8 +15,8 @@ import { WorkerApi } from './workerApi';
 import { Claims } from './claims';
 import { Cutover } from './cutover';
 import { Mirror } from './mirror';
-import { checkConfirmations } from './validate';
-import { Registry, TICKET_ID, qualify, type Repository, type SyncClaims } from './registry';
+import { checkConfirmations, checkRepositoryId } from './validate';
+import { Registry, TICKET_ID, qualify, repositoryOf, type Repository, type SyncClaims } from './registry';
 import type { Ports, Row, SqlValue, Store, Workflow } from './ports';
 
 const HELD_AUTO_ACCEPT_MS = 24 * 3_600_000; // §7.1: a held history is accepted after 24 h (R3-1212)
@@ -49,7 +49,7 @@ export class BatonCore {
     const store = ports.store;
     this.registry = new Registry({ store, now: () => this.now() });
     const want = (wf: Workflow) => this.pendingDispatch.set(`${wf.repository}:${wf.kind}`, wf);
-    this.claims = new Claims({ store, now: () => this.now(), dispatch: (kind, ticketId) => want({ repository: ticketId.slice(0, ticketId.indexOf(':')), kind }) });
+    this.claims = new Claims({ store, now: () => this.now(), dispatch: (kind, ticketId) => want({ repository: repositoryOf(ticketId), kind }) });
     this.cutover = new Cutover({ store, now: () => this.now() });
     this.mirror = new Mirror({ store, now: () => this.now() });
     this.workers = new WorkerApi({ store, config: ports.config, now: () => this.now(), fenced: (w, inc, id) => this.claims.fenced(w, inc, id) });
@@ -193,7 +193,7 @@ export class BatonCore {
       if (m === 'GET' && p === '/v1/runner/mode') {
         await this.workers.authWorker(cred, secret);
         // §11: `?repository=` — each repository cuts over on its own (R-BTN-28).
-        const repo = url.searchParams.get('repository') ?? '';
+        const repo = checkRepositoryId(url.searchParams.get('repository'));
         if (!this.registry.get(repo)) throw new BatonError('invalid-params', 'repository: must be a registered repository id');
         return json(this.workers.mode(repo));
       }
@@ -395,7 +395,8 @@ export class BatonCore {
         this.store.exec('DELETE FROM tickets WHERE id = ?', qualify(r, gone));
         changed.deleted++;
       }
-      this.reference(r, p);
+      // A non-fleet repository's fleet fields are ignored, and its answer says so.
+      if (this.reference(r, p)) (changed as Record<string, unknown>).fleet_ignored = true;
       this.store.exec('INSERT INTO board_snapshots (repository_id, sha, parent_sha, received_at, ticket_count) VALUES (?, ?, ?, ?, ?) ON CONFLICT (repository_id, sha) DO NOTHING', r, p.sha, p.parent_sha, at, p.state.items.length);
       this.store.exec('INSERT INTO board_head (repository_id, sha) VALUES (?, ?) ON CONFLICT (repository_id) DO UPDATE SET sha = excluded.sha', r, p.sha);
       // A hold is against one head (R3-1223): when the head moves — an accepted rewrite or a
@@ -417,9 +418,16 @@ export class BatonCore {
    *  schedules, per-model prices and limits, the reviewer catalog, `min_skills_version`. Each
    *  table is a copy of a docs file, never edited here, so it is rewritten whole: an account
    *  the file no longer lists is deleted. (Nothing references `model_providers` yet; when
-   *  workers and suspensions do, R3-1211 decides what retiring a referenced account means.) */
-  private reference(repo: string, p: BoardPayload) {
+   *  workers and suspensions do, R3-1211 decides what retiring a referenced account means.)
+   *  Returns whether the payload carried fleet data this repository may not write. */
+  private reference(repo: string, p: BoardPayload): boolean {
     const exec = (q: string, ...a: unknown[]) => this.store.exec(q, ...a);
+    // §6.8: the repository's transcript repositories, from its baton.json until its owners set
+    // them (R-BTN-66, R3-1240).
+    if (p.transcript_repos) exec('UPDATE repositories SET transcript_repos = ? WHERE id = ?', JSON.stringify(p.transcript_repos), repo);
+    // The rest is the instance's: only the fleet repository writes it (interim, R3-1231 2b).
+    const carries = p.providers != null || p.matrix != null || p.reviewers != null || p.min_skills_version != null;
+    if (this.registry.fleetRepository() !== repo) return carries;
     if (p.providers) {
       exec('DELETE FROM provider_models');
       const ids = p.providers.accounts.map((a) => a.id);
@@ -449,12 +457,10 @@ export class BatonCore {
     // Rule 8 (R-BTN-27) reads the whole matrix (rows, seats, costs) and the posted catalog.
     if (p.matrix) exec(`INSERT INTO baton_settings (key, value) VALUES ('reviewer_matrix', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(p.matrix));
     if (p.reviewers) exec(`INSERT INTO baton_settings (key, value) VALUES ('reviewer_catalog', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(p.reviewers));
-    // §6.8: the repository's transcript repositories, from its baton.json until its owners set
-    // them (R-BTN-66, R3-1240).
-    if (p.transcript_repos) exec('UPDATE repositories SET transcript_repos = ? WHERE id = ?', JSON.stringify(p.transcript_repos), repo);
     if (p.min_skills_version != null) {
       exec(`INSERT INTO baton_settings (key, value) VALUES ('min_skills_version', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, String(p.min_skills_version));
     }
+    return false;
   }
 
   private event(repo: string, kind: string, detail: unknown, at: number) {

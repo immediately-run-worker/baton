@@ -76,6 +76,7 @@ describe('migration 0006: one Baton, many repositories (R3-1231)', () => {
       sql.exec(`INSERT INTO claims (id, ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
                 VALUES (7, 'R3-9001', 1, 'req-1', 'abc123', 'aaa', 1000, 'active')`);
       sql.exec(`INSERT INTO ticket_overrides (ticket_id, hold, hold_reason, set_by, set_at) VALUES ('R3-9001', 1, 'owner', 'owner:x', 1000)`);
+      sql.exec(`INSERT INTO adoptions (ticket_id, claim_id, worker_id, requested_at) VALUES ('R3-9001', 7, 1, 1000)`);
       sql.exec(`INSERT INTO board_head (id, sha) VALUES (1, 'aaa')`);
       sql.exec(`INSERT INTO board_snapshots (sha, parent_sha, received_at, ticket_count) VALUES ('aaa', NULL, 1000, 1)`);
       sql.exec(`INSERT INTO held_snapshots (sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at) VALUES ('bbb', 'zzz', 'aaa', 1, 1000, 2000)`);
@@ -100,6 +101,7 @@ describe('migration 0006: one Baton, many repositories (R3-1231)', () => {
       expect(all('SELECT ticket_id FROM ticket_requires')).toEqual([{ ticket_id: 'docs:R3-9001' }]);
       expect(all('SELECT ticket_id FROM claims')).toEqual([{ ticket_id: 'docs:R3-9001' }]);
       expect(all('SELECT ticket_id FROM ticket_overrides')).toEqual([{ ticket_id: 'docs:R3-9001' }]);
+      expect(all('SELECT ticket_id, claim_id FROM adoptions')).toEqual([{ ticket_id: 'docs:R3-9001', claim_id: 7 }]);
       expect(all('SELECT kind, ticket_id, repository_id, detail_json FROM events ORDER BY seq')).toEqual([
         { kind: 'claimed', ticket_id: 'docs:R3-9001', repository_id: 'docs', detail_json: null },
         { kind: 'cutover', ticket_id: null, repository_id: 'docs', detail_json: '{"imported":["docs:R3-9001"]}' },

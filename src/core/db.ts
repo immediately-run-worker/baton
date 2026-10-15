@@ -1,12 +1,13 @@
 // db.ts — the small helpers every class that writes the object's tables shares: the event log's
 // one insert, the random hex nonces and secrets, and recognising a unique-index refusal.
 import type { Store } from './ports';
+import { repositoryOf } from './validate';
 
 /** Append to the event log (§4): the one place an event row is written. An event about a
  *  ticket belongs to the ticket's repository (its qualified id says which, R-BTN-47); a
  *  repository's own events (a snapshot, a cutover) name it; instance events have none. */
 export function logEvent(sql: Store, at: number, kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null,
-  repositoryId: string | null = ticketId ? ticketId.slice(0, ticketId.indexOf(':')) : null) {
+  repositoryId: string | null = ticketId ? repositoryOf(ticketId) : null) {
   sql.exec('INSERT INTO events (at, kind, ticket_id, claim_id, actor, detail_json, repository_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
     at, kind, ticketId, claimId, actor, JSON.stringify(detail), repositoryId);
 }

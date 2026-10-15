@@ -5,11 +5,10 @@
 // repository Baton already knows. The sync principal is bound to one repository here.
 import { BatonError } from './http';
 import type { Config, Store } from './ports';
-import { TICKET_ID } from './validate';
+import { REPOSITORY_ID } from './validate';
 
-export { TICKET_ID };
+export { REPOSITORY_ID, TICKET_ID, qualify, repositoryOf, localOf } from './validate';
 
-export const REPOSITORY_ID = /^[a-z][a-z0-9-]{0,39}$/;
 const GITHUB = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
 const BRANCH = /^(?!.*\.\.)[A-Za-z0-9._/-]{1,100}$/;
 const WORKFLOW = /^\.github\/workflows\/[A-Za-z0-9._-]{1,100}\.ya?ml$/;
@@ -135,6 +134,15 @@ export class Registry {
     return r ? parse(r) : null;
   }
 
+  /** The repository whose sync still posts the instance's fleet data — providers, prices, the
+   *  reviewer matrix and catalog, `min_skills_version` — until part 2b replaces them with each
+   *  course's own version (§2a drops the reference repository; R3-1231). An interim, so it is
+   *  the one a deployment registered first (docs, the board these tables came from), and no
+   *  other repository's sync can rewrite what every repository's claims read. */
+  fleetRepository(): string | null {
+    return this.rows<{ id: string }>('SELECT id FROM repositories WHERE retired_at IS NULL ORDER BY rowid LIMIT 1')[0]?.id ?? null;
+  }
+
   /** Every repository not retired, by id. */
   all(): Repository[] {
     return this.rows<RepoRow>('SELECT id, github, default_branch, sync_workflow, mirror_workflow, weight, transcript_repos, tiers, cutover_at, retired_at FROM repositories WHERE retired_at IS NULL ORDER BY id').map(parse);
@@ -159,7 +167,3 @@ export class Registry {
   }
 }
 
-/** A qualified ticket id, `<repository>:<local>` (R-BTN-47). */
-export const qualify = (repository: string, local: string) => `${repository}:${local}`;
-export const repositoryOf = (ticketId: string) => ticketId.slice(0, ticketId.indexOf(':'));
-export const localOf = (ticketId: string) => ticketId.slice(ticketId.indexOf(':') + 1);

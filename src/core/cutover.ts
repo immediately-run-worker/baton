@@ -2,7 +2,7 @@
 // cutover, the legacy import that runs in the same transaction, and adoption of a legacy claim
 // by the session that was working it, which moves only on the owner's confirmation.
 import { BatonError } from './http';
-import { checkConfirm, SESSION_NAME, TICKET_ID } from './validate';
+import { checkConfirm, checkRepositoryId, SESSION_NAME, TICKET_ID } from './validate';
 import { localOf, repositoryOf } from './registry';
 import { isUniqueViolation, logEvent, randomHex } from './db';
 
@@ -67,8 +67,8 @@ export class Cutover {
    */
   cutover(owner: string, body: unknown) {
     checkConfirm(body);
-    const repo = (body as { repository?: unknown }).repository;
-    if (typeof repo !== 'string' || !this.rows('SELECT 1 FROM repositories WHERE id = ? AND retired_at IS NULL', repo).length) {
+    const repo = checkRepositoryId((body as { repository?: unknown }).repository);
+    if (!this.rows('SELECT 1 FROM repositories WHERE id = ? AND retired_at IS NULL', repo).length) {
       throw new BatonError('invalid-params', 'repository: must be a registered repository id');
     }
     const already = this.cutoverAt(repo);
