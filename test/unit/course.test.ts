@@ -91,6 +91,14 @@ describe('validateCourse (R-BTN-69)', () => {
     expect(validateCourse(c)[0].message).toContain('"ghost" is not a leg');
     c.legs.fix.inputs = { findings: { from: 'findings' } };
     expect(rules(c)).toEqual(['input legs.fix.inputs.findings.from']);
+    // A schema is a file in the course directory: no empty, . or .. segment (review gate 2-A-3).
+    const s = copy();
+    for (const bad of ['.', '..', '...x/..', 'a//b', 'a/./b', 'a/', '/a', '']) {
+      s.legs.review.outputs = { findings: { schema: bad } };
+      expect([bad, rules(s)]).toEqual([bad, ['shape legs.review.outputs.findings.schema']]);
+    }
+    s.legs.review.outputs = { findings: { schema: 'schemas/findings.v2.json' } };
+    expect(validateCourse(s)).toEqual([]);
     // An inherited property is no declared output (review gate 1-A-0, 1-B-0).
     for (const name of ['toString', 'constructor', 'hasOwnProperty', '__proto__', 'valueOf']) {
       c.legs.fix.inputs = { findings: { from: `review.${name}` } };
@@ -118,6 +126,8 @@ describe('validateCourse (R-BTN-69)', () => {
     c.stations.filed.label = '<b>{x}</b>';
     c.legs.review.label = '';
     expect(rules(c)).toEqual(['bound legs.review.label', 'bound stations.filed.label']);
+    c.stations.filed.label = 'a\u009bb'; // a C1 control: CSI (review gate 2-A-1)
+    expect(rules(c)).toContain('bound stations.filed.label');
     c.stations.filed.label = 'x'.repeat(500);
     delete c.legs.review.label;
     expect(validateCourse(c)).toEqual([]);
@@ -161,6 +171,16 @@ describe('validateCourse (R-BTN-69)', () => {
     t = Date.now();
     validateCourse(full);
     expect(Date.now() - t).toBeLessThan(2000);
+    // The same file with no max_runs runs the cycle pass at the caps (review gate 2-A-0): one
+    // component holding all 195 loose legs, kept as station pairs, not per leg.
+    for (const l of Object.values(full.legs) as Record<string, unknown>[]) delete l.max_runs;
+    full.legs.review.max_runs = 3;
+    full.legs.fix.max_runs = 2;
+    t = Date.now();
+    const loops = validateCourse(full).filter((v) => v.rule === 'unbounded-cycle');
+    expect(Date.now() - t).toBeLessThan(2000);
+    expect(loops).toHaveLength(1);
+    expect(loops[0].message).toContain('"l0"');
   });
 
   it('ids, unknown keys and bounds together', () => {
