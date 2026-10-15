@@ -49,8 +49,8 @@ export class WorkerApi {
   private exec(q: string, ...p: unknown[]) {
     return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[]));
   }
-  private event(kind: string, actor: string, detail: unknown, workItemId: string | null = null, claimId: number | null = null) {
-    logEvent(this.c.storage.sql, this.c.now(), kind, actor, detail, workItemId, claimId);
+  private event(kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null) {
+    logEvent(this.c.storage.sql, this.c.now(), kind, actor, detail, ticketId, claimId);
   }
   private setting(key: string): string | null {
     return (this.rows<{ value: string }>('SELECT value FROM baton_settings WHERE key = ?', key)[0]?.value) ?? null;
@@ -122,8 +122,8 @@ export class WorkerApi {
   }
 
   private activeClaim(workerId: number) {
-    return this.rows<{ id: number; work_item_id: string; nonce: string; claimed_at: number }>(
-      `SELECT id, work_item_id, nonce, claimed_at FROM work_item_claims WHERE worker_id = ? AND status = 'active'`, workerId)[0] ?? null;
+    return this.rows<{ id: number; ticket_id: string; nonce: string; claimed_at: number }>(
+      `SELECT id, ticket_id, nonce, claimed_at FROM claims WHERE worker_id = ? AND status = 'active'`, workerId)[0] ?? null;
   }
 
   private currentActivity(workerId: number) {
@@ -374,7 +374,7 @@ export class WorkerApi {
     }
     if (a.claim_id !== null) {
       const claim = this.rows<{ worker_id: number; status: string; ended_at: number | null }>(
-        'SELECT worker_id, status, ended_at FROM work_item_claims WHERE id = ?', a.claim_id)[0];
+        'SELECT worker_id, status, ended_at FROM claims WHERE id = ?', a.claim_id)[0];
       if (!claim || claim.worker_id !== workerId) throw new BatonError('not-holder', `claim ${a.claim_id} is not this worker's`);
       if (claim.status !== 'active') {
         // §6.9: for 10 minutes after the end, an update that only closes an open activity is
@@ -408,7 +408,7 @@ export class WorkerApi {
       a.ended_at ?? null, a.outcome ?? null, now, a.detail ? JSON.stringify(a.detail) : null);
     if (a.kind === 'reviewer' && typeof a.detail?.substituted_for === 'string') {
       // §6.9: a substitution is derived from the reviewer activity, not reported separately.
-      const item = a.claim_id ? this.rows<{ work_item_id: string }>('SELECT work_item_id FROM work_item_claims WHERE id = ?', a.claim_id)[0]?.work_item_id ?? null : null;
+      const item = a.claim_id ? this.rows<{ ticket_id: string }>('SELECT ticket_id FROM claims WHERE id = ?', a.claim_id)[0]?.ticket_id ?? null : null;
       this.event('reviewer-substituted', `worker:${workerId}`, { activity: a.id, agent: a.detail.agent ?? a.label ?? null, substituted_for: a.detail.substituted_for }, item, a.claim_id);
     }
   }
@@ -452,15 +452,15 @@ export class WorkerApi {
     // R-BTN-21: releases only while the suspension is in force; a window that closed before the
     // alarm saw it (the object was down) is logged, never acted on.
     if (s.mode !== 'stop' || (s.ends_at != null && s.ends_at <= this.c.now())) return;
-    const holders = this.rows<{ worker_id: number; work_item_id: string }>(
-      `SELECT c.worker_id, c.work_item_id FROM work_item_claims c JOIN workers w ON w.id = c.worker_id
+    const holders = this.rows<{ worker_id: number; ticket_id: string }>(
+      `SELECT c.worker_id, c.ticket_id FROM claims c JOIN workers w ON w.id = c.worker_id
        WHERE c.status = 'active' AND w.model_provider_id = ? AND (? IS NULL OR w.model_id = ?)`, s.provider_id, s.model_id, s.model_id);
     for (const h of holders) {
       const already = this.rows(`SELECT 1 FROM messages WHERE to_worker_id = ? AND kind = 'release' AND status IN ('pending','delivered')
-                                 AND json_extract(payload_json, '$.work_item_id') = ?`, h.worker_id, h.work_item_id).length;
+                                 AND json_extract(payload_json, '$.ticket_id') = ?`, h.worker_id, h.ticket_id).length;
       if (already) continue;
       this.exec(`INSERT INTO messages (kind, payload_json, from_principal, to_worker_id, sent_at, status) VALUES ('release', ?, ?, ?, ?, 'pending')`,
-        JSON.stringify({ work_item_id: h.work_item_id, reason: 'provider-suspended' }), actor.startsWith('owner:') ? actor : 'alarm', h.worker_id, this.c.now());
+        JSON.stringify({ ticket_id: h.ticket_id, reason: 'provider-suspended' }), actor.startsWith('owner:') ? actor : 'alarm', h.worker_id, this.c.now());
     }
   }
 
@@ -496,24 +496,24 @@ export class WorkerApi {
     const r = checkShadowReport(body);
     const actor = `worker:${workerId}`;
     const conflict = (reason: string) => {
-      this.event('shadow-conflict', actor, { ...r, reason }, r.work_item_id);
+      this.event('shadow-conflict', actor, { ...r, reason }, r.ticket_id);
       return { ok: true, conflict: reason };
     };
-    const holder = this.rows<{ id: number; worker_id: number }>(`SELECT id, worker_id FROM work_item_claims WHERE work_item_id = ? AND status = 'active'`, r.work_item_id)[0];
+    const holder = this.rows<{ id: number; worker_id: number }>(`SELECT id, worker_id FROM claims WHERE ticket_id = ? AND status = 'active'`, r.ticket_id)[0];
     if (r.transition === 'claim') {
       if (holder && holder.worker_id === workerId) {
         // A retried report (same nonce) is the same claim; another nonce is a second git claim.
-        const same = this.rows('SELECT 1 FROM work_item_claims WHERE id = ? AND nonce = ?', holder.id, r.nonce).length;
+        const same = this.rows('SELECT 1 FROM claims WHERE id = ? AND nonce = ?', holder.id, r.nonce).length;
         return same ? { ok: true, claim_id: holder.id } : conflict('already-held');
       }
       if (holder) return conflict(`held-by-worker:${holder.worker_id}`);
       const mine = this.activeClaim(workerId);
-      if (mine) return conflict(`worker-holds:${mine.work_item_id}`);
+      if (mine) return conflict(`worker-holds:${mine.ticket_id}`);
       const head = this.rows<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? '';
-      this.exec(`INSERT INTO work_item_claims (work_item_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
-                 VALUES (?, ?, ?, ?, ?, ?, 'active')`, r.work_item_id, workerId, `shadow:${workerId}:${r.work_item_id}:${r.nonce}`, r.nonce!, head, r.at);
+      this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
+                 VALUES (?, ?, ?, ?, ?, ?, 'active')`, r.ticket_id, workerId, `shadow:${workerId}:${r.ticket_id}:${r.nonce}`, r.nonce!, head, r.at);
       const id = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
-      this.event('claimed', actor, { shadow: true, nonce: r.nonce }, r.work_item_id, id);
+      this.event('claimed', actor, { shadow: true, nonce: r.nonce }, r.ticket_id, id);
       return { ok: true, claim_id: id };
     }
     // `set`: in-progress and in-review keep the claim — in-review is an activity of an active
@@ -522,8 +522,8 @@ export class WorkerApi {
     if (!holder) return keeps ? conflict('no-claim') : { ok: true };
     if (holder.worker_id !== workerId) return conflict(`held-by-worker:${holder.worker_id}`);
     if (keeps) return { ok: true, claim_id: holder.id };
-    this.exec(`UPDATE work_item_claims SET status = 'released', ended_at = ?, end_reason = ? WHERE id = ?`, r.at, `shadow:${r.status}`, holder.id);
-    this.event('released', actor, { shadow: true, status: r.status }, r.work_item_id, holder.id);
+    this.exec(`UPDATE claims SET status = 'released', ended_at = ?, end_reason = ? WHERE id = ?`, r.at, `shadow:${r.status}`, holder.id);
+    this.event('released', actor, { shadow: true, status: r.status }, r.ticket_id, holder.id);
     return { ok: true, claim_id: holder.id };
   }
 

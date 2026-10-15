@@ -29,7 +29,7 @@ export async function confirmations(unconfirmed, next, { isAncestor, statusOf })
   for (const u of unconfirmed ?? []) {
     if (!u.ended_at_sha) continue;
     const landed = u.ended_at_sha === next || (await isAncestor(u.ended_at_sha, next));
-    if (landed && statusOf(u.work_item_id) !== 'in-progress') out.push({ claim_id: u.claim_id, sha: next });
+    if (landed && statusOf(u.ticket_id) !== 'in-progress') out.push({ claim_id: u.claim_id, sha: next });
   }
   return out;
 }

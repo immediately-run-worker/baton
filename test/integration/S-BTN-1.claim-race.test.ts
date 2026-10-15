@@ -19,21 +19,21 @@ describe('S-BTN-1 claim race', () => {
     const rb = { request_id: requestId() };
     const [x, y] = await Promise.all([claimItem('vm-a', a.secret, ra), claimItem('vm-b', b.secret, rb)]);
     expect([x.status, y.status]).toEqual([200, 200]);
-    expect(new Set([x.json.work_item_id, y.json.work_item_id])).toEqual(new Set(['R3-9001', 'R3-9002']));
+    expect(new Set([x.json.ticket_id, y.json.ticket_id])).toEqual(new Set(['R3-9001', 'R3-9002']));
 
     // vm-a's response was lost: it retries the same request_id and gets the same claim.
     const retry = await claimItem('vm-a', a.secret, ra);
     expect(retry.json).toEqual(x.json);
-    expect(await rows(`SELECT work_item_id, count(*) AS n FROM work_item_claims WHERE status = 'active' GROUP BY work_item_id ORDER BY work_item_id`))
-      .toEqual([{ work_item_id: 'R3-9001', n: 1 }, { work_item_id: 'R3-9002', n: 1 }]);
+    expect(await rows(`SELECT ticket_id, count(*) AS n FROM claims WHERE status = 'active' GROUP BY ticket_id ORDER BY ticket_id`))
+      .toEqual([{ ticket_id: 'R3-9001', n: 1 }, { ticket_id: 'R3-9002', n: 1 }]);
     expect((await beat('vm-a', a.secret)).json.claim.id).toBe(x.json.claim_id);
   });
 
   it('two workers naming the same item at once: exactly one holder', async () => {
     const a = await register('vm-a');
     const b = await register('vm-b');
-    const both = await Promise.all([claimItem('vm-a', a.secret, { work_item_id: 'R3-9002' }), claimItem('vm-b', b.secret, { work_item_id: 'R3-9002' })]);
+    const both = await Promise.all([claimItem('vm-a', a.secret, { ticket_id: 'R3-9002' }), claimItem('vm-b', b.secret, { ticket_id: 'R3-9002' })]);
     expect(both.map((r) => r.status).sort()).toEqual([200, 409]);
-    expect(await rows(`SELECT count(*) AS n FROM work_item_claims WHERE work_item_id = 'R3-9002'`)).toEqual([{ n: 1 }]);
+    expect(await rows(`SELECT count(*) AS n FROM claims WHERE ticket_id = 'R3-9002'`)).toEqual([{ n: 1 }]);
   });
 });

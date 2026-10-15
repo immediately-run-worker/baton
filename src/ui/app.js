@@ -39,7 +39,7 @@ function renderMode() {
 function renderHead() {
   const h = state.head;
   document.getElementById('head').textContent = h
-    ? `Board at docs@${short(h.sha)} · ${h.item_count} live items · received ${fmtTime(h.received_at)}`
+    ? `Board at docs@${short(h.sha)} · ${h.ticket_count} live tickets · received ${fmtTime(h.received_at)}`
     : 'No board snapshot yet: the sync has not posted.';
 }
 
@@ -129,7 +129,7 @@ function renderWorkers() {
     if (w.transcript_url) who.append(el('div', {}, githubLink('transcript', w.transcript_url)));
     const st = w.reaped_at != null ? 'reaped' : w.alive ? 'alive' : 'lease lapsed';
     const stateCell = el('td', {}, el('div', { text: st, cls: w.alive ? 'alive' : 'dead' }), el('div', { text: `seen ${fmtTime(w.last_seen_at)}`, cls: 'muted' }), el('div', { text: `active ${fmtTime(w.last_activity_at)}`, cls: 'muted' }));
-    const claim = el('td', { text: w.claim ? w.claim.work_item_id : '—' });
+    const claim = el('td', { text: w.claim ? w.claim.ticket_id : '—' });
     const a = w.activity;
     const activity = el('td', { text: a ? [a.kind, a.label].filter(Boolean).join(': ') : '—', cls: a ? '' : 'muted' });
     let report = '—';
@@ -147,8 +147,8 @@ function renderWorkers() {
       actions.append(button('Status', () => act('/v1/ui/messages', { to_worker_id: w.id, kind: 'status_request' })));
       if (w.claim) {
         actions.append(button('Release', () => {
-          if (confirm(`Ask worker #${w.id} to release ${w.claim.work_item_id}?`)) {
-            act('/v1/ui/messages', { to_worker_id: w.id, kind: 'release', payload: { work_item_id: w.claim.work_item_id, reason: 'requested' } });
+          if (confirm(`Ask worker #${w.id} to release ${w.claim.ticket_id}?`)) {
+            act('/v1/ui/messages', { to_worker_id: w.id, kind: 'release', payload: { ticket_id: w.claim.ticket_id, reason: 'requested' } });
           }
         }));
       }
@@ -201,7 +201,7 @@ function renderRunning() {
   const body = document.getElementById('running');
   body.replaceChildren();
   for (const c of state.running) {
-    const item = el('td', {}, el('div', { text: c.work_item_id }), el('div', { text: c.title ?? '', cls: 'muted' }));
+    const item = el('td', {}, el('div', { text: c.ticket_id }), el('div', { text: c.title ?? '', cls: 'muted' }));
     if (c.stalled) item.append(el('div', { text: 'stalled: no activity for 2 h', cls: 'stalled' }));
     const worker = el('td', {}, el('div', { text: `${c.hostname} · #${c.worker_id}` }), el('div', { text: c.alive ? 'alive' : 'silent', cls: c.alive ? 'alive' : 'dead' }));
     const events = el('td', { cls: 'muted' });
@@ -211,7 +211,7 @@ function renderRunning() {
     const actions = el('td');
     actions.append(button('Force-reap', () => {
       // §14: the confirmation names the worker's last-seen and last-activity times.
-      const msg = `Reap ${c.work_item_id} from ${c.hostname} #${c.worker_id}?\nLast seen ${fmtTime(c.last_seen_at)}; last activity ${fmtTime(c.last_activity_at)}.` +
+      const msg = `Reap ${c.ticket_id} from ${c.hostname} #${c.worker_id}?\nLast seen ${fmtTime(c.last_seen_at)}; last activity ${fmtTime(c.last_activity_at)}.` +
         (c.alive ? `\nThe worker is alive: the item waits until its sidecar confirms the fence (or ${minutes(c.lease_timeout_ms)} of silence).` : '');
       if (confirm(msg)) act(`/v1/ui/claims/${c.id}/reap`, { confirm: true });
     }));
@@ -256,7 +256,7 @@ function renderTimeline() {
   for (const lane of lanes) {
     const track = el('div', { cls: 'track' });
     for (const c of lane.claims) {
-      const bar = el('div', { cls: 'bar', attrs: { title: `${c.work_item_id} · ${c.status}${c.end_reason ? ` (${c.end_reason})` : ''}` } });
+      const bar = el('div', { cls: 'bar', attrs: { title: `${c.ticket_id} · ${c.status}${c.end_reason ? ` (${c.end_reason})` : ''}` } });
       // Positions go through the CSSOM: no markup is built and no style attribute is parsed (§10.4).
       bar.style.left = pct(c.claimed_at);
       bar.style.width = width(c.claimed_at, c.ended_at);
@@ -282,29 +282,29 @@ function renderNeeds() {
   list.replaceChildren();
   for (const c of n.unconfirmed) {
     // §6.7: never confirmed automatically; the owner confirms it or releases it.
-    const li = el('li', { text: `${c.work_item_id}: completed ${fmtTime(c.ended_at)} (${c.end_reason}) at ${short(c.ended_at_sha)}, not confirmed by git after 6 h` });
+    const li = el('li', { text: `${c.ticket_id}: completed ${fmtTime(c.ended_at)} (${c.end_reason}) at ${short(c.ended_at_sha)}, not confirmed by git after 6 h` });
     li.append(button('Confirm', () => {
-      if (confirm(`Confirm ${c.work_item_id}: git carries docs@${short(c.ended_at_sha)}?`)) act(`/v1/ui/claims/${c.id}/resolve`, { action: 'confirm', confirm: true });
+      if (confirm(`Confirm ${c.ticket_id}: git carries docs@${short(c.ended_at_sha)}?`)) act(`/v1/ui/claims/${c.id}/resolve`, { action: 'confirm', confirm: true });
     }));
     li.append(button('Release', () => {
-      if (confirm(`Release ${c.work_item_id}: its push never landed, and the item becomes claimable again?`)) act(`/v1/ui/claims/${c.id}/resolve`, { action: 'release', confirm: true });
+      if (confirm(`Release ${c.ticket_id}: its push never landed, and the item becomes claimable again?`)) act(`/v1/ui/claims/${c.id}/resolve`, { action: 'release', confirm: true });
     }));
     list.append(li);
   }
   for (const m of n.unacknowledged_releases) {
     let item = '?';
     try {
-      item = JSON.parse(m.payload_json).work_item_id;
+      item = JSON.parse(m.payload_json).ticket_id;
     } catch {
       // shown without the item
     }
     list.append(el('li', { text: `Release of ${item} to worker #${m.to_worker_id}: ${m.delivered_at ? `delivered ${fmtTime(m.delivered_at)}` : 'not yet delivered'}, unacknowledged` }));
   }
-  for (const c of n.fence_pending) list.append(el('li', { text: `${c.work_item_id}: reaped ${fmtTime(c.ended_at)}, waiting for worker #${c.worker_id} to confirm its fence` }));
+  for (const c of n.fence_pending) list.append(el('li', { text: `${c.ticket_id}: reaped ${fmtTime(c.ended_at)}, waiting for worker #${c.worker_id} to confirm its fence` }));
   for (const w of n.stale_skills) list.append(el('li', { text: `${w.hostname} · ${w.session_name}: skills version ${w.skills_version}, below the minimum` }));
   for (const h of n.held_items) {
     // §6.10: the owner decides what a hold means — retry (Lift), re-draft, re-tier or park.
-    const li = el('li', { text: `${h.work_item_id}: held (${h.hold_reason ?? 'owner'})` });
+    const li = el('li', { text: `${h.ticket_id}: held (${h.hold_reason ?? 'owner'})` });
     // §14: each attempt with its resume record (R-BTN-24), as text.
     for (const a of h.attempts ?? []) {
       let r = null;
@@ -325,15 +325,15 @@ function renderNeeds() {
       li.append(line);
     }
     li.append(button('Lift hold', () => {
-      if (confirm(`Lift the hold on ${h.work_item_id}? Its failed-attempt count starts again.`)) act(`/v1/ui/overrides/${h.work_item_id}`, { hold: false });
+      if (confirm(`Lift the hold on ${h.ticket_id}? Its failed-attempt count starts again.`)) act(`/v1/ui/overrides/${h.ticket_id}`, { hold: false });
     }));
     list.append(li);
   }
   for (const a of n.adoptions ?? []) {
-    const li = el('li', { text: `${a.work_item_id}: ${a.hostname} · ${a.session_name} asks to adopt the legacy claim (note's session: ${a.legacy_session})` });
+    const li = el('li', { text: `${a.ticket_id}: ${a.hostname} · ${a.session_name} asks to adopt the legacy claim (note's session: ${a.legacy_session})` });
     li.append(button('Confirm adoption', () => {
-      if (confirm(`Move ${a.work_item_id} to ${a.hostname} · ${a.session_name}? Claim notes are public: confirm only a session you know worked it.`)) {
-        act(`/v1/ui/adoptions/${a.work_item_id}/confirm`, { confirm: true });
+      if (confirm(`Move ${a.ticket_id} to ${a.hostname} · ${a.session_name}? Claim notes are public: confirm only a session you know worked it.`)) {
+        act(`/v1/ui/adoptions/${a.ticket_id}/confirm`, { confirm: true });
       }
     }));
     list.append(li);

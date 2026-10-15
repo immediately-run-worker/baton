@@ -63,8 +63,8 @@ export class Claims {
   private exec(q: string, ...p: unknown[]) {
     return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[]));
   }
-  private event(kind: string, actor: string, detail: unknown, workItemId: string | null = null, claimId: number | null = null) {
-    logEvent(this.c.storage.sql, this.c.now(), kind, actor, detail, workItemId, claimId);
+  private event(kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null) {
+    logEvent(this.c.storage.sql, this.c.now(), kind, actor, detail, ticketId, claimId);
   }
   private setting(key: string): string | null {
     return this.rows<{ value: string }>('SELECT value FROM baton_settings WHERE key = ?', key)[0]?.value ?? null;
@@ -90,10 +90,10 @@ export class Claims {
 
   private item(id: string): ItemFacts | null {
     const r = this.rows<{ id: string; path: string; node: string; queue: string; status: string; tier: string | null; tags: string; requires_clause: string; operator_only: number; rank: number | null }>(
-      'SELECT id, path, node, queue, status, tier, tags, requires_clause, operator_only, rank FROM work_items WHERE id = ?', id)[0];
+      'SELECT id, path, node, queue, status, tier, tags, requires_clause, operator_only, rank FROM tickets WHERE id = ?', id)[0];
     if (!r) return null;
     const requires = r.requires_clause === 'listed'
-      ? this.rows<{ name: string }>('SELECT name FROM work_item_requires WHERE work_item_id = ? ORDER BY name', id).map((x) => x.name)
+      ? this.rows<{ name: string }>('SELECT name FROM ticket_requires WHERE ticket_id = ? ORDER BY name', id).map((x) => x.name)
       : null;
     const tags: string[] = JSON.parse(r.tags);
     // Rule 6 reads `operator_only` (§7.2): the sync stores no role name, human-operator included.
@@ -104,7 +104,7 @@ export class Claims {
   }
 
   private override(id: string) {
-    return this.rows<{ expedite: number; hold: number; retry_after: number | null }>('SELECT expedite, hold, retry_after FROM item_overrides WHERE work_item_id = ?', id)[0] ?? null;
+    return this.rows<{ expedite: number; hold: number; retry_after: number | null }>('SELECT expedite, hold, retry_after FROM ticket_overrides WHERE ticket_id = ?', id)[0] ?? null;
   }
 
   private suspensions() {
@@ -120,16 +120,16 @@ export class Claims {
 
   /** `isEligible`'s context for one item (§7.2), from Baton's own tables (R-BTN-33). */
   private contextFor(item: ItemFacts, now: number, shared: { suspensions: Row[]; minSkills: number; expediteActive: number; reviewer: ReturnType<Claims['reviewerData']> }) {
-    const claims = this.rows('SELECT status, confirmed_at, fence_pending FROM work_item_claims WHERE work_item_id = ?', item.id);
+    const claims = this.rows('SELECT status, confirmed_at, fence_pending FROM claims WHERE ticket_id = ?', item.id);
     const last = this.rows<{ end_reason: string | null }>(
-      `SELECT end_reason FROM work_item_claims WHERE work_item_id = ? AND status != 'active' ORDER BY ended_at DESC, id DESC LIMIT 1`, item.id)[0];
+      `SELECT end_reason FROM claims WHERE ticket_id = ? AND status != 'active' ORDER BY ended_at DESC, id DESC LIMIT 1`, item.id)[0];
     const lastEndReason = last?.end_reason ?? null;
     let authorFamilies: (string | null)[] = [];
     if (lastEndReason === 'released:awaiting-review-capacity' && shared.reviewer.matrix) {
       // R-BTN-27: every family that wrote code on the item, the original author first — the
       // families of the coding models of the item's earlier claims.
       authorFamilies = this.rows<{ model_id: string | null }>(
-        `SELECT w.model_id FROM work_item_claims c JOIN workers w ON w.id = c.worker_id WHERE c.work_item_id = ? ORDER BY c.id`, item.id)
+        `SELECT w.model_id FROM claims c JOIN workers w ON w.id = c.worker_id WHERE c.ticket_id = ? ORDER BY c.id`, item.id)
         .map((r) => (r.model_id ? familyOf(r.model_id, shared.reviewer.matrix) : null));
     }
     return {
@@ -153,8 +153,8 @@ export class Claims {
       minSkills: Number(this.setting('min_skills_version') ?? 0),
       // Rule 2 counts active Baton claims on expedited items, not git in-progress.
       expediteActive: this.rows<{ n: number }>(
-        `SELECT count(*) AS n FROM work_item_claims c LEFT JOIN work_items w ON w.id = c.work_item_id
-         LEFT JOIN item_overrides o ON o.work_item_id = c.work_item_id
+        `SELECT count(*) AS n FROM claims c LEFT JOIN tickets w ON w.id = c.ticket_id
+         LEFT JOIN ticket_overrides o ON o.ticket_id = c.ticket_id
          WHERE c.status = 'active' AND (w.queue = 'expedite' OR o.expedite = 1)`)[0].n,
       reviewer: this.reviewerData(),
       now,
@@ -164,19 +164,19 @@ export class Claims {
   /** The §7.2 candidate query: rules 1, 3, 4, 5 (as a tier rank), 6 and 10, in rank order. */
   candidates(w: WorkerFacts, now: number, limit = 20): string[] {
     return this.rows<{ id: string }>(
-      `SELECT w.id FROM work_items w
+      `SELECT w.id FROM tickets w
        WHERE w.node LIKE 'ready-%'
-         AND NOT EXISTS (SELECT 1 FROM work_item_claims c WHERE c.work_item_id = w.id
+         AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.ticket_id = w.id
                          AND (c.status = 'active'
                               OR (c.status = 'completed' AND c.confirmed_at IS NULL)
                               OR (c.status = 'reaped' AND c.fence_pending = 1)))
-         AND NOT EXISTS (SELECT 1 FROM item_overrides o WHERE o.work_item_id = w.id
+         AND NOT EXISTS (SELECT 1 FROM ticket_overrides o WHERE o.ticket_id = w.id
                          AND (o.hold = 1 OR o.retry_after > ?))
-         AND NOT EXISTS (SELECT 1 FROM work_item_requires r WHERE r.work_item_id = w.id
+         AND NOT EXISTS (SELECT 1 FROM ticket_requires r WHERE r.ticket_id = w.id
                          AND r.name NOT IN (SELECT capability FROM worker_capabilities WHERE worker_id = ?))
          AND ? >= CASE COALESCE(w.tier, 'critical') WHEN 'routine' THEN 0 WHEN 'judgement' THEN 1 ELSE 2 END
          AND (? OR w.operator_only = 0)
-       ORDER BY COALESCE((SELECT expedite FROM item_overrides o WHERE o.work_item_id = w.id), 0) DESC, w.rank
+       ORDER BY COALESCE((SELECT expedite FROM ticket_overrides o WHERE o.ticket_id = w.id), 0) DESC, w.rank
        LIMIT ?`,
       now, w.id, (TIERS as string[]).indexOf(w.tier_ceiling), w.declared.includes('human-operator') ? 1 : 0, limit).map((r) => r.id);
   }
@@ -222,7 +222,7 @@ export class Claims {
         return { item, reason: item.expedite ? 'expedite lane' : `${item.queue} queue · rank ${item.rank ?? '—'}` };
       }
     }
-    throw new BatonError('no-eligible-item', 'no ready item fits this worker');
+    throw new BatonError('no-eligible-ticket', 'no ready ticket fits this worker');
   }
 
   // ── the worker calls (§11) ──────────────────────────────────────────────────────────────
@@ -230,14 +230,14 @@ export class Claims {
   /** `GET /v1/worker/next`: what a claim would return, without claiming (for next-available.sh). */
   next(workerId: number) {
     const { item, reason } = this.decide(this.worker(workerId), null, this.c.now());
-    return { work_item_id: item.id, rank_reason: reason };
+    return { ticket_id: item.id, rank_reason: reason };
   }
 
   /** `POST /v1/worker/claim` (§6.2): idempotent by `request_id`; the lock is the index. */
   claim(workerId: number, body: unknown) {
     const b = checkClaim(body);
     if (!this.cutOver()) throw new BatonError('not-cut-over', 'claims go through git until cutover (R-BTN-28)');
-    const prior = this.rows<{ id: number; worker_id: number }>('SELECT id, worker_id FROM work_item_claims WHERE request_id = ?', b.request_id)[0];
+    const prior = this.rows<{ id: number; worker_id: number }>('SELECT id, worker_id FROM claims WHERE request_id = ?', b.request_id)[0];
     if (prior) {
       // A lost response retried: the same claim, never a second item (G-BTN-2).
       if (prior.worker_id !== workerId) throw new BatonError('invalid-params', 'request_id: already used by another worker');
@@ -245,11 +245,11 @@ export class Claims {
     }
     const now = this.c.now();
     const w = this.worker(workerId);
-    const mine = this.rows<{ work_item_id: string }>(`SELECT work_item_id FROM work_item_claims WHERE worker_id = ? AND status = 'active'`, workerId)[0];
-    if (mine) throw new BatonError('not-eligible', `this worker holds ${mine.work_item_id}; end it before claiming another (R-BTN-4)`, { rule: 'one-claim-per-worker' });
-    const { item } = this.decide(w, b.work_item_id, now);
+    const mine = this.rows<{ ticket_id: string }>(`SELECT ticket_id FROM claims WHERE worker_id = ? AND status = 'active'`, workerId)[0];
+    if (mine) throw new BatonError('not-eligible', `this worker holds ${mine.ticket_id}; end it before claiming another (R-BTN-4)`, { rule: 'one-claim-per-worker' });
+    const { item } = this.decide(w, b.ticket_id, now);
     try {
-      this.exec(`INSERT INTO work_item_claims (work_item_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
+      this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
                  VALUES (?, ?, ?, ?, ?, ?, 'active')`, item.id, workerId, b.request_id, randomHex(3), this.head() ?? '', now);
     } catch (e) {
       // R-BTN-4: the partial unique indexes refuse a second holder of the item or the worker.
@@ -270,12 +270,12 @@ export class Claims {
   /** The claim response (§11, R-BTN-34): the item's path and the snapshot it was decided on —
    *  never the item's content — and the earlier attempts, newest first, each with its resume record (§6.11, R-BTN-24). */
   private claimResponse(id: number) {
-    const c = this.rows<{ id: number; work_item_id: string; nonce: string; snapshot_sha: string }>('SELECT id, work_item_id, nonce, snapshot_sha FROM work_item_claims WHERE id = ?', id)[0];
-    const path = this.rows<{ path: string }>('SELECT path FROM work_items WHERE id = ?', c.work_item_id)[0]?.path ?? `content/roadmap/${c.work_item_id}.mdx`;
+    const c = this.rows<{ id: number; ticket_id: string; nonce: string; snapshot_sha: string }>('SELECT id, ticket_id, nonce, snapshot_sha FROM claims WHERE id = ?', id)[0];
+    const path = this.rows<{ path: string }>('SELECT path FROM tickets WHERE id = ?', c.ticket_id)[0]?.path ?? `content/roadmap/${c.ticket_id}.mdx`;
     const previous = this.rows<{ id: number; status: string; end_reason: string | null; ended_at: number | null; resume_json: string | null }>(
-      `SELECT id, status, end_reason, ended_at, resume_json FROM work_item_claims WHERE work_item_id = ? AND id < ? AND status != 'active' ORDER BY id DESC`, c.work_item_id, id);
+      `SELECT id, status, end_reason, ended_at, resume_json FROM claims WHERE ticket_id = ? AND id < ? AND status != 'active' ORDER BY id DESC`, c.ticket_id, id);
     return {
-      claim_id: c.id, work_item_id: c.work_item_id, path, nonce: c.nonce, snapshot_sha: c.snapshot_sha,
+      claim_id: c.id, ticket_id: c.ticket_id, path, nonce: c.nonce, snapshot_sha: c.snapshot_sha,
       previous_attempts: previous.map((p) => ({ claim_id: p.id, status: p.status, end_reason: p.end_reason, ended_at: p.ended_at, resume: p.resume_json ? JSON.parse(p.resume_json) : null })),
     };
   }
@@ -284,25 +284,25 @@ export class Claims {
   end(workerId: number, claimId: number, body: unknown) {
     const e = checkEnd(body);
     if (!this.cutOver()) throw new BatonError('not-cut-over', 'claims end through git until cutover (R-BTN-28)');
-    const c = this.rows<{ id: number; worker_id: number; work_item_id: string; status: string; end_reason: string | null }>(
-      'SELECT id, worker_id, work_item_id, status, end_reason FROM work_item_claims WHERE id = ?', claimId)[0];
+    const c = this.rows<{ id: number; worker_id: number; ticket_id: string; status: string; end_reason: string | null }>(
+      'SELECT id, worker_id, ticket_id, status, end_reason FROM claims WHERE id = ?', claimId)[0];
     if (!c || c.worker_id !== workerId) throw new BatonError('not-holder', 'this worker does not hold that claim');
     if (c.status !== 'active') {
       if (c.end_reason === e.end_reason) return { ok: true };
       // R-BTN-8 pushes git first, so a sync can see the item done and release the claim
       // stale-board (R-BTN-35) before the worker's own end arrives: that completion is the
       // truth, recorded as such, and the release it no longer needs is withdrawn.
-      if (c.status === 'released' && c.end_reason === 'released:stale-board' && e.status === 'completed' && this.gitEnded(c.work_item_id, c.id)) {
-        this.exec(`UPDATE work_item_claims SET status = 'completed', end_reason = ?, ended_at_sha = ? WHERE id = ?`, e.end_reason, e.ended_at_sha, c.id);
+      if (c.status === 'released' && c.end_reason === 'released:stale-board' && e.status === 'completed' && this.gitEnded(c.ticket_id, c.id)) {
+        this.exec(`UPDATE claims SET status = 'completed', end_reason = ?, ended_at_sha = ? WHERE id = ?`, e.end_reason, e.ended_at_sha, c.id);
         this.exec(`UPDATE messages SET status = 'expired' WHERE to_worker_id = ? AND kind = 'release' AND status IN ('pending','delivered')
-                   AND json_extract(payload_json, '$.work_item_id') = ? AND json_extract(payload_json, '$.reason') = 'stale-board'`, workerId, c.work_item_id);
-        this.event('completed', `worker:${workerId}`, { end_reason: e.end_reason, ended_at_sha: e.ended_at_sha, after: 'released:stale-board' }, c.work_item_id, c.id);
+                   AND json_extract(payload_json, '$.ticket_id') = ? AND json_extract(payload_json, '$.reason') = 'stale-board'`, workerId, c.ticket_id);
+        this.event('completed', `worker:${workerId}`, { end_reason: e.end_reason, ended_at_sha: e.ended_at_sha, after: 'released:stale-board' }, c.ticket_id, c.id);
         this.c.dispatch?.('baton-sync.yml');
         return { ok: true };
       }
       throw new BatonError('claim-ended', `the claim already ended (${c.status}: ${c.end_reason})`);
     }
-    this.finish(c.id, c.work_item_id, e.status, e.end_reason, `worker:${workerId}`, { ended_at_sha: e.ended_at_sha });
+    this.finish(c.id, c.ticket_id, e.status, e.end_reason, `worker:${workerId}`, { ended_at_sha: e.ended_at_sha });
     return { ok: true };
   }
 
@@ -310,7 +310,7 @@ export class Claims {
   private finish(claimId: number, item: string, status: 'completed' | 'released' | 'reaped', reason: string, actor: string,
     opts: { ended_at_sha?: string | null; fence?: { incarnation: number } | null } = {}) {
     const now = this.c.now();
-    this.exec(`UPDATE work_item_claims SET status = ?, ended_at = ?, end_reason = ?, ended_at_sha = ?, fence_pending = ?, fence_incarnation = ? WHERE id = ?`,
+    this.exec(`UPDATE claims SET status = ?, ended_at = ?, end_reason = ?, ended_at_sha = ?, fence_pending = ?, fence_incarnation = ? WHERE id = ?`,
       status, now, reason, opts.ended_at_sha ?? null, opts.fence ? 1 : 0, opts.fence?.incarnation ?? null, claimId);
     this.exec(`UPDATE activities SET ended_at = ?, outcome = 'abandoned' WHERE claim_id = ? AND ended_at IS NULL`, now, claimId);
     this.event(status, actor, { end_reason: reason, ...(opts.ended_at_sha ? { ended_at_sha: opts.ended_at_sha } : {}), ...(opts.fence ? { fence_pending: true } : {}) }, item, claimId);
@@ -333,7 +333,7 @@ export class Claims {
    *  millisecond. */
   private lastLift(item: string): number {
     return this.rows<{ seq: number | null }>(
-      `SELECT max(seq) AS seq FROM events WHERE kind = 'override' AND work_item_id = ? AND json_extract(detail_json, '$.hold') = 0`, item)[0]?.seq ?? 0;
+      `SELECT max(seq) AS seq FROM events WHERE kind = 'override' AND ticket_id = ? AND json_extract(detail_json, '$.hold') = 0`, item)[0]?.seq ?? 0;
   }
 
   /** The claims of an item whose end was logged after event `since`, newest end first. */
@@ -342,7 +342,7 @@ export class Claims {
       `SELECT id, worker_id, end_reason, failed_attempt FROM (
          SELECT c.id, c.worker_id, c.end_reason, c.failed_attempt,
                 (SELECT max(e.seq) FROM events e WHERE e.claim_id = c.id AND e.kind IN ('completed', 'released', 'reaped')) AS end_seq
-         FROM work_item_claims c WHERE c.work_item_id = ? AND c.status != 'active')
+         FROM claims c WHERE c.ticket_id = ? AND c.status != 'active')
        WHERE end_seq > ? ORDER BY end_seq DESC`, item, since);
   }
 
@@ -355,7 +355,7 @@ export class Claims {
   private writeResume(claimId: number, reason: string, now: number) {
     const acts = this.rows<ResumeActivity>('SELECT kind, seq, label, started_at, ended_at, outcome, detail_json FROM activities WHERE claim_id = ? ORDER BY started_at', claimId);
     const transcripts = this.rows<{ repo: string; path: string; role: string }>('SELECT repo, path, role FROM transcripts WHERE claim_id = ? ORDER BY id', claimId);
-    this.exec('UPDATE work_item_claims SET resume_json = ? WHERE id = ?', JSON.stringify(resumeRecord(reason, now, acts, transcripts)), claimId);
+    this.exec('UPDATE claims SET resume_json = ? WHERE id = ?', JSON.stringify(resumeRecord(reason, now, acts, transcripts)), claimId);
   }
 
   /** §6.10 and §7.4, after a claim ends other than completed: mark the failed attempt, then
@@ -363,11 +363,11 @@ export class Claims {
    *  at the third consecutive awaiting-review-capacity release. */
   private applyRetryPolicy(claimId: number, item: string, reason: string) {
     const ended = this.endedSince(item, this.lastLift(item));
-    const c = this.rows<{ worker_id: number }>('SELECT worker_id FROM work_item_claims WHERE id = ?', claimId)[0];
+    const c = this.rows<{ worker_id: number }>('SELECT worker_id FROM claims WHERE id = ?', claimId)[0];
     const leaseLostBefore = reason === 'released:lease-lost' &&
       ended.some((e) => e.id !== claimId && e.worker_id === c.worker_id && e.failed_attempt === 1 && e.end_reason === 'released:lease-lost');
     if (countsAsFailed(reason, leaseLostBefore)) {
-      this.exec('UPDATE work_item_claims SET failed_attempt = 1 WHERE id = ?', claimId);
+      this.exec('UPDATE claims SET failed_attempt = 1 WHERE id = ?', claimId);
       const failed = this.failedAttempts(item);
       const cls = nonRetryableClass(reason);
       if (cls) return this.hold(item, `non-retryable:${cls}`, 'baton', { claim_id: claimId, attempts: failed });
@@ -390,10 +390,10 @@ export class Claims {
 
   private upsertOverride(item: string, by: string, set: { hold?: 0 | 1; hold_reason?: string | null; retry_after?: number | null; expedite?: 0 | 1 }) {
     const now = this.c.now();
-    this.exec(`INSERT INTO item_overrides (work_item_id, expedite, hold, hold_reason, retry_after, set_by, set_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT (work_item_id) DO UPDATE SET set_by = excluded.set_by, set_at = excluded.set_at`,
+    this.exec(`INSERT INTO ticket_overrides (ticket_id, expedite, hold, hold_reason, retry_after, set_by, set_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT (ticket_id) DO UPDATE SET set_by = excluded.set_by, set_at = excluded.set_at`,
       item, set.expedite ?? 0, set.hold ?? 0, set.hold_reason ?? null, set.retry_after ?? null, by, now);
-    for (const [k, v] of Object.entries(set)) this.exec(`UPDATE item_overrides SET ${k} = ? WHERE work_item_id = ?`, v, item);
+    for (const [k, v] of Object.entries(set)) this.exec(`UPDATE ticket_overrides SET ${k} = ? WHERE ticket_id = ?`, v, item);
   }
 
   /** §8: every hold, whoever sets it, is an `override` event and a `held` event with its reason. */
@@ -426,30 +426,30 @@ export class Claims {
    *  shows the item ended (done, superseded, deferred, deprioritized, archived or gone — not a
    *  re-tier) and nobody has claimed it since. */
   private gitEnded(item: string, claimId: number) {
-    if (this.rows('SELECT 1 FROM work_item_claims WHERE work_item_id = ? AND id > ?', item, claimId).length) return false;
-    const it = this.rows<{ status: string }>('SELECT status FROM work_items WHERE id = ?', item)[0];
+    if (this.rows('SELECT 1 FROM claims WHERE ticket_id = ? AND id > ?', item, claimId).length) return false;
+    const it = this.rows<{ status: string }>('SELECT status FROM tickets WHERE id = ?', item)[0];
     return !it || GIT_ENDS.has(it.status);
   }
 
-  /** `GET /v1/worker/items/{item}/holder` (R-BTN-7): whether another live, non-legacy worker
+  /** `GET /v1/worker/tickets/{ticket}/holder` (R-BTN-7): whether another live, non-legacy worker
    *  holds the item, and whether a reaped claim on it is still fence-pending. `callerId` is
    *  null for a token-only caller (the witness), for whom every holder is another. */
   holder(callerId: number | null, item: string) {
-    const held = this.rows(`SELECT 1 FROM work_item_claims c JOIN workers w ON w.id = c.worker_id
-                            WHERE c.work_item_id = ? AND c.status = 'active' AND w.kind != 'legacy' AND (? IS NULL OR c.worker_id != ?)`, item, callerId, callerId).length > 0;
-    const fence = this.rows(`SELECT 1 FROM work_item_claims WHERE work_item_id = ? AND status = 'reaped' AND fence_pending = 1`, item).length > 0;
+    const held = this.rows(`SELECT 1 FROM claims c JOIN workers w ON w.id = c.worker_id
+                            WHERE c.ticket_id = ? AND c.status = 'active' AND w.kind != 'legacy' AND (? IS NULL OR c.worker_id != ?)`, item, callerId, callerId).length > 0;
+    const fence = this.rows(`SELECT 1 FROM claims WHERE ticket_id = ? AND status = 'reaped' AND fence_pending = 1`, item).length > 0;
     return { held_by_other: held, fence_pending: fence };
   }
 
   /** The heartbeat's `fenced` report (R-BTN-19): clears the fence of a claim reaped while this
    *  worker was alive — only in the incarnation it was reaped in, since a re-key never clears one. */
   fenced(workerId: number, incarnation: number, claimId: number) {
-    const c = this.rows<{ work_item_id: string }>(
-      `SELECT work_item_id FROM work_item_claims WHERE id = ? AND worker_id = ? AND status = 'reaped' AND fence_pending = 1 AND fence_incarnation = ?`,
+    const c = this.rows<{ ticket_id: string }>(
+      `SELECT ticket_id FROM claims WHERE id = ? AND worker_id = ? AND status = 'reaped' AND fence_pending = 1 AND fence_incarnation = ?`,
       claimId, workerId, incarnation)[0];
     if (!c) return false;
-    this.exec('UPDATE work_item_claims SET fence_pending = 0 WHERE id = ?', claimId);
-    this.event('fence-cleared', `worker:${workerId}`, { by: 'sidecar' }, c.work_item_id, claimId);
+    this.exec('UPDATE claims SET fence_pending = 0 WHERE id = ?', claimId);
+    this.event('fence-cleared', `worker:${workerId}`, { by: 'sidecar' }, c.ticket_id, claimId);
     return true;
   }
 
@@ -460,13 +460,13 @@ export class Claims {
    *  silent worker's is reaped as the alarm would. */
   forceReap(owner: string, claimId: number, body: unknown) {
     checkConfirm(body);
-    const c = this.rows<{ id: number; work_item_id: string; worker_id: number; status: string }>('SELECT id, work_item_id, worker_id, status FROM work_item_claims WHERE id = ?', claimId)[0];
+    const c = this.rows<{ id: number; ticket_id: string; worker_id: number; status: string }>('SELECT id, ticket_id, worker_id, status FROM claims WHERE id = ?', claimId)[0];
     if (!c) throw new BatonError('not-found', 'no such claim');
     if (c.status !== 'active') throw new BatonError('claim-ended', 'the claim already ended');
     const w = this.worker(c.worker_id);
     const now = this.c.now();
     const alive = w.kind !== 'legacy' && now - w.last_seen_at < w.lease_timeout_ms;
-    this.finish(c.id, c.work_item_id, 'reaped', 'reaped:owner', `owner:${owner}`, { fence: alive ? { incarnation: w.incarnation } : null });
+    this.finish(c.id, c.ticket_id, 'reaped', 'reaped:owner', `owner:${owner}`, { fence: alive ? { incarnation: w.incarnation } : null });
     if (!alive) this.exec('UPDATE workers SET reaped_at = ? WHERE id = ? AND reaped_at IS NULL', now, w.id);
     return { ok: true, fence_pending: alive };
   }
@@ -476,16 +476,16 @@ export class Claims {
    *  which makes the item claimable again. The commit it named stays in the event. */
   resolve(owner: string, claimId: number, body: unknown) {
     const { action } = checkResolve(body);
-    const c = this.rows<{ work_item_id: string; end_reason: string; ended_at_sha: string }>(
-      `SELECT work_item_id, end_reason, ended_at_sha FROM work_item_claims WHERE id = ? AND status = 'completed' AND confirmed_at IS NULL`, claimId)[0];
+    const c = this.rows<{ ticket_id: string; end_reason: string; ended_at_sha: string }>(
+      `SELECT ticket_id, end_reason, ended_at_sha FROM claims WHERE id = ? AND status = 'completed' AND confirmed_at IS NULL`, claimId)[0];
     if (!c) throw new BatonError('not-found', 'no unconfirmed completion with that id');
     if (action === 'confirm') {
-      this.exec('UPDATE work_item_claims SET confirmed_at = ? WHERE id = ?', this.c.now(), claimId);
-      this.event('confirmed', `owner:${owner}`, { by: 'owner', sha: c.ended_at_sha }, c.work_item_id, claimId);
+      this.exec('UPDATE claims SET confirmed_at = ? WHERE id = ?', this.c.now(), claimId);
+      this.event('confirmed', `owner:${owner}`, { by: 'owner', sha: c.ended_at_sha }, c.ticket_id, claimId);
     } else {
-      this.exec(`UPDATE work_item_claims SET status = 'released', end_reason = 'released:requested', ended_at_sha = NULL WHERE id = ?`, claimId);
+      this.exec(`UPDATE claims SET status = 'released', end_reason = 'released:requested', ended_at_sha = NULL WHERE id = ?`, claimId);
       this.c.dispatch?.('baton-mirror.yml');
-      this.event('released', `owner:${owner}`, { by: 'owner', unconfirmed: { end_reason: c.end_reason, ended_at_sha: c.ended_at_sha } }, c.work_item_id, claimId);
+      this.event('released', `owner:${owner}`, { by: 'owner', unconfirmed: { end_reason: c.end_reason, ended_at_sha: c.ended_at_sha } }, c.ticket_id, claimId);
     }
     return { ok: true };
   }
@@ -521,10 +521,10 @@ export class Claims {
     const now = this.c.now();
     let n = 0;
     for (const k of confirmations) {
-      const c = this.rows<{ work_item_id: string }>(`SELECT work_item_id FROM work_item_claims WHERE id = ? AND status = 'completed' AND confirmed_at IS NULL`, k.claim_id)[0];
+      const c = this.rows<{ ticket_id: string }>(`SELECT ticket_id FROM claims WHERE id = ? AND status = 'completed' AND confirmed_at IS NULL`, k.claim_id)[0];
       if (!c) continue;
-      this.exec('UPDATE work_item_claims SET confirmed_at = ? WHERE id = ?', now, k.claim_id);
-      this.event('confirmed', 'sync', { sha: k.sha }, c.work_item_id, k.claim_id);
+      this.exec('UPDATE claims SET confirmed_at = ? WHERE id = ?', now, k.claim_id);
+      this.event('confirmed', 'sync', { sha: k.sha }, c.ticket_id, k.claim_id);
       n++;
     }
     return n;
@@ -536,18 +536,18 @@ export class Claims {
    *  and the shadow reports end claims. */
   staleBoard() {
     if (!this.cutOver()) return 0;
-    const active = this.rows<{ id: number; work_item_id: string; worker_id: number; tier_ceiling: string; kind: string }>(
-      `SELECT c.id, c.work_item_id, c.worker_id, w.tier_ceiling, w.kind FROM work_item_claims c JOIN workers w ON w.id = c.worker_id WHERE c.status = 'active'`);
+    const active = this.rows<{ id: number; ticket_id: string; worker_id: number; tier_ceiling: string; kind: string }>(
+      `SELECT c.id, c.ticket_id, c.worker_id, w.tier_ceiling, w.kind FROM claims c JOIN workers w ON w.id = c.worker_id WHERE c.status = 'active'`);
     let n = 0;
     for (const c of active) {
-      const it = this.rows<{ status: string; tier: string | null }>('SELECT status, tier FROM work_items WHERE id = ?', c.work_item_id)[0];
+      const it = this.rows<{ status: string; tier: string | null }>('SELECT status, tier FROM tickets WHERE id = ?', c.ticket_id)[0];
       const why = !it ? 'gone or archived' : GIT_ENDS.has(it.status) ? it.status
         : !fitsTier(it.tier ?? null, c.tier_ceiling) ? `re-tiered ${it.tier ?? 'untiered'}` : null;
       if (!why) continue;
-      this.finish(c.id, c.work_item_id, 'released', 'released:stale-board', 'sync', {});
+      this.finish(c.id, c.ticket_id, 'released', 'released:stale-board', 'sync', {});
       if (c.kind !== 'legacy') {
         this.exec(`INSERT INTO messages (kind, payload_json, from_principal, to_worker_id, sent_at, status) VALUES ('release', ?, 'sync', ?, ?, 'pending')`,
-          JSON.stringify({ work_item_id: c.work_item_id, reason: 'stale-board', why }), c.worker_id, this.c.now());
+          JSON.stringify({ ticket_id: c.ticket_id, reason: 'stale-board', why }), c.worker_id, this.c.now());
       }
       n++;
     }
@@ -559,19 +559,19 @@ export class Claims {
   alarm() {
     const now = this.c.now();
     // Silent workers: reaped at exactly their clamped timeout (R-BTN-9), never by Date.now().
-    const silent = this.rows<{ id: number; work_item_id: string; worker_id: number; kind: string }>(
-      `SELECT c.id, c.work_item_id, c.worker_id, w.kind FROM work_item_claims c JOIN workers w ON w.id = c.worker_id
+    const silent = this.rows<{ id: number; ticket_id: string; worker_id: number; kind: string }>(
+      `SELECT c.id, c.ticket_id, c.worker_id, w.kind FROM claims c JOIN workers w ON w.id = c.worker_id
        WHERE c.status = 'active' AND ((w.kind != 'legacy' AND ? - w.last_seen_at >= w.lease_timeout_ms)
                                       OR (w.kind = 'legacy' AND c.reap_after IS NOT NULL AND c.reap_after <= ?))`, now, now);
     for (const c of silent) {
-      this.finish(c.id, c.work_item_id, 'reaped', c.kind === 'legacy' ? 'reaped:legacy' : 'reaped:silent', 'alarm', {});
+      this.finish(c.id, c.ticket_id, 'reaped', c.kind === 'legacy' ? 'reaped:legacy' : 'reaped:silent', 'alarm', {});
       this.exec('UPDATE workers SET reaped_at = ? WHERE id = ? AND reaped_at IS NULL', now, c.worker_id);
     }
     // §9: a release delivered 2 h ago and still unacknowledged reaps the claim, fenced: the
     // worker is alive (it took the message), so the item waits for its fence (R-BTN-19).
-    const stale = this.rows<{ mid: number; id: number; work_item_id: string; worker_id: number; incarnation: number }>(
-      `SELECT m.id AS mid, c.id, c.work_item_id, c.worker_id, w.incarnation FROM messages m
-       JOIN work_item_claims c ON c.worker_id = m.to_worker_id AND c.status = 'active' AND c.work_item_id = json_extract(m.payload_json, '$.work_item_id')
+    const stale = this.rows<{ mid: number; id: number; ticket_id: string; worker_id: number; incarnation: number }>(
+      `SELECT m.id AS mid, c.id, c.ticket_id, c.worker_id, w.incarnation FROM messages m
+       JOIN claims c ON c.worker_id = m.to_worker_id AND c.status = 'active' AND c.ticket_id = json_extract(m.payload_json, '$.ticket_id')
        JOIN workers w ON w.id = c.worker_id
        WHERE m.kind = 'release' AND m.status = 'delivered' AND m.delivered_at <= ?`, now - RELEASE_ACK_MS);
     const reaped = new Set<number>();
@@ -579,16 +579,16 @@ export class Claims {
       this.exec(`UPDATE messages SET status = 'expired' WHERE id = ?`, c.mid);
       if (reaped.has(c.id)) continue; // two stale releases for one claim reap it once
       reaped.add(c.id);
-      this.finish(c.id, c.work_item_id, 'reaped', 'reaped:release-unacknowledged', 'alarm', { fence: { incarnation: c.incarnation } });
+      this.finish(c.id, c.ticket_id, 'reaped', 'reaped:release-unacknowledged', 'alarm', { fence: { incarnation: c.incarnation } });
     }
     // A fence also clears when its worker goes silent past its own timeout (R-BTN-19).
-    const lapsed = this.rows<{ id: number; work_item_id: string; worker_id: number }>(
-      `SELECT c.id, c.work_item_id, c.worker_id FROM work_item_claims c JOIN workers w ON w.id = c.worker_id
+    const lapsed = this.rows<{ id: number; ticket_id: string; worker_id: number }>(
+      `SELECT c.id, c.ticket_id, c.worker_id FROM claims c JOIN workers w ON w.id = c.worker_id
        WHERE c.status = 'reaped' AND c.fence_pending = 1 AND ? - w.last_seen_at >= w.lease_timeout_ms`, now);
     for (const c of lapsed) {
-      this.exec('UPDATE work_item_claims SET fence_pending = 0 WHERE id = ?', c.id);
+      this.exec('UPDATE claims SET fence_pending = 0 WHERE id = ?', c.id);
       this.exec('UPDATE workers SET reaped_at = ? WHERE id = ? AND reaped_at IS NULL', now, c.worker_id);
-      this.event('fence-cleared', 'alarm', { by: 'timeout' }, c.work_item_id, c.id);
+      this.event('fence-cleared', 'alarm', { by: 'timeout' }, c.ticket_id, c.id);
     }
     // §7.1: a held history is accepted automatically 24 h after its first post.
     for (const h of this.rows<{ sha: string }>('SELECT sha FROM held_snapshots WHERE accepted_at IS NULL AND auto_accept_at <= ?', now)) {
@@ -601,9 +601,9 @@ export class Claims {
 
   running(now: number) {
     return this.rows<Row>(
-      `SELECT c.id, c.work_item_id, c.worker_id, c.claimed_at, c.nonce, w.hostname, w.session_name, w.last_seen_at, w.last_activity_at,
+      `SELECT c.id, c.ticket_id, c.worker_id, c.claimed_at, c.nonce, w.hostname, w.session_name, w.last_seen_at, w.last_activity_at,
               w.lease_timeout_ms, w.kind, wi.title
-       FROM work_item_claims c JOIN workers w ON w.id = c.worker_id LEFT JOIN work_items wi ON wi.id = c.work_item_id
+       FROM claims c JOIN workers w ON w.id = c.worker_id LEFT JOIN tickets wi ON wi.id = c.ticket_id
        WHERE c.status = 'active' ORDER BY c.claimed_at`).map((c) => {
       const alive = c.kind !== 'legacy' && now - (c.last_seen_at as number) < (c.lease_timeout_ms as number);
       return {
@@ -627,7 +627,7 @@ export class Claims {
       to: now,
       lanes: lanes.map((l) => ({
         ...l,
-        claims: this.rows<Row>(`SELECT id, work_item_id, claimed_at, ended_at, status, end_reason FROM work_item_claims
+        claims: this.rows<Row>(`SELECT id, ticket_id, claimed_at, ended_at, status, end_reason FROM claims
                                 WHERE worker_id = ? AND (ended_at IS NULL OR ended_at >= ?) ORDER BY claimed_at`, l.id, from).map((c) => ({
           ...c,
           activities: this.rows<Row>('SELECT id, kind, seq, label, started_at, ended_at, outcome, parent_id, detail_json FROM activities WHERE claim_id = ? ORDER BY started_at', c.id)
@@ -646,18 +646,18 @@ export class Claims {
     const minSkills = Number(this.setting('min_skills_version') ?? 0);
     return {
       // §6.7: never auto-confirmed; the owner resolves it.
-      unconfirmed: this.rows(`SELECT id, work_item_id, worker_id, ended_at, end_reason, ended_at_sha FROM work_item_claims
+      unconfirmed: this.rows(`SELECT id, ticket_id, worker_id, ended_at, end_reason, ended_at_sha FROM claims
                               WHERE status = 'completed' AND confirmed_at IS NULL AND ended_at <= ? ORDER BY ended_at`, now - UNCONFIRMED_FLAG_MS),
       unacknowledged_releases: this.rows(`SELECT id, to_worker_id, payload_json, sent_at, delivered_at FROM messages
                                           WHERE kind = 'release' AND status IN ('pending','delivered') ORDER BY sent_at`),
-      fence_pending: this.rows(`SELECT id, work_item_id, worker_id, ended_at FROM work_item_claims WHERE status = 'reaped' AND fence_pending = 1 ORDER BY ended_at`),
+      fence_pending: this.rows(`SELECT id, ticket_id, worker_id, ended_at FROM claims WHERE status = 'reaped' AND fence_pending = 1 ORDER BY ended_at`),
       stale_skills: this.rows(`SELECT id, hostname, session_name, skills_version FROM workers
                                WHERE reaped_at IS NULL AND kind != 'legacy' AND skills_version < ? AND ? - last_seen_at < lease_timeout_ms`, minSkills, now),
-      held_items: this.rows<{ work_item_id: string; hold_reason: string | null; set_at: number }>(
-        `SELECT work_item_id, hold_reason, set_at FROM item_overrides WHERE hold = 1 ORDER BY work_item_id`).map((h) => ({
+      held_items: this.rows<{ ticket_id: string; hold_reason: string | null; set_at: number }>(
+        `SELECT ticket_id, hold_reason, set_at FROM ticket_overrides WHERE hold = 1 ORDER BY ticket_id`).map((h) => ({
         ...h,
-        attempts: this.rows(`SELECT id, end_reason, ended_at, resume_json FROM work_item_claims WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id`,
-          JSON.stringify(this.failedAttempts(h.work_item_id))),
+        attempts: this.rows(`SELECT id, end_reason, ended_at, resume_json FROM claims WHERE id IN (SELECT value FROM json_each(?)) ORDER BY id`,
+          JSON.stringify(this.failedAttempts(h.ticket_id))),
       })),
     };
   }
