@@ -119,7 +119,10 @@ export class Cutover {
        WHERE c.ticket_id = ? AND c.status = 'active' AND w.kind = 'legacy'`, item)[0];
     if (!c) throw new BatonError('not-found', `${item} has no legacy claim to adopt`);
     const me = this.rows<{ session_name: string }>('SELECT session_name FROM workers WHERE id = ?', workerId)[0];
-    if (c.session_name !== `item-${localOf(item)}` && c.session_name !== me.session_name) {
+    // A note with no holder made `item-<id>`, or `item-<id>-<nonce>` when another repository's
+    // ticket of the same local id had taken that name first (importLegacyClaim).
+    const unnamed = c.session_name === `item-${localOf(item)}` || c.session_name === `item-${localOf(item)}-${c.nonce}`;
+    if (!unnamed && c.session_name !== me.session_name) {
       throw new BatonError('forbidden', 'only the session the claim note names may ask to adopt it');
     }
     this.exec(`INSERT INTO adoptions (ticket_id, claim_id, worker_id, requested_at) VALUES (?, ?, ?, ?)

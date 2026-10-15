@@ -7,7 +7,7 @@
 // with part 2b and R3-1232.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
 import {
-  captureDispatches, claimItem, claimRow, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, syncToken, withCore, workerCall,
+  beat, captureDispatches, claimItem, claimRow, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, syncToken, withCore, workerCall,
 } from '../helpers';
 
 const board = inject('board');
@@ -136,5 +136,53 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     const docs = await (await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B, { min_skills_version: 4 }))).json();
     expect(docs).not.toHaveProperty('fleet_ignored');
     expect(await rows(`SELECT value FROM baton_settings WHERE key = 'min_skills_version'`)).toEqual([{ value: '4' }]);
+  });
+
+  it('§6.8: a transcript pointer names one of its claim’s own repository’s transcript repositories', async () => {
+    await rows(`UPDATE repositories SET transcript_repos = '["immediately-run/ops-sessions"]' WHERE id = 'ops'`);
+    const { secret } = await register('vm-a');
+    await cutover(1, 'ops');
+    await claimItem('vm-a', secret, { ticket_id: 'ops:R3-9001' });
+    const res = await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'cc/a.jsonl' }, { repo: 'immediately-run/ops-sessions', path: 'cc/b.jsonl' }] });
+    expect(res.json.transcripts_refused).toEqual([expect.objectContaining({ index: 0, code: 'invalid-params' })]);
+    expect(await rows(`SELECT repo, path FROM transcripts`)).toEqual([{ repo: 'immediately-run/ops-sessions', path: 'cc/b.jsonl' }]);
+  });
+
+  it('a pointer reported before the claim is linked only if the claim’s repository allows it', async () => {
+    await rows(`UPDATE repositories SET transcript_repos = '["immediately-run/ops-sessions"]' WHERE id = 'ops'`);
+    const { secret } = await register('vm-a');
+    await cutover(1, 'ops');
+    await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'cc/a.jsonl' }, { repo: 'immediately-run/ops-sessions', path: 'cc/b.jsonl' }] });
+    await claimItem('vm-a', secret, { ticket_id: 'ops:R3-9001' });
+    expect(await rows(`SELECT repo FROM transcripts`)).toEqual([{ repo: 'immediately-run/ops-sessions' }]);
+  });
+
+  it('R-BTN-61: at equal weight the repositories interleave by their place in their own order', async () => {
+    const { id } = await register('vm-a');
+    await cutover(1, 'docs');
+    await cutover(1, 'ops');
+    await rows(`UPDATE repositories SET weight = 100 WHERE id = 'ops'`);
+    const got = await withCore((o) => {
+      const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
+      return c.candidates(c.worker(id), T0, 100);
+    });
+    // Each repository's first candidate comes before either's second.
+    expect(got.slice(0, 2).sort()).toEqual(['docs:R3-9001', 'ops:R3-9001']);
+  });
+
+  it('two in-progress tickets of one local id with no holder: both legacy claims stay adoptable', async () => {
+    const inProgress = (board.states.B.state.items as Record<string, unknown>[]).find((it) => it.id === 'R3-9001')!;
+    expect(inProgress.status).toBe('in-progress');
+    await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B));
+    await opsCall('/v1/sync/board', payload('e'.repeat(40), OPS_SHA, { items: [inProgress], ready: [] }));
+    expect((await owner('/v1/ui/cutover', { repository: 'docs', confirm: true })).status).toBe(200);
+    expect((await owner('/v1/ui/cutover', { repository: 'ops', confirm: true })).status).toBe(200);
+    const names = await rows<{ ticket_id: string; session_name: string }>(`SELECT c.ticket_id, w.session_name FROM claims c JOIN workers w ON w.id = c.worker_id ORDER BY c.ticket_id`);
+    expect(names.map((n) => n.ticket_id)).toEqual(['docs:R3-9001', 'ops:R3-9001']);
+    expect(names[1].session_name).toMatch(/^item-R3-9001-[0-9a-f]{6}$/);
+    const { secret } = await register('vm-a');
+    for (const t of ['docs:R3-9001', 'ops:R3-9001']) {
+      expect((await workerCall('/v1/runner/adopt', { secret, body: { ticket_id: t } })).status).toBe(200);
+    }
   });
 });

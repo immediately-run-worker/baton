@@ -74,6 +74,16 @@ export function checkRegistration(v: unknown, at = 'repository'): Registration {
   };
 }
 
+/** §6.8: the transcript repositories, for a repository that has named none yet. */
+export const DEFAULT_TRANSCRIPT_REPOS = ['immediately-run/claude-sessions', 'immediately-run-worker/session-transcripts'];
+
+/** §6.8: one repository's transcript repositories, or the defaults while it names none. */
+export function transcriptReposOf(store: Store, repo: string): string[] {
+  const raw = store.exec<{ transcript_repos: string }>('SELECT transcript_repos FROM repositories WHERE id = ?', repo).toArray()[0]?.transcript_repos;
+  const list = raw ? (JSON.parse(raw) as string[]) : [];
+  return list.length ? list : DEFAULT_TRANSCRIPT_REPOS;
+}
+
 /** The claims of a verified GitHub Actions OIDC token that bind it (R-BTN-15). */
 export interface SyncClaims {
   repository: string;
@@ -141,6 +151,12 @@ export class Registry {
    *  other repository's sync can rewrite what every repository's claims read. */
   fleetRepository(): string | null {
     return this.rows<{ id: string }>('SELECT id FROM repositories WHERE retired_at IS NULL ORDER BY rowid LIMIT 1')[0]?.id ?? null;
+  }
+
+  /** §6.8: the repositories a transcript pointer under one of `repo`'s claims may name — its
+   *  own `transcript_repos` (R-BTN-66), or the defaults while it names none. */
+  transcriptReposOf(repo: string): string[] {
+    return transcriptReposOf(this.c.store, repo);
   }
 
   /** Every repository not retired, by id. */

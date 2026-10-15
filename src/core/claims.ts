@@ -9,7 +9,7 @@ import { familyOf, isEligible, RULE_CODES, suspended } from '../shared/baton.mjs
 import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
 import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord, reviewCapacityRun, REVIEW_CAPACITY_LOOPS, type ResumeActivity } from './attempts';
 import { checkAccept, checkClaim, checkConfirm, checkEnd, checkOverride, checkResolve } from './validate';
-import { repositoryOf } from './registry';
+import { repositoryOf, transcriptReposOf } from './registry';
 
 import type { Row, SqlValue, Store } from './ports';
 const EXPEDITE_BOUND = 2; // §7.2 rule 2
@@ -184,7 +184,7 @@ export class Claims {
                          AND r.name NOT IN (SELECT capability FROM worker_capabilities WHERE worker_id = ?))
          AND ? >= CASE COALESCE(w.tier, 'critical') WHEN 'routine' THEN 0 WHEN 'judgement' THEN 1 ELSE 2 END
          AND (? OR w.operator_only = 0)
-       ORDER BY COALESCE((SELECT expedite FROM ticket_overrides o WHERE o.ticket_id = w.id), 0) DESC, p.weight DESC, w.repository_id, w.rank
+       ORDER BY COALESCE((SELECT expedite FROM ticket_overrides o WHERE o.ticket_id = w.id), 0) DESC, p.weight DESC, w.rank, w.repository_id
        LIMIT ?`,
       now, w.id, (TIERS as string[]).indexOf(w.tier_ceiling), w.declared.includes('human-operator') ? 1 : 0, limit).map((r) => r.id);
   }
@@ -268,10 +268,13 @@ export class Claims {
     const id = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
     this.event('claimed', `worker:${workerId}`, { request_id: b.request_id }, item.id, id);
     this.c.dispatch?.('mirror', item.id);
-    // §6.8: transcripts reported while the worker held nothing are linked to this claim.
+    // §6.8: transcripts reported while the worker held nothing are linked to this claim — those
+    // in its repository's transcript repositories (R-BTN-66); the rest are dropped.
+    const allowed = transcriptReposOf(this.c.store, repositoryOf(item.id));
     this.exec(`INSERT INTO transcripts (worker_id, claim_id, repo, path, role, activity_id, first_seen_at, last_pushed_at)
-               SELECT worker_id, ?, repo, path, role, activity_id, first_seen_at, last_pushed_at FROM pending_transcripts WHERE worker_id = ?
-               ON CONFLICT (worker_id, repo, path, claim_id) DO NOTHING`, id, workerId);
+               SELECT worker_id, ?, repo, path, role, activity_id, first_seen_at, last_pushed_at FROM pending_transcripts
+               WHERE worker_id = ? AND repo IN (SELECT value FROM json_each(?))
+               ON CONFLICT (worker_id, repo, path, claim_id) DO NOTHING`, id, workerId, JSON.stringify(allowed));
     this.exec('DELETE FROM pending_transcripts WHERE worker_id = ?', workerId);
     return this.claimResponse(id);
   }

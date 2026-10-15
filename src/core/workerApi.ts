@@ -5,7 +5,9 @@
 // by the shadow report, whose rows the unique indexes guard.
 import { BatonError } from './http';
 import { logEvent } from './db';
-import { repositoryOf } from './registry';
+import { DEFAULT_TRANSCRIPT_REPOS, repositoryOf, transcriptReposOf } from './registry';
+
+export { DEFAULT_TRANSCRIPT_REPOS };
 import { capabilitiesOf } from '../shared/vocabulary.mjs';
 import {
   checkAck, checkActivity, checkHeartbeat, checkMessage, checkShadowReport, checkSuspension, bad,
@@ -13,8 +15,6 @@ import {
 } from './validate';
 
 import type { Config, Row, SqlValue, Store } from './ports';
-/** §6.8: the transcript repositories, until the board sync posts `baton.json`'s list. */
-export const DEFAULT_TRANSCRIPT_REPOS = ['immediately-run/claude-sessions', 'immediately-run-worker/session-transcripts'];
 const CLOSE_GRACE_MS = 10 * 60_000; // §6.9: closing updates are accepted 10 minutes after a claim ends
 const SCHEDULED_WINDOW_MS = 24 * 3_600_000; // §7.4: the heartbeat carries suspensions starting within 24 h
 
@@ -117,8 +117,9 @@ export class WorkerApi {
     return w.id;
   }
 
-  /** §6.8: the repositories a transcript pointer may name — every registered repository's
-   *  transcript repositories (R-BTN-66), or the defaults while none names any. */
+  /** §6.8: the repositories any transcript pointer may name — every registered repository's
+   *  transcript repositories (R-BTN-66), or the defaults while none names any. The heartbeat's
+   *  shape check uses it; a pointer is then held to its claim's own repository's list. */
   transcriptRepos(): string[] {
     const all = new Set<string>();
     for (const r of this.rows<{ transcript_repos: string }>('SELECT transcript_repos FROM repositories WHERE retired_at IS NULL')) {
@@ -280,6 +281,12 @@ export class WorkerApi {
         t.activity_id = undefined;
       }
       if (claim) {
+        // A pointer under a claim names one of that claim's repository's transcript repositories
+        // (§6.8, R-BTN-66): another repository's list does not widen it.
+        if (!transcriptReposOf(this.c.store, repositoryOf(claim.ticket_id)).includes(t.repo)) {
+          hb.transcript_refusals.push({ index: t.index ?? -1, code: 'invalid-params', message: `transcripts[${t.index}].repo: ${t.repo} is not one of ${repositoryOf(claim.ticket_id)}'s transcript repositories` });
+          continue;
+        }
         this.exec(`INSERT INTO transcripts (worker_id, claim_id, repo, path, role, activity_id, first_seen_at, last_pushed_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (worker_id, repo, path, claim_id) DO UPDATE SET last_pushed_at = COALESCE(excluded.last_pushed_at, transcripts.last_pushed_at),

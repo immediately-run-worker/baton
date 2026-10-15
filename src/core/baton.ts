@@ -481,7 +481,7 @@ export class BatonCore {
     const items = this.sql<Record<string, SqlValue>>(
       `SELECT t.id, t.repository_id, t.local_id, t.path, t.title, t.project, t.status, t.node, t.queue, t.tags, t.tier, t.requires_clause, t.operator_only, t.ord, t.rank
        FROM tickets t JOIN repositories p ON p.id = t.repository_id
-       WHERE t.node LIKE 'ready-%' AND t.rank IS NOT NULL AND p.retired_at IS NULL ORDER BY p.weight DESC, t.repository_id, t.rank`);
+       WHERE t.node LIKE 'ready-%' AND t.rank IS NOT NULL AND p.retired_at IS NULL ORDER BY p.weight DESC, t.rank, t.repository_id`);
     const requires = new Map<string, string[]>();
     for (const r of this.sql<{ ticket_id: string; name: string }>('SELECT ticket_id, name FROM ticket_requires ORDER BY name')) {
       requires.set(r.ticket_id, [...(requires.get(r.ticket_id) ?? []), r.name]);
