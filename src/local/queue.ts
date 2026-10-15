@@ -1,9 +1,8 @@
 // queue.ts — the local host's only concurrency control (BATON_SPEC §3, §3a R-BTN-55). Every
 // request, alarm tick and start-up runs through it, one at a time, as the Durable Object's
 // input gate runs them. The holder lets another in only through `outside` — the Gate port,
-// for the two awaits §3 names: a request's signature check (R3-1239 moves it inside the core)
-// and a hook call (R3-1236). Today the front verifies its JWTs before a request queues, and
-// nothing calls `outside` yet.
+// for the two awaits §3 names: a signed request's signature check (R3-1239) and a hook call
+// (R3-1236).
 import { AsyncLocalStorage } from 'node:async_hooks';
 
 /** One `run`'s hold on the queue. */

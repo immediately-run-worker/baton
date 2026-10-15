@@ -84,6 +84,10 @@ export interface Config {
    *  (R-BTN-13; R3-1208 sets them as Worker secrets). */
   TOKEN_HASHES?: string;
   CREDENTIALS?: string;
+  /** R-BTN-13 as amended (R3-1239): the worker keys, a JSON array of `{key, name,
+   *  allowed_capabilities}` — `key` an OpenSSH public key line, `name` the one hostname it may
+   *  register. Seeded into `credentials` at start until R3-1240's owner grants replace it. */
+  BATON_KEYS?: string;
   /** §10.3: a fine-grained token, Actions: write on docs only, for workflow_dispatch. Absent,
    *  the two workflows run on their 15-minute schedules. */
   GITHUB_DISPATCH_TOKEN?: string;
@@ -92,12 +96,13 @@ export interface Config {
   TEST_OIDC_JWKS?: string;
   TEST_ACCESS_JWKS?: string;
   TEST_SIGNING_JWK?: string;
+  /** The test SSH keys' private halves (test/lib/sshKeys.ts), for the harness to sign with. */
+  TEST_SSH_KEYS?: string;
 }
 
-/** §3: the two awaits at which another request may run — a request's signature check, once
- *  R3-1239 moves it inside the core, and a hook call (R3-1236); their callers await through
- *  this. The Durable Object's input gate opens there by itself; the local queue is released.
- *  Today the front verifies its JWTs before a request reaches the core, and nothing calls it. */
+/** §3: the two awaits at which another request may run — a signed request's signature check
+ *  (R3-1239) and a hook call (R3-1236); their callers await through this. The Durable Object's
+ *  input gate opens there by itself; the local queue is released. */
 export interface Gate {
   outside<T>(work: () => Promise<T>): Promise<T>;
 }

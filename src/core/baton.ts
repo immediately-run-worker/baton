@@ -3,8 +3,8 @@
 // the ports (ports.ts) — the Durable Object on Cloudflare (src/cloudflare/), a Node process
 // locally (src/local/) — and runs one request at a time between awaits, as §3 requires. Each
 // request's writes are one transaction, so the compare-and-set below needs no lock. Requests
-// reach it only through the front, which has already verified the principal, so nothing here
-// re-reads a credential.
+// reach it only through the front, which has verified the principal — all but a signed
+// request's key, signature, clock and nonce, which only the core can check (verifySigned).
 import { MIGRATIONS } from '../migrations';
 import { BatonError, errorResponse, json } from './http';
 import { checkPayload, inPeak, nextPeakChange, rowFor, rowHash, type BoardPayload } from './board';
@@ -12,6 +12,7 @@ import { priceFor } from '../shared/sessionUsage.mjs';
 import { familyOf } from '../shared/baton.mjs';
 import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
 import { WorkerApi } from './workerApi';
+import { verifyRequest, withBody } from './auth';
 import { Claims } from './claims';
 import { Cutover } from './cutover';
 import { Mirror } from './mirror';
@@ -42,7 +43,7 @@ export class BatonCore {
   /** The dispatch call; tests replace it (as they replace `now`) to see what would be sent. */
   dispatcher: (workflow: Workflow) => Promise<unknown>;
   /** §3: a signature check (R3-1239) or a hook call (R3-1236) is awaited through this, so
-   *  another request may run meanwhile on both hosts alike (R-BTN-55). No caller yet. */
+   *  another request may run meanwhile on both hosts alike (R-BTN-55). */
   readonly outside: <T>(work: () => Promise<T>) => Promise<T>;
 
   constructor(private readonly ports: Ports) {
@@ -66,7 +67,27 @@ export class BatonCore {
   async start(): Promise<void> {
     this.migrate();
     this.store.transaction(() => this.registry.seed(this.ports.config));
+    await this.seedKeys();
     if ((await this.ports.scheduler.get()) == null) await this.ports.scheduler.set(this.now() + ALARM_EVERY_MS);
+  }
+
+  /** The worker keys from BATON_KEYS (R3-1239). A list that cannot be seeded changes nothing
+   *  and stops nothing — the keys in force stay, and the sync, the dashboard and every other
+   *  principal serve on — but goes to Needs you, as does a revoked key the list names again. */
+  private async seedKeys(): Promise<void> {
+    const before = this.keysNotice();
+    // What the list in force last reported stands until another list seeds.
+    let notice: { refused?: string; revoked_listed?: string[] } | null = before?.revoked_listed ? { revoked_listed: before.revoked_listed } : null;
+    try {
+      const r = await this.workers.seedKeys();
+      if (r.unchanged) {
+        // The list that last seeded is back (a refused one never seeds): its refusal is over.
+        if (!before?.refused) return;
+      } else notice = r.revoked.length ? { revoked_listed: r.revoked } : null;
+    } catch (e) {
+      notice = { ...notice, refused: (e instanceof Error ? e.message : String(e)).slice(0, 500) };
+    }
+    this.store.exec(`INSERT INTO baton_settings (key, value) VALUES ('keys_notice', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(notice));
   }
 
   /** Send the dispatches a committed transaction asked for — only for a repository after its
@@ -192,15 +213,41 @@ export class BatonCore {
     }
   }
 
-  /** The worker and owner routes of R3-1211. The front has verified the principal and passes
-   *  it in `X-Baton-Credential` (a worker token's credential) or `X-Baton-Owner` (the Access
-   *  email); it strips both from every incoming request first. */
+  /** Needs you: a BATON_KEYS list that was refused, or that names a revoked key (R3-1239). */
+  private keysNotice(): { refused?: string; revoked_listed?: string[] } | null {
+    const raw = this.sql<{ value: string }>(`SELECT value FROM baton_settings WHERE key = 'keys_notice'`)[0]?.value;
+    return raw ? JSON.parse(raw) : null;
+  }
+
+  /** A signed request (R3-1239), verified whole by the one verifier: the key its keyid names
+   *  among the keys in force, the SSHSIG in the `baton-request` namespace, `created` within 5
+   *  minutes of this clock — then its nonce, unseen for that key. The crypto runs outside the
+   *  turn (§3); the nonce is checked and written after it. Returns the request with its body
+   *  put back and the credential: the key's fingerprint. */
+  private async verifySigned(req: Request): Promise<{ req: Request; cred: string }> {
+    const now = this.now();
+    const v = await this.outside(() => verifyRequest(req, (fp) => this.workers.publicKey(fp), { origin: this.ports.config.BATON_ORIGIN, now }));
+    // Another request ran meanwhile: the key may have been revoked since it was read.
+    if (!this.workers.publicKey(v.keyid)) throw new BatonError('unauthenticated', 'the key is not registered or is revoked');
+    this.workers.acceptNonce(v.keyid, v.nonce, now);
+    return { req: withBody(req, v.body), cred: v.keyid };
+  }
+
+  /** The worker and owner routes of R3-1211. The front passes the principal in
+   *  `X-Baton-Credential` (a bearer token's credential, verified), `X-Baton-Signed` (a signed
+   *  request's keyid, pre-checked; verifySigned finishes it here) or `X-Baton-Owner` (the Access
+   *  email); it strips all of them from every incoming request first. */
   private async workerRoute(req: Request, url: URL): Promise<Response | null> {
     const p = url.pathname;
     const m = req.method;
     const owner = req.headers.get('X-Baton-Owner');
-    const cred = req.headers.get('X-Baton-Credential');
+    let cred = req.headers.get('X-Baton-Credential');
     const secret = req.headers.get('X-Worker-Secret');
+    if (req.headers.has('X-Baton-Signed')) {
+      // R-BTN-13 as amended: the front checked the request's shape, @authority and digest; the
+      // key, the signature and the clock are checked here, and the nonce in this turn.
+      ({ req, cred } = await this.verifySigned(req));
+    }
     const tx = <T>(f: () => T): T => this.store.transaction(f);
     if (p.startsWith('/v1/runner/')) {
       if (!cred) throw new BatonError('unauthenticated', 'no worker principal');
@@ -602,7 +649,7 @@ export class BatonCore {
       server_time: now, repositories, ready, ready_by_tier: byTier, providers, held, workers: this.workers.workersView(now), suspensions,
       running: this.claims.running(now), timeline: this.claims.timeline(now),
       // R-BTN-69: a refused course file, the previous one staying in force.
-      needs_you: { ...this.claims.needsYou(now), adoptions: this.cutover.adoptions(), courses_refused: this.courses.refusals() },
+      needs_you: { ...this.claims.needsYou(now), adoptions: this.cutover.adoptions(), courses_refused: this.courses.refusals(), keys: this.keysNotice() },
     };
   }
 }

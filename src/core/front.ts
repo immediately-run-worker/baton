@@ -2,7 +2,7 @@
 // principal for the path, applies the R-BTN-16 rules, serves the dashboard's static files, and
 // forwards the API to the core — through the Durable Object on Cloudflare, through the request
 // queue locally (R-BTN-55). Every response leaves with the security headers.
-import { verifyOwner, verifySyncToken, verifyWorker, checkStateChanging } from './auth';
+import { verifyOwner, verifyRequest, verifySyncToken, verifyWorker, checkStateChanging, withBody } from './auth';
 import { BatonError, errorResponse, withSecurityHeaders } from './http';
 import type { Config } from './ports';
 import page from '../ui/index.html';
@@ -20,7 +20,7 @@ const STATIC: Record<string, [string, string]> = {
 };
 
 /** The headers that carry a verified principal to the object. A request never brings its own. */
-const PRINCIPAL_HEADERS = ['X-Baton-Credential', 'X-Baton-Owner', 'X-Baton-Sync'];
+const PRINCIPAL_HEADERS = ['X-Baton-Credential', 'X-Baton-Owner', 'X-Baton-Sync', 'X-Baton-Signed'];
 
 async function route(req: Request, env: Config, to: Forward): Promise<Response> {
   const { pathname } = new URL(req.url);
@@ -31,6 +31,14 @@ async function route(req: Request, env: Config, to: Forward): Promise<Response> 
     return forward(req, to, { 'X-Baton-Sync': JSON.stringify(claims) });
   }
   if (pathname.startsWith('/v1/runner/')) {
+    if (req.headers.has('Signature-Input') || req.headers.has('Signature')) {
+      // R-BTN-13 as amended: a half-signed, malformed, foreign-@authority or mis-digested
+      // request stops here; the core checks the key, the signature, the clock and the nonce.
+      // (`created` is the core's: the one clock is its, R-BTN-32.)
+      const signed = await verifyRequest(req, null, { origin: env.BATON_ORIGIN });
+      return forward(withBody(req, signed.body), to, { 'X-Baton-Signed': signed.keyid });
+    }
+    // The transition (R3-1239): a bearer token still serves until every worker signs.
     const credential = await verifyWorker(req, env);
     return forward(req, to, { 'X-Baton-Credential': credential });
   }

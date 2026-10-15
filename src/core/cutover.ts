@@ -22,7 +22,7 @@ export const LEGACY_REAP_MS = 7 * 24 * 3_600_000;
 export function importLegacyClaim(sql: Store, now: number,
   o: { item: string; preferred: string | null; nonce: string; claimedAt: number; sha: string; requestId: string; detail?: Record<string, unknown> }) {
   const taken = (name: string) => sql.exec(`SELECT 1 FROM workers WHERE hostname = 'legacy' AND session_name = ?`, name).toArray().length > 0;
-  sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities) VALUES ('legacy', 'legacy', '[]') ON CONFLICT (id) DO NOTHING`);
+  sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, kind) VALUES ('legacy', 'legacy', '[]', 'legacy') ON CONFLICT (id) DO NOTHING`);
   const session = o.preferred && SESSION_NAME.test(o.preferred) && !taken(o.preferred) ? o.preferred
     : !taken(`item-${localOf(o.item)}`) ? `item-${localOf(o.item)}` : `item-${localOf(o.item)}-${o.nonce}`;
   sql.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at)

@@ -336,6 +336,9 @@ function renderNeeds() {
     const first = c.violations[0];
     list.append(el('li', { text: `${c.repository_id}:${c.course_id} version ${c.version} refused at ${c.snapshot_sha.slice(0, 8)} (${c.violations.length} problem${c.violations.length === 1 ? '' : 's'}${first ? `, first: ${first.path || 'the file'} — ${first.message}` : ''}); the previous file stays in force` }));
   }
+  // R3-1239: the BATON_KEYS seed; the keys in force stay until a list seeds.
+  if (n.keys?.refused) list.append(el('li', { text: `BATON_KEYS was refused (${n.keys.refused}); the keys in force stay` }));
+  for (const fp of n.keys?.revoked_listed ?? []) list.append(el('li', { text: `BATON_KEYS names ${fp}, a revoked key: it stays revoked — give the machine a new key` }));
   for (const h of n.held_items) {
     // §6.10: the owner decides what a hold means — retry (Lift), re-draft, re-tier or park.
     const li = el('li', { text: `${h.ticket_id}: held (${h.hold_reason ?? 'owner'})` });

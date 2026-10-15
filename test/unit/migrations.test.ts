@@ -221,3 +221,35 @@ describe('migration 0009: tiers per repository (R3-1231)', () => {
     });
   });
 });
+
+describe('migration 0010: credentials by SSH key (R3-1239, round 1, 1-B-3)', () => {
+  it('keeps a deployed 0009 database’s token credentials, legacy row and workers, and adds the key columns', async () => {
+    const id = env.BATON.idFromName('migrations-0010');
+    await runInDurableObject(env.BATON.get(id), (_o: unknown, state: DurableObjectState) => {
+      const sql = state.storage.sql;
+      sql.exec('PRAGMA foreign_keys = OFF');
+      const objects = sql.exec("SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND type = 'table'").toArray() as { name: string }[];
+      for (const o of objects) sql.exec(`DROP TABLE IF EXISTS "${o.name}"`);
+      for (const m of MIGRATIONS.filter((x) => x.id <= 9)) sql.exec(m.sql);
+      sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities) VALUES ('vm-1', 'vm-1', '["llm-call"]'), ('vm-2', 'vm-1', '[]'), ('legacy', 'legacy', '[]')`);
+      sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, revoked_at) VALUES ('old', 'old', '[]', 5)`);
+      sql.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at)
+                VALUES ('vm-1', 's', 'h', 'vm-1', 'opencode', 'vm', 'critical', 900000, '', 1, 1)`);
+
+      sql.exec(MIGRATIONS.find((x) => x.id === 10)!.sql);
+
+      expect(sql.exec('SELECT id, kind, public_key, created_by, revoked_at FROM credentials ORDER BY id').toArray()).toEqual([
+        { id: 'legacy', kind: 'legacy', public_key: null, created_by: null, revoked_at: null },
+        { id: 'old', kind: 'token', public_key: null, created_by: null, revoked_at: 5 },
+        { id: 'vm-1', kind: 'token', public_key: null, created_by: null, revoked_at: null },
+        { id: 'vm-2', kind: 'token', public_key: null, created_by: null, revoked_at: null },
+      ]);
+      expect(sql.exec('SELECT credential_id FROM workers').toArray()).toEqual([{ credential_id: 'vm-1' }]);
+      // Two token credentials may share a name (they always could); two worker keys in force may not.
+      sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, kind, public_key) VALUES ('SHA256:a', 'vm-1', '[]', 'worker', 'ssh-ed25519 A')`);
+      expect(() => sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, kind, public_key) VALUES ('SHA256:b', 'vm-1', '[]', 'worker', 'ssh-ed25519 B')`)).toThrow(/UNIQUE/);
+      expect(() => sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, kind) VALUES ('x', 'x', '[]', 'nonsense')`)).toThrow(/CHECK/);
+      expect(sql.exec('SELECT count(*) AS n FROM request_nonces').one()).toEqual({ n: 0 });
+    });
+  });
+});
