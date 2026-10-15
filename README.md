@@ -8,6 +8,9 @@ The design is `BATON_SPEC` in the `immediately-run/docs` repository
 (`content/specs/BATON_SPEC.mdx`); the work is the `baton` project's roadmap items there. Where
 an item says `infra/baton/<path>`, it means `<path>` in this repository (BATON_SPEC §3).
 
+How Baton differs from a durable-execution engine such as Temporal, and where each fits:
+[`docs/compared-to-temporal.md`](docs/compared-to-temporal.md).
+
 ## Layout
 
 | Path | What |
