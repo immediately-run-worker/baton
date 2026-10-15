@@ -47,7 +47,7 @@ export async function confirmations(unconfirmed, next, { isAncestor, statusOf })
  *   readHead()          → `{sha, unconfirmed}` from `GET /v1/sync/head`
  *   post(body)          → `{ok: true, …}` or `{ok: false, code}` from `POST /v1/sync/board`
  *   isAncestor(a, b)    → boolean
- *   buildPayload()      → `{state: {items}, ready, prices, providers, matrix, reviewers, min_skills_version}`
+ *   buildPayload()      → `{registry, state: {items}, ready, prices, providers, matrix, reviewers}`
  *   statusOf(id)        → the item's status at `next`, or null
  *   sleep(ms)           → a promise; the backoff before retrying `unavailable`
  *

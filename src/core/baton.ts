@@ -16,6 +16,7 @@ import { Claims } from './claims';
 import { Cutover } from './cutover';
 import { Mirror } from './mirror';
 import { checkConfirmations, checkRepositoryId } from './validate';
+import { Courses } from './courses';
 import { Registry, TICKET_ID, qualify, repositoryOf, type Repository, type SyncClaims } from './registry';
 import type { Ports, Row, SqlValue, Store, Workflow } from './ports';
 
@@ -31,6 +32,7 @@ export class BatonCore {
   readonly cutover: Cutover;
   readonly mirror: Mirror;
   readonly registry: Registry;
+  readonly courses: Courses;
   readonly store: Store;
   /** §12: workflows to dispatch once the current request or alarm has committed, one per
    *  repository and kind. */
@@ -48,6 +50,7 @@ export class BatonCore {
     this.outside = ports.gate ? (work) => ports.gate!.outside(work) : (work) => work();
     const store = ports.store;
     this.registry = new Registry({ store, now: () => this.now() });
+    this.courses = new Courses({ store });
     const want = (wf: Workflow) => this.pendingDispatch.set(`${wf.repository}:${wf.kind}`, wf);
     this.claims = new Claims({ store, now: () => this.now(), dispatch: (kind, ticketId) => want({ repository: repositoryOf(ticketId), kind }) });
     this.cutover = new Cutover({ store, now: () => this.now() });
@@ -352,7 +355,11 @@ export class BatonCore {
       throw new BatonError('snapshot-rejected', `a rewritten history is held for the owner until ${new Date(deadline).toISOString()}; claims continue on the current head`);
     }
     if (p.sha === head) {
-      // §6.7: the sync's confirm-only post re-sends the head with its confirmations.
+      // §6.7: the sync's confirm-only post re-sends the head with its confirmations. Its registry
+      // is not applied: the sync builds that body at the commit it fetched, which may be an
+      // ancestor of the head, and an older registry would roll a course back. A head that
+      // predates the registry (migration 0007) gets its courses with the next new head; until
+      // then its tickets fit no worker (rule 9), failing closed.
       const confirmed = this.store.transaction(() => this.claims.confirm(confirmations));
       return { ok: true, unchanged: true, confirmed };
     }
@@ -364,8 +371,12 @@ export class BatonCore {
       const row = rowFor(it, rankOf);
       return { row, hash: await rowHash(row) };
     }));
-    const changed = { upserted: 0, deleted: 0 };
+    const changed: { upserted: number; deleted: number; confirmed?: number; stale_released?: number; courses_refused?: string[]; fleet_ignored?: boolean } = { upserted: 0, deleted: 0 };
     this.store.transaction(() => {
+      // The course registry first (R-BTN-48, R-BTN-69): every ticket must name a course in
+      // force, and a refused file with none to keep refuses the whole post.
+      const refused = this.applyRegistry(r, p, rows.map(({ row }) => row.course_id), at);
+      if (refused.length) changed.courses_refused = refused;
       // The repository's own tickets only, keyed by their local ids (R-BTN-47).
       const have = new Map(this.sql<{ local_id: string; row_hash: string }>('SELECT local_id, row_hash FROM tickets WHERE repository_id = ?', r).map((x) => [x.local_id, x.row_hash]));
       for (const { row, hash } of rows) {
@@ -375,16 +386,16 @@ export class BatonCore {
         const id = qualify(r, row.id);
         this.store.exec(
           `INSERT INTO tickets (id, repository_id, local_id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only,
-             depends_on, blocked_by, repos, ord, rank, snapshot_sha, row_hash, since, holder)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             depends_on, blocked_by, repos, ord, rank, snapshot_sha, row_hash, since, holder, course_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (id) DO UPDATE SET path = excluded.path, title = excluded.title, project = excluded.project,
              status = excluded.status, node = excluded.node, queue = excluded.queue, tags = excluded.tags,
              tier = excluded.tier, requires_clause = excluded.requires_clause, operator_only = excluded.operator_only,
              depends_on = excluded.depends_on, blocked_by = excluded.blocked_by, repos = excluded.repos,
              ord = excluded.ord, rank = excluded.rank, snapshot_sha = excluded.snapshot_sha, row_hash = excluded.row_hash,
-             since = excluded.since, holder = excluded.holder`,
+             since = excluded.since, holder = excluded.holder, course_id = excluded.course_id`,
           id, r, row.id, row.path, row.title, row.project, row.status, row.node, row.queue, row.tags, row.tier,
-          row.requires_clause, row.operator_only, row.depends_on, row.blocked_by, row.repos, row.ord, row.rank, p.sha, hash, row.since, row.holder);
+          row.requires_clause, row.operator_only, row.depends_on, row.blocked_by, row.repos, row.ord, row.rank, p.sha, hash, row.since, row.holder, row.course_id);
         this.store.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', id);
         for (const name of row.requires) this.store.exec('INSERT INTO ticket_requires (ticket_id, name) VALUES (?, ?)', id, name);
         changed.upserted++;
@@ -396,7 +407,7 @@ export class BatonCore {
         changed.deleted++;
       }
       // A non-fleet repository's fleet fields are ignored, and its answer says so.
-      if (this.reference(r, p)) (changed as Record<string, unknown>).fleet_ignored = true;
+      if (this.reference(r, p)) changed.fleet_ignored = true;
       this.store.exec('INSERT INTO board_snapshots (repository_id, sha, parent_sha, received_at, ticket_count) VALUES (?, ?, ?, ?, ?) ON CONFLICT (repository_id, sha) DO NOTHING', r, p.sha, p.parent_sha, at, p.state.items.length);
       this.store.exec('INSERT INTO board_head (repository_id, sha) VALUES (?, ?) ON CONFLICT (repository_id) DO UPDATE SET sha = excluded.sha', r, p.sha);
       // A hold is against one head (R3-1223): when the head moves — an accepted rewrite or a
@@ -407,15 +418,26 @@ export class BatonCore {
       // history stays in the events.
       this.store.exec('DELETE FROM held_snapshots WHERE repository_id = ? AND head_sha IS ?', r, head);
       this.event(r, 'snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, ticket_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
-      (changed as Record<string, number>).confirmed = this.claims.confirm(confirmations);
+      changed.confirmed = this.claims.confirm(confirmations);
       // R-BTN-35: git wins over a claim it has overtaken.
-      (changed as Record<string, number>).stale_released = this.claims.staleBoard(r);
+      changed.stale_released = this.claims.staleBoard(r);
     });
     return { ok: true, ...changed };
   }
 
+  /** The registry of a post (R-BTN-48, R-BTN-69), inside its transaction: applied whole, then
+   *  every course the post's tickets name must be in force — a refused file with none to keep,
+   *  or a course the registry dropped while a ticket still names it, refuses the post. */
+  private applyRegistry(r: string, p: BoardPayload, ticketCourses: string[], at: number): string[] {
+    const refused = p.registry ? this.courses.apply(r, p.registry, p.sha, at) : [];
+    for (const c of new Set(ticketCourses)) {
+      if (!this.courses.get(r, c)) throw new BatonError('invalid-params', `a ticket's course ${c} is not in ${r}'s registry`);
+    }
+    return refused;
+  }
+
   /** The reference data the sync posts with every snapshot (§7.3, §7.4): providers, peak
-   *  schedules, per-model prices and limits, the reviewer catalog, `min_skills_version`. Each
+   *  schedules, per-model prices and limits, the reviewer catalog. Each
    *  table is a copy of a docs file, never edited here, so it is rewritten whole: an account
    *  the file no longer lists is deleted. (Nothing references `model_providers` yet; when
    *  workers and suspensions do, R3-1211 decides what retiring a referenced account means.)
@@ -426,7 +448,7 @@ export class BatonCore {
     // them (R-BTN-66, R3-1240).
     if (p.transcript_repos) exec('UPDATE repositories SET transcript_repos = ? WHERE id = ?', JSON.stringify(p.transcript_repos), repo);
     // The rest is the instance's: only the fleet repository writes it (interim, R3-1231 2b).
-    const carries = p.providers != null || p.matrix != null || p.reviewers != null || p.min_skills_version != null;
+    const carries = p.providers != null || p.matrix != null || p.reviewers != null;
     if (this.registry.fleetRepository() !== repo) return carries;
     if (p.providers) {
       exec('DELETE FROM provider_models');
@@ -457,9 +479,6 @@ export class BatonCore {
     // Rule 8 (R-BTN-27) reads the whole matrix (rows, seats, costs) and the posted catalog.
     if (p.matrix) exec(`INSERT INTO baton_settings (key, value) VALUES ('reviewer_matrix', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(p.matrix));
     if (p.reviewers) exec(`INSERT INTO baton_settings (key, value) VALUES ('reviewer_catalog', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(p.reviewers));
-    if (p.min_skills_version != null) {
-      exec(`INSERT INTO baton_settings (key, value) VALUES ('min_skills_version', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, String(p.min_skills_version));
-    }
     return false;
   }
 
@@ -475,7 +494,8 @@ export class BatonCore {
     const repositories = this.registry.all().map((repo) => {
       const sha = this.headOf(repo.id);
       const head = sha ? this.sql('SELECT sha, parent_sha, received_at, ticket_count FROM board_snapshots WHERE repository_id = ? AND sha = ?', repo.id, sha)[0] ?? null : null;
-      return { id: repo.id, github: repo.github, default_branch: repo.default_branch, weight: repo.weight, head, mode: this.workers.mode(repo.id) };
+      const courses = this.courses.all().filter((c) => c.repository_id === repo.id).map(({ id, version, min_worker_version, skill }) => ({ id, version, min_worker_version, skill }));
+      return { id: repo.id, github: repo.github, default_branch: repo.default_branch, weight: repo.weight, head, mode: this.workers.mode(repo.id), courses };
     });
     const where = new Map(repositories.map((r) => [r.id, r]));
     const items = this.sql<Record<string, SqlValue>>(
@@ -526,7 +546,8 @@ export class BatonCore {
     return {
       server_time: now, repositories, ready, ready_by_tier: byTier, providers, held, workers: this.workers.workersView(now), suspensions,
       running: this.claims.running(now), timeline: this.claims.timeline(now),
-      needs_you: { ...this.claims.needsYou(now), adoptions: this.cutover.adoptions() },
+      // R-BTN-69: a refused course file, the previous one staying in force.
+      needs_you: { ...this.claims.needsYou(now), adoptions: this.cutover.adoptions(), courses_refused: this.courses.refusals() },
     };
   }
 }

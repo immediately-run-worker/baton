@@ -196,13 +196,15 @@ export function claimBlocks(claim) {
  * `{ok: false, rule, code}` naming the first rule that refuses. The reference for every
  * rule: the server's candidate query is tested against it (G-BTN-40).
  *
- * - `worker`: `{tier_ceiling, declared, model_id, model_provider_id, billing, skills_version}`
+ * - `worker`: `{tier_ceiling, declared, model_id, model_provider_id, billing, courses}`
  *   — `declared` the capability/role names as the heartbeat sent them, `billing`
- *   `{prefix: accountId}`.
- * - `item`: `{id, tier, tags, requires, expedite}` — `requires` the clause's names, `null`
- *   when it has none; `expedite` true for the expedite lane or an expedite override.
- * - `ctx`: `{now, claims, override, suspensions, minSkillsVersion, expediteActive,
- *   expediteBound, lastEndReason, authorFamilies, catalog, matrix}` — `claims` the item's
+ *   `{prefix: accountId}`, `courses` the `{repository, course, version}` its checkouts run.
+ * - `item`: `{id, repository, course, tier, tags, requires, expedite}` — `requires` the
+ *   clause's names, `null` when it has none; `expedite` true for the expedite lane or an
+ *   expedite override.
+ * - `ctx`: `{now, claims, override, suspensions, minWorkerVersion, expediteActive,
+ *   expediteBound, lastEndReason, authorFamilies, catalog, matrix}` — `minWorkerVersion` the
+ *   item's course's (R-BTN-65), `claims` the item's
  *   claim rows, `override` its `ticket_overrides` row or `null`, `expediteActive` the active
  *   Baton claims on expedited items, `lastEndReason` its most recent claim's end.
  */
@@ -230,7 +232,10 @@ export function isEligible(worker, item, ctx) {
     if (!qualifyingPair(families, worker.billing, ctx.suspensions, now, catalog, ctx.matrix)) return refuse(8);
   }
 
-  if ((worker.skills_version ?? 0) < (ctx.minSkillsVersion ?? 0)) return refuse(9);
+  // Rule 9 (R-BTN-22, R-BTN-48, R-BTN-65): the worker declares the item's course at its
+  // `min_worker_version` or later; a worker that declares the course not at all is stale too.
+  const declared = (worker.courses ?? []).find((c) => c.repository === item.repository && c.course === item.course);
+  if (!declared || declared.version < (ctx.minWorkerVersion ?? 0)) return refuse(9);
 
   if (override?.retry_after != null && override.retry_after > now) return refuse(10);
 

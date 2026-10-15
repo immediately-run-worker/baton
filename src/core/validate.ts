@@ -3,6 +3,7 @@
 // refused with `invalid-params` naming the field, never trimmed into shape.
 import { BatonError } from './http';
 import { FREE_TEXT_MAX, isFreeText } from './text';
+import { COURSE_ID } from './course';
 
 /** §5: the harness's own session id, the rule `claim.sh --session` already applies. */
 export const SESSION_NAME = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -13,6 +14,13 @@ const REPOSITORY_SRC = '[a-z][a-z0-9-]{0,39}';
 const LOCAL_SRC = '[A-Za-z0-9][A-Za-z0-9._-]{0,63}';
 /** A registered repository's id: `docs`. No colon, so a qualified id splits at its first. */
 export const REPOSITORY_ID = new RegExp(`^${REPOSITORY_SRC}$`);
+/** A course id (R-BTN-48), the form course files give their stations and legs (R-BTN-69); a
+ *  §6.9 step kind has the same form (R-BTN-50). Spelled once, in the pure course.ts. */
+export { COURSE_ID };
+/** A course's `version` and a worker's declared one: non-negative, at most this. */
+export const COURSE_VERSION_MAX = 1_000_000_000;
+/** Courses in one registry, and courses one heartbeat declares (spec-silent, recorded on R3-1231). */
+export const COURSES_MAX = 64;
 /** A ticket's id in its home repository, as git writes it: `R3-1205` (R-BTN-47). */
 export const LOCAL_ID = new RegExp(`^${LOCAL_SRC}$`);
 /** A ticket's qualified id, `<repository>:<local>`: what Baton's API, events and dashboard use. */
@@ -75,7 +83,8 @@ export interface Heartbeat {
   capabilities: string[];
   tier_ceiling: (typeof TIERS)[number];
   lease_timeout_s: number;
-  skills_version: number;
+  /** The courses the worker's checkouts run, at their versions (R-BTN-22, R-BTN-48): rule 9. */
+  courses: { repository: string; course: string; version: number }[];
   last_activity_at?: number;
   test_harness: boolean;
   fenced?: { claim_id: number };
@@ -111,7 +120,21 @@ export function checkHeartbeat(body: unknown, transcriptRepos: string[]): Heartb
   const capabilities = [...new Set(b.capabilities as string[])];
   const tier = b.tier_ceiling ?? 'critical'; // absent ⇒ every tier (§5)
   if (!TIERS.includes(tier as never)) bad('tier_ceiling', `must be one of ${TIERS.join(', ')}`);
-  if (!isInt(b.skills_version) || (b.skills_version as number) < 0) bad('skills_version', 'must be a non-negative integer');
+  // R-BTN-22: the skills version is each course's version, declared per course; a sidecar that
+  // still sends `skills_version` is not refused for it.
+  const rawCourses = b.courses ?? [];
+  if (!Array.isArray(rawCourses) || rawCourses.length > COURSES_MAX) bad('courses', `must be a list of at most ${COURSES_MAX}`);
+  const declaredCourses = new Set<string>();
+  const courses = (rawCourses as unknown[]).map((c, i) => {
+    if (!isObj(c)) bad(`courses[${i}]`, 'must be an object');
+    const x = c as Record<string, unknown>;
+    const repository = checkRepositoryId(x.repository, `courses[${i}].repository`);
+    const course = matches(COURSE_ID, `courses[${i}].course`)(x.course);
+    if (!isInt(x.version) || (x.version as number) < 0 || (x.version as number) > COURSE_VERSION_MAX) bad(`courses[${i}].version`, 'must be a non-negative integer');
+    if (declaredCourses.has(`${repository}:${course}`)) bad(`courses[${i}]`, `repeats ${repository}:${course}`);
+    declaredCourses.add(`${repository}:${course}`);
+    return { repository, course, version: x.version as number };
+  });
   if (b.last_activity_at !== undefined && !isTime(b.last_activity_at)) bad('last_activity_at', 'must be epoch ms');
   if (b.test_harness !== undefined && typeof b.test_harness !== 'boolean') bad('test_harness', 'must be a boolean');
   const transcripts = (b.transcripts ?? []) as unknown[];
@@ -133,7 +156,7 @@ export function checkHeartbeat(body: unknown, transcriptRepos: string[]): Heartb
     capabilities,
     tier_ceiling: tier as Heartbeat['tier_ceiling'],
     lease_timeout_s: clampLease(b.lease_timeout_s),
-    skills_version: b.skills_version as number,
+    courses,
     last_activity_at: b.last_activity_at as number | undefined,
     test_harness: b.test_harness === true,
     fenced: checkFenced(b.fenced),

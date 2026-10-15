@@ -35,7 +35,7 @@ describe(`S-BTN-31 both hosts (${HOST})`, () => {
     expect(await rows('SELECT ? AS v', 2 ** 60)).toEqual([{ v: 2 ** 60 }]);
     await syncCall('/v1/sync/board', payload(board.shas.A, null, board.states.A));
     await cutover();
-    const a = await register('vm-a', { skills_version: 2 ** 60 });
+    const a = await register('vm-a', { last_activity_at: 2 ** 60 });
     expect((await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9002' })).status).toBe(200);
     expect((await ownerCall('/v1/ui/state')).status).toBe(200);
   });

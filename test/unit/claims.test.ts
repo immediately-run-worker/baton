@@ -71,12 +71,27 @@ describe('the claim and end contracts (§6.2, §6.5, §11)', () => {
     expect(await rows('SELECT outcome FROM activities')).toEqual([{ outcome: 'abandoned' }]);
   });
 
-  it('§7.2 worker rules: a suspended account and a stale skills version get no claim', async () => {
+  it('§7.2 worker rules: a suspended account, and a worker below its course’s min_worker_version, get no claim', async () => {
     const { secret } = await register('vm-a');
     await owner('/v1/ui/suspensions', { provider_id: 'zai', mode: 'no-new-work' });
     expect(await claimItem('vm-a', secret)).toMatchObject({ status: 409, json: { code: 'provider-suspended', rule: 7 } });
-    const late = await register('vm-b', { model_id: 'opencode-go/kimi-k3', model_provider_id: 'opencode_go_plus', skills_version: 2 });
+    const late = await register('vm-b', { model_id: 'opencode-go/kimi-k3', model_provider_id: 'opencode_go_plus', courses: [{ repository: 'docs', course: 'roadmap-pr', version: 2 }] });
     expect(await claimItem('vm-b', late.secret)).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
+    expect(await claimItem('vm-b', late.secret, { ticket_id: 'docs:R3-9001' })).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
+    // Declaring no course at all is stale too: rule 9 asks for the ticket's course.
+    const none = await register('mac', { model_id: 'opencode-go/kimi-k3', model_provider_id: 'opencode_go_plus', courses: [] });
+    expect(await claimItem('mac', none.secret)).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
+  });
+
+  it('G-BTN-40, rule 9: a ticket whose course is not registered fits no worker, in the query and isEligible alike', async () => {
+    const { id, secret } = await register('vm-a');
+    await rows(`DELETE FROM courses`); // a head posted before the registry existed
+    const got = await withCore((o) => {
+      const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
+      return c.candidates(c.worker(id), T0, 100);
+    });
+    expect(got).toEqual([]);
+    expect(await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' })).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
   });
 
   it('§7.2 rule 6: an operator-only item goes only to a worker that declared human-operator', async () => {
@@ -251,7 +266,10 @@ describe('G-BTN-40: the matching query and isEligible agree; git overtaking a cl
     { cred: 'vm-a' as const, session: 'judge', over: { capabilities: ['agent-venue'], tier_ceiling: 'judgement' } },
     { cred: 'vm-b' as const, session: 'bare', over: { capabilities: [], tier_ceiling: 'routine' } },
     { cred: 'mac' as const, session: 'owner', over: { capabilities: ['human-operator', 'agent-venue'], tier_ceiling: 'critical' } },
-  ];
+    // Rule 9 (R-BTN-65): below roadmap-pr's min_worker_version, and declaring no course at all.
+    { cred: 'vm-b' as const, session: 'stale', over: { capabilities: ['agent-venue'], tier_ceiling: 'critical', courses: [{ repository: 'docs', course: 'roadmap-pr', version: 2 }] } },
+    { cred: 'mac' as const, session: 'nocourse', over: { capabilities: ['agent-venue'], tier_ceiling: 'critical', courses: [] } },
+  ] as { cred: 'vm-a' | 'vm-b' | 'mac'; session: string; over: { capabilities: string[]; tier_ceiling: string; courses?: unknown[] } }[];
   const chain: Record<string, (keyof typeof sha)[]> = { A: ['A'], B: ['A', 'B'], C: ['A', 'B', 'C'], D: ['A', 'D'] };
 
   it.each(['A', 'B', 'C', 'D'] as const)('on fixture board %s', async (label) => {
@@ -261,12 +279,12 @@ describe('G-BTN-40: the matching query and isEligible agree; git overtaking a cl
     for (const w of workers) {
       const { id } = await register(w.cred, { session_name: w.session, ...w.over });
       const decl = w.over.capabilities;
-      const facts = { tier_ceiling: w.over.tier_ceiling, declared: decl, model_id: 'zai-coding-plan/glm-5.3', model_provider_id: 'zai', billing: { 'zai-coding-plan': 'zai' }, skills_version: 3 };
+      const facts = { tier_ceiling: w.over.tier_ceiling, declared: decl, model_id: 'zai-coding-plan/glm-5.3', model_provider_id: 'zai', billing: { 'zai-coding-plan': 'zai' }, courses: w.over.courses ?? [{ repository: 'docs', course: 'roadmap-pr', version: 3 }] };
       // The reference: isEligible over the snapshot's own items, in its ready order.
       const expected = snap.ready.filter((rid: string) => {
         const it = itemsOf(label).find((x) => x.id === rid)!;
-        const item = { id: it.id, tier: it.tier, tags: it.tags, requires: it.requires, expedite: it.queue === 'expedite' };
-        return isEligible(facts, item, { now: T0, claims: [], override: null, suspensions: [], minSkillsVersion: 3, expediteActive: 0, lastEndReason: null }).ok;
+        const item = { id: it.id, repository: 'docs', course: 'roadmap-pr', tier: it.tier, tags: it.tags, requires: it.requires, expedite: it.queue === 'expedite' };
+        return isEligible(facts, item, { now: T0, claims: [], override: null, suspensions: [], minWorkerVersion: 3, expediteActive: 0, lastEndReason: null }).ok;
       });
       const got = await withCore((o) => {
         const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };

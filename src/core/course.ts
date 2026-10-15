@@ -21,7 +21,9 @@ export interface CourseViolation {
 
 import { isFreeText } from './text';
 
-const ID = /^[a-z][a-z0-9-]{0,39}$/;
+/** A station, leg or course id (R-BTN-69, R-BTN-48). */
+export const COURSE_ID = /^[a-z][a-z0-9-]{0,39}$/;
+const ID = COURSE_ID;
 /** An input's or output's name: no `.`, which `from: "<leg>.<output>"` separates on. */
 const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 /** A `short_waits` label is a `waiting_on` label, compared as a string (R-BTN-69, §6). */

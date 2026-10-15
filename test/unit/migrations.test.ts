@@ -126,3 +126,33 @@ describe('migration 0006: one Baton, many repositories (R3-1231)', () => {
     });
   });
 });
+
+// R3-1231 part 2b — migration 0007 adds the course registry (R-BTN-48): a database at 0006 keeps
+// its tickets, now roadmap-pr's, and loses the instance-wide min_skills_version.
+describe('migration 0007: courses (R3-1231)', () => {
+  it('adds the registry tables, names every ticket roadmap-pr and drops min_skills_version', async () => {
+    const id = env.BATON.idFromName('migrations-0007');
+    await runInDurableObject(env.BATON.get(id), (_o: unknown, state: DurableObjectState) => {
+      const sql = state.storage.sql;
+      sql.exec('PRAGMA foreign_keys = OFF');
+      const objects = sql.exec("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND type = 'table'").toArray() as { name: string }[];
+      for (const o of objects) sql.exec(`DROP TABLE IF EXISTS "${o.name}"`);
+      for (const m of MIGRATIONS.filter((x) => x.id <= 6)) sql.exec(m.sql);
+      sql.exec(`INSERT INTO repositories (id, github, default_branch, sync_workflow) VALUES ('docs', 'immediately-run/docs', 'main', '.github/workflows/baton-sync.yml')`);
+      sql.exec(`INSERT INTO tickets (id, repository_id, local_id, path, title, status, node, queue, tags, requires_clause, depends_on, blocked_by, repos, snapshot_sha, row_hash)
+                VALUES ('docs:R3-9001', 'docs', 'R3-9001', 'p', 't', 'available', 'blocked', 'autonomous', '[]', 'none', '[]', '[]', '[]', 'aaa', 'h')`);
+      sql.exec(`INSERT INTO baton_settings (key, value) VALUES ('min_skills_version', '3'), ('reviewer_matrix', '{}')`);
+      sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities) VALUES ('vm-a', 'vm-a', '[]')`);
+      sql.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at, skills_version)
+                VALUES ('vm-a', 's', 'h', 'vm-a', 'opencode', 'vm', 'critical', 900000, '', 1, 1, 3)`);
+      sql.exec(MIGRATIONS.find((x) => x.id === 7)!.sql);
+      const all = (q: string) => sql.exec(q).toArray() as Record<string, unknown>[];
+      expect(all('SELECT id, course_id FROM tickets')).toEqual([{ id: 'docs:R3-9001', course_id: 'roadmap-pr' }]);
+      expect(all('SELECT key FROM baton_settings')).toEqual([{ key: 'reviewer_matrix' }]);
+      // The worker keeps its row; its version is per course now.
+      expect(all('SELECT hostname, session_name FROM workers')).toEqual([{ hostname: 'vm-a', session_name: 's' }]);
+      expect(all(`SELECT name FROM pragma_table_info('workers') WHERE name = 'skills_version'`)).toEqual([]);
+      for (const t of ['courses', 'course_refusals', 'worker_courses']) expect(all(`SELECT count(*) AS n FROM ${t}`)).toEqual([{ n: 0 }]);
+    });
+  });
+});

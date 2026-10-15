@@ -6,6 +6,7 @@ import claims from './0003_claims.sql';
 import cutover from './0004_cutover.sql';
 import tickets from './0005_tickets.sql';
 import repositories from './0006_repositories.sql';
+import courses from './0007_courses.sql';
 
 export const MIGRATIONS: { id: number; sql: string }[] = [
   { id: 1, sql: init },
@@ -14,4 +15,5 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
   { id: 4, sql: cutover },
   { id: 5, sql: tickets },
   { id: 6, sql: repositories },
+  { id: 7, sql: courses },
 ];

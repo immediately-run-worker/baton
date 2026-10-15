@@ -4,12 +4,11 @@ import { describe, it, expect, inject } from 'vitest';
 import prices from '../fixtures/data/model-prices.json';
 import providers from '../fixtures/data/model-providers.json';
 import matrix from '../fixtures/data/reviewer-matrix.json';
-import batonData from '../fixtures/data/baton.json';
 import { ownerCall, payload, q, rows, setClock, syncCall } from '../helpers';
 
 const board = inject('board');
 // The reference data: the fixture repository's own scripts/data files (one source with S-BTN-13).
-const reference = { prices, providers, matrix, min_skills_version: batonData.skills_version };
+const reference = { prices, providers, matrix };
 const { A, B } = board.shas;
 // The hand-built cases below vary the items alone, so they post them without the fixture's
 // reference data; the reference cases add the fixture repository's scripts/data files.
@@ -69,12 +68,12 @@ describe('the tickets cache', () => {
     }
     const cols = (await rows<{ name: string }>(`SELECT name FROM pragma_table_info('tickets')`)).map((c) => c.name);
     expect(cols).toEqual(['id', 'repository_id', 'local_id', 'path', 'title', 'project', 'status', 'node', 'queue', 'tags', 'tier', 'requires_clause', 'operator_only',
-      'depends_on', 'blocked_by', 'repos', 'ord', 'rank', 'snapshot_sha', 'row_hash', 'since', 'holder']);
+      'depends_on', 'blocked_by', 'repos', 'ord', 'rank', 'snapshot_sha', 'row_hash', 'since', 'holder', 'course_id']);
   });
 });
 
 describe('reference data and the dashboard state', () => {
-  it('materializes providers, schedules, prices, the reviewer catalog and min_skills_version', async () => {
+  it('materializes providers, schedules, prices and the reviewer catalog', async () => {
     await post(A, null, stateA, reference);
     expect(await rows('SELECT id, billing FROM model_providers ORDER BY id')).toEqual([
       { id: 'opencode_go_plus', billing: 'subscription' }, { id: 'zai', billing: 'subscription' }]);
@@ -84,7 +83,8 @@ describe('reference data and the dashboard state', () => {
     expect(await rows('SELECT name, family, bills, models FROM reviewer_agents ORDER BY name')).toEqual([
       { name: 'review-pr-claude', family: 'claude', bills: '["zai-coding-plan","anthropic"]', models: '{"zai-coding-plan":"zai-coding-plan/glm-5.3-flash","anthropic":"claude-opus-5-5"}' },
       { name: 'review-pr-glm', family: 'glm', bills: '["zai-coding-plan"]', models: null }]);
-    expect(await rows(`SELECT value FROM baton_settings WHERE key = 'min_skills_version'`)).toEqual([{ value: '3' }]);
+    // min_skills_version is gone (R-BTN-22): the registry carries each course's version.
+    expect(await rows(`SELECT id, version, min_worker_version FROM courses`)).toEqual([{ id: 'roadmap-pr', version: 3, min_worker_version: 3 }]);
   });
 
   it('an account the providers file no longer lists is deleted', async () => {

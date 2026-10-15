@@ -4,6 +4,7 @@
 // item to its file on GitHub instead.
 import { capabilitiesOf } from '../shared/vocabulary.mjs';
 import { BatonError } from './http';
+import { checkRegistry, COURSE_ID, type RegistryEntry } from './courses';
 import { LOCAL_ID, SESSION_NAME } from './validate';
 
 /** One factory-state item, as the sync posts it (`docs/scripts/factory-state.mjs`). Only the
@@ -30,7 +31,12 @@ export interface StateItem {
   /** The claim note's holder session (`holderOf`), when the sync posts it: the legacy worker's
    *  session name, which adoption matches (§13 step 3). */
   holder?: string;
+  /** The ticket's course (R-BTN-48): absent, `roadmap-pr`, so no existing docs item changes. */
+  course?: string;
 }
+
+/** A ticket's course when its item names none (R-BTN-48). */
+export const DEFAULT_COURSE = 'roadmap-pr';
 
 export interface BoardPayload {
   sha: string;
@@ -44,7 +50,8 @@ export interface BoardPayload {
   providers?: ProvidersData;
   reviewers?: Record<string, { reviews_on: string; bills: string[]; models?: Record<string, string> }>;
   matrix?: { families: Record<string, string[]>; agents: Record<string, { reviews_on: string; bills: string[]; models?: Record<string, string> }> };
-  min_skills_version?: number;
+  /** The course registry (R-BTN-48, §7.1); absent, the courses in force stay. */
+  registry?: RegistryEntry[];
   /** §6.8: the transcript repositories from `baton.json`; absent, the defaults stand. */
   transcript_repos?: string[];
 }
@@ -73,6 +80,7 @@ export interface TicketRow {
   repos: string;
   ord: string | null;
   rank: number | null;
+  course_id: string;
   requires: string[];
   since: string | null;
   holder: string | null;
@@ -116,14 +124,14 @@ export function checkPayload(body: unknown): BoardPayload {
     list(it.dependsOn, ID, `${it.id}: dependsOn`);
     list(it.blockedBy, ID, `${it.id}: blockedBy`);
     list(it.repos, /^[A-Za-z0-9._-]{1,100}$/, `${it.id}: repos`);
+    if (it.course !== undefined && (typeof it.course !== 'string' || !COURSE_ID.test(it.course))) throw new BatonError('invalid-params', `${it.id}: course must be a course id`);
   }
   for (const id of p.ready) if (!seen.has(id)) throw new BatonError('invalid-params', `ready names ${id}, which is not in state.items`);
   if (p.force !== undefined && typeof p.force !== 'boolean') throw new BatonError('invalid-params', 'force must be a boolean');
-  if (p.min_skills_version !== undefined && !(Number.isInteger(p.min_skills_version) && p.min_skills_version >= 0)) {
-    throw new BatonError('invalid-params', 'min_skills_version must be a non-negative integer');
-  }
+  // `min_skills_version` is gone (R-BTN-22: each course's version is the skills version); a
+  // sync that still sends it is not refused for it, and Baton reads it nowhere.
   checkReference(p);
-  return p;
+  return p.registry === undefined ? p : { ...p, registry: checkRegistry(p.registry) };
 }
 
 const ACCOUNT = /^[a-z0-9_]{1,64}$/;
@@ -234,6 +242,7 @@ export function rowFor(it: StateItem, rankOf: Map<string, number>): TicketRow {
     repos: JSON.stringify(it.repos ?? []),
     ord: it.order == null ? null : String(it.order),
     rank: rankOf.get(it.id) ?? null,
+    course_id: it.course ?? DEFAULT_COURSE,
     requires: [...capabilitiesOf(names)].sort(),
     since: calendarDate(it.since),
     holder: typeof it.holder === 'string' && SESSION_NAME.test(it.holder) ? it.holder : null,

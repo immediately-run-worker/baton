@@ -1,12 +1,103 @@
 {
   "shas": {
-    "A": "d42f6e5c3663afbe2baf60ee878b7fdccb7a419a",
-    "B": "2184dd246acbef669df3d11bb1d11480a381159d",
-    "C": "53952e616932650bf24efb0c926237687505d6a2",
-    "D": "c464d7133845fb86786d46784581e21bcdf74b35"
+    "A": "99ce5018dc619a2d1fc4099098bf5eaef96642cd",
+    "B": "8d0138327b276fec7e75080cd5188de76783e7a0",
+    "C": "7612594e0eae01db6a9654782e82883d319e4f4b",
+    "D": "cf323d929bf4ea01eb4604e0029e06ffb617b204"
   },
   "states": {
     "A": {
+      "registry": [
+        {
+          "id": "roadmap-pr",
+          "version": 3,
+          "min_worker_version": 3,
+          "skill": "next-roadmap-item",
+          "course": {
+            "start": "filed",
+            "start_leg": "implement",
+            "end": [
+              "merged"
+            ],
+            "short_waits": [
+              "ci"
+            ],
+            "stations": {
+              "filed": {
+                "label": "Filed, not started"
+              },
+              "pr-open": {
+                "label": "PRs open"
+              },
+              "reviewed": {
+                "label": "Reviewed"
+              },
+              "fixed": {
+                "label": "Findings addressed"
+              },
+              "adjudicated": {
+                "label": "Open findings adjudicated"
+              },
+              "merged": {
+                "label": "Merged and archived"
+              }
+            },
+            "legs": {
+              "implement": {
+                "from": [
+                  "filed"
+                ],
+                "to": "pr-open"
+              },
+              "review": {
+                "from": [
+                  "pr-open",
+                  "fixed"
+                ],
+                "to": "reviewed",
+                "max_runs": 3
+              },
+              "fix": {
+                "from": [
+                  "reviewed"
+                ],
+                "to": "fixed",
+                "max_runs": 2
+              },
+              "adjudicate": {
+                "from": [
+                  "reviewed"
+                ],
+                "to": "adjudicated"
+              },
+              "merge": {
+                "from": [
+                  "reviewed",
+                  "adjudicated"
+                ],
+                "to": "merged"
+              }
+            }
+          },
+          "step_kinds": [
+            "orient",
+            "implement",
+            "local-verify",
+            "open-pr",
+            "push",
+            "ci-wait",
+            "review-round",
+            "reviewer",
+            "fix-findings",
+            "adjudicate",
+            "merge",
+            "reconcile",
+            "status-write",
+            "decision-packet"
+          ],
+          "branch_pattern": "claude/{ticket}-*"
+        }
+      ],
       "state": {
         "items": [
           {
@@ -292,10 +383,100 @@
             "anthropic": "claude-opus-5-5"
           }
         }
-      },
-      "min_skills_version": 3
+      }
     },
     "B": {
+      "registry": [
+        {
+          "id": "roadmap-pr",
+          "version": 3,
+          "min_worker_version": 3,
+          "skill": "next-roadmap-item",
+          "course": {
+            "start": "filed",
+            "start_leg": "implement",
+            "end": [
+              "merged"
+            ],
+            "short_waits": [
+              "ci"
+            ],
+            "stations": {
+              "filed": {
+                "label": "Filed, not started"
+              },
+              "pr-open": {
+                "label": "PRs open"
+              },
+              "reviewed": {
+                "label": "Reviewed"
+              },
+              "fixed": {
+                "label": "Findings addressed"
+              },
+              "adjudicated": {
+                "label": "Open findings adjudicated"
+              },
+              "merged": {
+                "label": "Merged and archived"
+              }
+            },
+            "legs": {
+              "implement": {
+                "from": [
+                  "filed"
+                ],
+                "to": "pr-open"
+              },
+              "review": {
+                "from": [
+                  "pr-open",
+                  "fixed"
+                ],
+                "to": "reviewed",
+                "max_runs": 3
+              },
+              "fix": {
+                "from": [
+                  "reviewed"
+                ],
+                "to": "fixed",
+                "max_runs": 2
+              },
+              "adjudicate": {
+                "from": [
+                  "reviewed"
+                ],
+                "to": "adjudicated"
+              },
+              "merge": {
+                "from": [
+                  "reviewed",
+                  "adjudicated"
+                ],
+                "to": "merged"
+              }
+            }
+          },
+          "step_kinds": [
+            "orient",
+            "implement",
+            "local-verify",
+            "open-pr",
+            "push",
+            "ci-wait",
+            "review-round",
+            "reviewer",
+            "fix-findings",
+            "adjudicate",
+            "merge",
+            "reconcile",
+            "status-write",
+            "decision-packet"
+          ],
+          "branch_pattern": "claude/{ticket}-*"
+        }
+      ],
       "state": {
         "items": [
           {
@@ -580,10 +761,100 @@
             "anthropic": "claude-opus-5-5"
           }
         }
-      },
-      "min_skills_version": 3
+      }
     },
     "C": {
+      "registry": [
+        {
+          "id": "roadmap-pr",
+          "version": 3,
+          "min_worker_version": 3,
+          "skill": "next-roadmap-item",
+          "course": {
+            "start": "filed",
+            "start_leg": "implement",
+            "end": [
+              "merged"
+            ],
+            "short_waits": [
+              "ci"
+            ],
+            "stations": {
+              "filed": {
+                "label": "Filed, not started"
+              },
+              "pr-open": {
+                "label": "PRs open"
+              },
+              "reviewed": {
+                "label": "Reviewed"
+              },
+              "fixed": {
+                "label": "Findings addressed"
+              },
+              "adjudicated": {
+                "label": "Open findings adjudicated"
+              },
+              "merged": {
+                "label": "Merged and archived"
+              }
+            },
+            "legs": {
+              "implement": {
+                "from": [
+                  "filed"
+                ],
+                "to": "pr-open"
+              },
+              "review": {
+                "from": [
+                  "pr-open",
+                  "fixed"
+                ],
+                "to": "reviewed",
+                "max_runs": 3
+              },
+              "fix": {
+                "from": [
+                  "reviewed"
+                ],
+                "to": "fixed",
+                "max_runs": 2
+              },
+              "adjudicate": {
+                "from": [
+                  "reviewed"
+                ],
+                "to": "adjudicated"
+              },
+              "merge": {
+                "from": [
+                  "reviewed",
+                  "adjudicated"
+                ],
+                "to": "merged"
+              }
+            }
+          },
+          "step_kinds": [
+            "orient",
+            "implement",
+            "local-verify",
+            "open-pr",
+            "push",
+            "ci-wait",
+            "review-round",
+            "reviewer",
+            "fix-findings",
+            "adjudicate",
+            "merge",
+            "reconcile",
+            "status-write",
+            "decision-packet"
+          ],
+          "branch_pattern": "claude/{ticket}-*"
+        }
+      ],
       "state": {
         "items": [
           {
@@ -899,10 +1170,100 @@
             "anthropic": "claude-opus-5-5"
           }
         }
-      },
-      "min_skills_version": 3
+      }
     },
     "D": {
+      "registry": [
+        {
+          "id": "roadmap-pr",
+          "version": 3,
+          "min_worker_version": 3,
+          "skill": "next-roadmap-item",
+          "course": {
+            "start": "filed",
+            "start_leg": "implement",
+            "end": [
+              "merged"
+            ],
+            "short_waits": [
+              "ci"
+            ],
+            "stations": {
+              "filed": {
+                "label": "Filed, not started"
+              },
+              "pr-open": {
+                "label": "PRs open"
+              },
+              "reviewed": {
+                "label": "Reviewed"
+              },
+              "fixed": {
+                "label": "Findings addressed"
+              },
+              "adjudicated": {
+                "label": "Open findings adjudicated"
+              },
+              "merged": {
+                "label": "Merged and archived"
+              }
+            },
+            "legs": {
+              "implement": {
+                "from": [
+                  "filed"
+                ],
+                "to": "pr-open"
+              },
+              "review": {
+                "from": [
+                  "pr-open",
+                  "fixed"
+                ],
+                "to": "reviewed",
+                "max_runs": 3
+              },
+              "fix": {
+                "from": [
+                  "reviewed"
+                ],
+                "to": "fixed",
+                "max_runs": 2
+              },
+              "adjudicate": {
+                "from": [
+                  "reviewed"
+                ],
+                "to": "adjudicated"
+              },
+              "merge": {
+                "from": [
+                  "reviewed",
+                  "adjudicated"
+                ],
+                "to": "merged"
+              }
+            }
+          },
+          "step_kinds": [
+            "orient",
+            "implement",
+            "local-verify",
+            "open-pr",
+            "push",
+            "ci-wait",
+            "review-round",
+            "reviewer",
+            "fix-findings",
+            "adjudicate",
+            "merge",
+            "reconcile",
+            "status-write",
+            "decision-packet"
+          ],
+          "branch_pattern": "claude/{ticket}-*"
+        }
+      ],
       "state": {
         "items": [
           {
@@ -1154,8 +1515,7 @@
             "anthropic": "claude-opus-5-5"
           }
         }
-      },
-      "min_skills_version": 3
+      }
     }
   }
 }
