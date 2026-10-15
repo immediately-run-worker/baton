@@ -15,9 +15,9 @@ describe('BATON_KEYS (R3-1239)', () => {
   it('a key the list no longer names is revoked, and listing it again does not bring it back', async () => {
     const [a, b] = [SSH_KEYS['vm-ed'], SSH_KEYS['vm-p256']];
     await withCore(async (c) => {
-      expect(await api(c as never, [entry(a, 'vm-ed')], 5_000).seedKeys()).toBe(1);
+      expect(await api(c as never, [entry(a, 'vm-ed')], 5_000).seedKeys()).toEqual({ seeded: 1, revoked: [] });
       expect(c.workers.publicKey(b.fingerprint)).toBeNull();
-      expect(await api(c as never, [entry(a, 'vm-ed'), entry(b, 'vm-p256')], 6_000).seedKeys()).toBe(2);
+      expect(await api(c as never, [entry(a, 'vm-ed'), entry(b, 'vm-p256')], 6_000).seedKeys()).toEqual({ seeded: 2, revoked: [b.fingerprint] });
       expect(c.workers.publicKey(b.fingerprint)).toBeNull();
     });
     expect(await rows(`SELECT hostname, revoked_at FROM credentials WHERE kind = 'worker' ORDER BY hostname`)).toEqual([
@@ -46,6 +46,38 @@ describe('BATON_KEYS (R3-1239)', () => {
       await expect(api(c as never, keys).seedKeys()).rejects.toThrow(why);
     });
     expect(await rows(`SELECT count(*) AS n FROM credentials WHERE kind = 'worker' AND revoked_at IS NULL`)).toEqual([{ n: 4 }]);
+  });
+
+  it('a key an owner granted is never the seed’s to revoke (round 1, 1-B-1)', async () => {
+    const granted = await makeKey('ssh-ed25519', 'vm-granted');
+    await withCore(async (c) => {
+      c.store.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, kind, public_key, created_by) VALUES (?, 'vm-granted', '[]', 'worker', ?, 'owner:SHA256:x')`,
+        granted.fingerprint, granted.publicKey.split(' ').slice(0, 2).join(' '));
+      await api(c as never, []).seedKeys();
+      expect(c.workers.publicKey(granted.fingerprint)).not.toBeNull();
+    });
+  });
+
+  it('a list naming a revoked key, and a list that cannot be seeded, go to Needs you; Baton serves on (round 1, 1-A-2, 1-B-5)', async () => {
+    const state = async () => withCore((c) => (c as unknown as { uiState(): { needs_you: { keys: unknown } } }).uiState().needs_you.keys);
+    const reseed = (keys: unknown) => withCore(async (c) => {
+      const w = c.workers as unknown as { c: { config: object } };
+      const config = w.c.config;
+      w.c.config = { ...config, BATON_KEYS: typeof keys === 'string' ? keys : JSON.stringify(keys) };
+      try {
+        await (c as unknown as { seedKeys(): Promise<void> }).seedKeys();
+      } finally {
+        w.c.config = config;
+      }
+    });
+    expect(await state()).toBeNull();
+    await rows(`UPDATE credentials SET revoked_at = 1 WHERE id = ?`, SSH_KEYS['vm-ed'].fingerprint);
+    await reseed([entry(SSH_KEYS['vm-ed'], 'vm-ed'), entry(SSH_KEYS['vm-p256'], 'vm-p256')]);
+    expect(await state()).toEqual({ revoked_listed: [SSH_KEYS['vm-ed'].fingerprint] });
+    await reseed('{not json');
+    expect(await state()).toEqual({ refused: 'BATON_KEYS is not JSON' });
+    // The keys in force stayed.
+    await withCore((c) => expect(c.workers.publicKey(SSH_KEYS['vm-p256'].fingerprint)).not.toBeNull());
   });
 
   it('the bearer mirror leaves the keys alone', async () => {

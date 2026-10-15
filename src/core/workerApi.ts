@@ -62,7 +62,7 @@ export class WorkerApi {
 
   /** Mirror the `CREDENTIALS` secret into `credentials`, and mark revoked a credential whose
    *  token hash is gone. Returns the credential's row, or throws `forbidden`. */
-  credential(id: string): { id: string; hostname: string; allowed: string[] } {
+  credential(id: string): { id: string; hostname: string; allowed: string[]; kind: string } {
     let policy: Record<string, { hostname: string; allowed_capabilities: string[] }> = {};
     let hashes: Record<string, string> = {};
     try {
@@ -76,10 +76,10 @@ export class WorkerApi {
     const marker = fnv1a(`${this.c.config.CREDENTIALS ?? ''}\u0000${this.c.config.TOKEN_HASHES ?? ''}`);
     const now = this.c.now();
     if (this.setting('credentials_marker') !== marker) this.mirrorCredentials(policy, hashes, marker, now);
-    const row = this.rows<{ id: string; hostname: string; allowed_capabilities: string; revoked_at: number | null }>(
-      'SELECT id, hostname, allowed_capabilities, revoked_at FROM credentials WHERE id = ?', id)[0];
+    const row = this.rows<{ id: string; hostname: string; allowed_capabilities: string; revoked_at: number | null; kind: string }>(
+      'SELECT id, hostname, allowed_capabilities, revoked_at, kind FROM credentials WHERE id = ?', id)[0];
     if (!row || row.revoked_at != null) throw new BatonError('forbidden', 'this credential is not registered or is revoked');
-    return { id: row.id, hostname: row.hostname, allowed: JSON.parse(row.allowed_capabilities) };
+    return { id: row.id, hostname: row.hostname, allowed: JSON.parse(row.allowed_capabilities), kind: row.kind };
   }
 
   /** The `credentials` table is the secrets' mirror (§4), for the dashboard and the worker rows'
@@ -106,13 +106,14 @@ export class WorkerApi {
   /** Seed the worker keys from `BATON_KEYS` — a JSON array of `{key, name,
    *  allowed_capabilities}`, the key an OpenSSH public key line — until R3-1240's owner grants
    *  replace it. Each key's credential is its fingerprint. Seeding never brings a revoked key
-   *  back (a key is revoked for good; a machine gets a new one), and a key the list no longer
-   *  names is revoked. The whole list is checked before anything is written: a malformed entry,
-   *  a key twice, or two keys for one name throws, as a malformed registry seed does. */
-  async seedKeys(): Promise<number> {
+   *  back (a key is revoked for good; a machine gets a new one) — such a key is returned in
+   *  `revoked` — and a seeded key the list no longer names is revoked; a key an owner granted
+   *  (R3-1240) is never the seed's. The whole list is checked before anything is written: a
+   *  malformed entry, a key twice, or two keys for one name throws and changes nothing. */
+  async seedKeys(): Promise<{ seeded: number; revoked: string[] }> {
     const raw = this.c.config.BATON_KEYS;
     const marker = fnv1a(raw ?? '');
-    if (this.setting('keys_marker') === marker) return 0;
+    if (this.setting('keys_marker') === marker) return { seeded: 0, revoked: [] };
     let list: unknown = [];
     try {
       if (raw) list = JSON.parse(raw);
@@ -137,19 +138,21 @@ export class WorkerApi {
       keys.push({ id: parsed.fingerprint, public_key: `${parsed.type} ${key.trim().split(' ')[1]}`, name, allowed: JSON.stringify([...allowed_capabilities].sort()) });
     }
     const now = this.c.now();
+    const revoked: string[] = [];
     this.c.store.transaction(() => {
       // Revoke first, so a name whose key changed is free for its new key.
-      this.exec(`UPDATE credentials SET revoked_at = ? WHERE kind = 'worker' AND revoked_at IS NULL AND id NOT IN (SELECT value FROM json_each(?))`, now, JSON.stringify(keys.map((k) => k.id)));
+      this.exec(`UPDATE credentials SET revoked_at = ? WHERE kind = 'worker' AND created_by = 'seed' AND revoked_at IS NULL AND id NOT IN (SELECT value FROM json_each(?))`, now, JSON.stringify(keys.map((k) => k.id)));
       for (const k of keys) {
         const held = this.rows<{ id: string }>(`SELECT id FROM credentials WHERE kind = 'worker' AND revoked_at IS NULL AND hostname = ? AND id != ?`, k.name, k.id)[0];
         if (held) throw new Error(`BATON_KEYS: ${k.name} already has a key in force (one key per name)`);
-        this.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, kind, public_key) VALUES (?, ?, ?, 'worker', ?)
+        this.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, kind, public_key, created_by) VALUES (?, ?, ?, 'worker', ?, 'seed')
                    ON CONFLICT (id) DO UPDATE SET hostname = excluded.hostname, allowed_capabilities = excluded.allowed_capabilities
-                   WHERE credentials.kind = 'worker' AND credentials.revoked_at IS NULL`, k.id, k.name, k.allowed, k.public_key);
+                   WHERE credentials.kind = 'worker' AND credentials.created_by = 'seed' AND credentials.revoked_at IS NULL`, k.id, k.name, k.allowed, k.public_key);
       }
+      revoked.push(...this.rows<{ id: string }>(`SELECT id FROM credentials WHERE revoked_at IS NOT NULL AND id IN (SELECT value FROM json_each(?))`, JSON.stringify(keys.map((k) => k.id))).map((r) => r.id));
       this.exec(`INSERT INTO baton_settings (key, value) VALUES ('keys_marker', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, marker);
     });
-    return keys.length;
+    return { seeded: keys.length, revoked };
   }
 
   /** The public key a fingerprint names, if it is registered and not revoked. */
@@ -159,9 +162,10 @@ export class WorkerApi {
   }
 
   /** R-BTN-13: a nonce seen for this key within 10 minutes is a replay. Every signed request
-   *  inserts one row and prunes what has aged out (§3's write budget). */
-  acceptNonce(fingerprint: string, nonce: string): void {
-    const now = this.c.now();
+   *  inserts one row and prunes what has aged out (§3's write budget). `now` is the clock
+   *  reading the request's `created` was judged by, so a nonce outlives every request that
+   *  could carry it. */
+  acceptNonce(fingerprint: string, nonce: string, now = this.c.now()): void {
     this.c.store.transaction(() => {
       this.exec('DELETE FROM request_nonces WHERE seen_at < ?', now - NONCE_TTL_MS);
       if (this.rows('SELECT 1 FROM request_nonces WHERE key_fingerprint = ? AND nonce = ?', fingerprint, nonce).length) {
@@ -271,7 +275,16 @@ export class WorkerApi {
         hb.tier_ceiling, JSON.stringify(hb.tier_ceilings), hb.lease_timeout_s * 1000, now, now, hb.last_activity_at ?? null);
       w = this.rows<typeof w>('SELECT id, secret_hash, credential_id, reaped_at, incarnation, settings_hash, secret_seen FROM workers WHERE hostname = ? AND session_name = ?', hb.hostname, hb.session_name)[0];
     } else {
-      if (w.credential_id !== cred.id) throw new BatonError('forbidden', 'this session is registered under another credential');
+      // R3-1239's handover: a session registered under a bearer token, or under a key since
+      // revoked, may continue under its machine's key — the same name, and the session proved
+      // below by its secret or a re-key. A session under another key in force never moves.
+      const moving = w.credential_id !== cred.id;
+      if (moving) {
+        const from = this.rows<{ kind: string; revoked_at: number | null }>('SELECT kind, revoked_at FROM credentials WHERE id = ?', w.credential_id)[0];
+        if (cred.kind !== 'worker' || !from || (from.kind !== 'token' && from.revoked_at == null)) {
+          throw new BatonError('forbidden', 'this session is registered under another credential');
+        }
+      }
       if (hb.rekey) {
         // R-BTN-14: a re-key replaces the secret when the worker holds no claim or was reaped;
         // it clears reaped_at, bumps the incarnation, and never clears a fence.
@@ -294,6 +307,7 @@ export class WorkerApi {
         if (!ok) throw new BatonError('session-taken', 'this session is registered with another secret');
         if (w.reaped_at != null) throw new BatonError('worker-reaped', 'this worker was reaped; re-key to start a new incarnation');
       }
+      if (moving) this.exec('UPDATE workers SET credential_id = ? WHERE id = ?', cred.id, w.id);
     }
 
     const current = rekeyed ? hb.secret_hash : w.secret_hash; // the hash stored now

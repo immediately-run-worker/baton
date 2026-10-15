@@ -9,9 +9,10 @@
 // Two clauses wait for the routes they exercise: the probe's out-of-binding reading for
 // R3-1251 (probes and instances) and the administrator's key for R3-1240 (`/v1/admin/*`).
 import { describe, it, expect, beforeEach } from 'vitest';
-import { HOST, ORIGIN, call, hbBody, rows, setClock, sha256, signedCall, SSH_KEYS } from '../helpers';
-import { signedRequest } from '../lib/sshKeys';
-import { call as hostCall } from '#host';
+import { HOST, ORIGIN, call, hbBody, register, rows, setClock, sha256, signedCall, SSH_KEYS, withCore } from '../helpers';
+import { makeKey, signedRequest } from '../lib/sshKeys';
+import { WorkerApi } from '../../src/core/workerApi';
+import { call as hostCall, config } from '#host';
 
 const T0 = Date.parse('2026-10-15T12:00:00Z');
 const NAMES = ['vm-ed', 'vm-p256', 'vm-sk-ed', 'vm-sk-p256'] as const;
@@ -110,6 +111,36 @@ describe(`S-BTN-30 signed requests (${HOST})`, () => {
     mixed.set('Signature', 'sig1=:AAAA:');
     mixed.set('Authorization', 'Bearer tok-vm-a');
     expect((await call(HOLDER, { headers: mixed })).status).toBe(401);
+  });
+
+  it('the same signed request sent twice at once passes once (round 1, 1-B-2)', async () => {
+    const created = T0 / 1000;
+    const a = await signedRequest(SSH_KEYS['vm-ed'], ORIGIN + HOLDER, { created, nonce: 'concurrent-nonce-0123456789' });
+    const res = await Promise.all([hostCall(a.clone()), hostCall(a.clone()), hostCall(a)]);
+    expect(res.map((r) => r.status).sort()).toEqual([200, 401, 401]);
+  });
+
+  it('a request that fails verification does not use up its nonce', async () => {
+    const created = T0 / 1000;
+    const nonce = 'unburnt-nonce-0123456789ab';
+    // Signed in another namespace: refused, after the front, before the nonce is written.
+    expect((await signedCall('vm-p256', HOLDER, { created, nonce, namespace: 'git' })).res.status).toBe(401);
+    expect((await signedCall('vm-p256', HOLDER, { created, nonce })).res.status).toBe(200);
+  });
+
+  it('a session registered under a bearer token continues under its machine’s key (round 1, 1-A-3)', async () => {
+    const { id, secret } = await register('vm-a');
+    const key = await makeKey('ecdsa-sha2-nistp256', 'vm-a');
+    await withCore(async (c) => {
+      const w = new WorkerApi({ store: c.store, config: { ...config, BATON_KEYS: JSON.stringify([{ key: key.publicKey, name: 'vm-a', allowed_capabilities: ['agent-venue'] }]) } as never, now: () => T0 });
+      await w.seedKeys();
+    });
+    const beat = (k: typeof key, body: unknown) => signedRequest(k, `${ORIGIN}/v1/runner/heartbeat`, { created: T0 / 1000, headers: { 'X-Worker-Secret': secret }, body: JSON.stringify(body) });
+    const res = await hostCall(await beat(key, hbBody('vm-a')));
+    expect(res.status, JSON.stringify(await res.clone().json())).toBe(200);
+    expect(await rows('SELECT id, credential_id FROM workers')).toEqual([{ id, credential_id: key.fingerprint }]);
+    // Under the key now; the token's call is no longer this session's.
+    expect((await call('/v1/runner/mode?repository=docs', { headers: { Authorization: 'Bearer tok-vm-a', 'X-Worker-Secret': secret } })).status).toBe(401);
   });
 
   it.todo('a probe reading for an instance outside its binding is refused forbidden (R3-1251)');

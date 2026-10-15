@@ -4,6 +4,9 @@
 -- of R3-1208 stay as kind 'token' until every worker signs (R3-1239's transition).
 ALTER TABLE credentials ADD COLUMN kind TEXT NOT NULL DEFAULT 'token' CHECK (kind IN ('token','worker','probe','courier','legacy'));
 ALTER TABLE credentials ADD COLUMN public_key TEXT;
+-- Who registered a key: 'seed' (BATON_KEYS, until R3-1240), later 'admin:<fingerprint>' or
+-- 'owner:<fingerprint>' (§4). The seed revokes only its own. NULL for tokens and 'legacy'.
+ALTER TABLE credentials ADD COLUMN created_by TEXT;
 UPDATE credentials SET kind = 'legacy' WHERE id = 'legacy';
 CREATE UNIQUE INDEX credentials_public_key ON credentials (public_key) WHERE public_key IS NOT NULL;
 CREATE UNIQUE INDEX credentials_worker_name ON credentials (hostname) WHERE kind = 'worker' AND revoked_at IS NULL;

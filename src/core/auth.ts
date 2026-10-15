@@ -1,6 +1,7 @@
-// auth.ts — the two principals R3-1206 serves (BATON_SPEC §10.1): the board sync, by GitHub
-// Actions OIDC (R-BTN-15), and the owner, by Cloudflare Access (R-BTN-16). Nothing but a
-// verified JWT is trusted: no header, cookie or query parameter stands in for one.
+// auth.ts — Baton's principals (BATON_SPEC §10.1): the board sync, by GitHub
+// Actions OIDC (R-BTN-15), and the owner, by Cloudflare Access (R-BTN-16) — and machines, by
+// SSH-signed requests (R-BTN-13 as amended, below). Nothing but a verified JWT or signature is
+// trusted: no header, cookie or query parameter stands in for one.
 import { createLocalJWKSet, createRemoteJWKSet, errors, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { BatonError } from './http';
 import type { Config } from './ports';
@@ -158,7 +159,8 @@ export type KeyType = (typeof KEY_TYPES)[number];
 export const REQUEST_NAMESPACE = 'baton-request';
 /** `created` may be this far either side of Baton's clock. */
 export const SIGNATURE_WINDOW_MS = 5 * 60_000;
-/** A nonce is remembered this long per key: longer than the window on both sides of it. */
+/** A nonce is remembered this long per key: the window on both sides of the clock, so no
+ *  request that could carry it is still fresh once it is forgotten. */
 export const NONCE_TTL_MS = 10 * 60_000;
 /** A signed body is read whole to digest it; no API body comes near this. */
 export const MAX_SIGNED_BODY = 1 << 20;
@@ -172,7 +174,10 @@ const SSHSIG_MAGIC = new TextEncoder().encode('SSHSIG');
 
 const unauthenticated = (why: string) => new BatonError('unauthenticated', why);
 
+/** Standard base64, padded; anything else (a length that is no multiple of 4 included) throws
+ *  a plain Error for the caller to name. */
 function b64decode(s: string): Uint8Array {
+  if (s.length % 4 !== 0 || !B64.test(s)) throw new Error('not base64');
   return Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 }
 function b64encode(b: Uint8Array): string {
@@ -244,8 +249,8 @@ export async function parseSshKey(text: string): Promise<SshKey> {
   if (!m || !(KEY_TYPES as readonly string[]).includes(m[1])) throw bad('the type is not one of ' + KEY_TYPES.join(', '));
   if (!B64.test(m[2]) || m[2].length > 1024) throw bad('the key is not base64');
   const type = m[1] as KeyType;
-  const blob = b64decode(m[2]);
   try {
+    const blob = b64decode(m[2]);
     const w = new Wire(blob);
     if (w.text() !== type) throw new Error('the blob names another type');
     let point: Uint8Array;
@@ -424,10 +429,7 @@ export async function verifyRequest(
   const created = Number(p.created) * 1000;
   if (opts.now !== undefined && Math.abs(opts.now - created) > SIGNATURE_WINDOW_MS) throw unauthenticated('the signature is older or newer than 5 minutes');
 
-  const declared = Number(req.headers.get('Content-Length') ?? 0);
-  if (declared > MAX_SIGNED_BODY) throw new BatonError('invalid-params', 'the body is too large');
-  const body = new Uint8Array(await req.arrayBuffer());
-  if (body.length > MAX_SIGNED_BODY) throw new BatonError('invalid-params', 'the body is too large');
+  const body = await readCapped(req, MAX_SIGNED_BODY);
   const digest = req.headers.get('Content-Digest') ?? '';
   if (digest !== (await contentDigest(body))) throw unauthenticated('Content-Digest must be sha-256 of the body (of the empty string when there is none)');
   const signed: SignedRequest = { keyid: p.keyid, nonce: p.nonce, created, body };
@@ -443,8 +445,37 @@ export async function verifyRequest(
   }
   if (key.fingerprint !== p.keyid) throw unauthenticated('keyid does not name this key');
   const base = signatureBase({ method: req.method, authority, path: url.pathname, query: url.search || '?', digest, params });
-  await verifySshsig(key, b64decode(sm[2]), new TextEncoder().encode(base));
+  let blob: Uint8Array;
+  try {
+    blob = b64decode(sm[2]);
+  } catch {
+    throw unauthenticated('the Signature is not base64');
+  }
+  await verifySshsig(key, blob, new TextEncoder().encode(base));
   return signed;
+}
+
+/** A request's body, refused `invalid-params` as soon as it passes `max` bytes — by its
+ *  Content-Length before a byte is read, else while it streams — so no body is buffered whole
+ *  before its size is judged. */
+async function readCapped(req: Request, max: number): Promise<Uint8Array> {
+  const tooLarge = () => new BatonError('invalid-params', 'the body is too large');
+  if (Number(req.headers.get('Content-Length') ?? 0) > max) throw tooLarge();
+  if (!req.body) return new Uint8Array();
+  const reader = req.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      throw tooLarge();
+    }
+    chunks.push(value);
+  }
+  return concat(...chunks);
 }
 
 /** A verified request with its body put back, for the handler to read. */

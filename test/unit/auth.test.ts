@@ -259,6 +259,32 @@ describe('signed requests (R-BTN-13, R3-1239)', () => {
     }
   });
 
+  it('a Signature that is not base64 is refused unauthenticated, never an internal error (round 1, 1-B-0)', async () => {
+    for (const bad of ['sig1=:AAAAA:', 'sig1=:A:', 'sig1=:AAA=A===:']) {
+      const req = fixture('ed25519-get');
+      const h = new Headers(req.headers);
+      h.set('Signature', bad);
+      expect([bad, (await reason(verifyRequest(new Request(req.url, { headers: h }), await keyOf('ed25519-get'), { origin: ORIGIN, now: NOW }))).split(':')[0]]).toEqual([bad, 'unauthenticated']);
+    }
+    await expect(parseSshKey('ssh-ed25519 AAAAC')).rejects.toMatchObject({ code: 'invalid-params' });
+  });
+
+  it('a body over 1 MiB is refused while it streams, with or without a Content-Length (round 1, 1-A-1)', async () => {
+    const f = keygen['ed25519-post'];
+    let pulled = 0;
+    const endless = new ReadableStream<Uint8Array>({
+      pull(c) {
+        pulled++;
+        c.enqueue(new Uint8Array(64 * 1024));
+      },
+    });
+    const chunked = new Request(f.url, { method: 'POST', headers: f.headers, body: endless, duplex: 'half' } as RequestInit);
+    expect(await reason(verifyRequest(chunked, null, { origin: ORIGIN }))).toBe('invalid-params: the body is too large');
+    expect(pulled).toBeLessThan(20);
+    const declared = new Request(f.url, { method: 'POST', headers: { ...f.headers, 'Content-Length': String(2 << 20) }, body: f.body });
+    expect(await reason(verifyRequest(declared, null, { origin: ORIGIN }))).toBe('invalid-params: the body is too large');
+  });
+
   it('parses only the four key types, with the fingerprint ssh-keygen -l prints', async () => {
     const k = await parseSshKey(keygen['ed25519-get'].publicKey);
     expect(k.type).toBe('ssh-ed25519');
