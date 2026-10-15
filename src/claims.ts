@@ -222,7 +222,7 @@ export class Claims {
         return { item, reason: item.expedite ? 'expedite lane' : `${item.queue} queue · rank ${item.rank ?? '—'}` };
       }
     }
-    throw new BatonError('no-eligible-ticket', 'no ready item fits this worker');
+    throw new BatonError('no-eligible-ticket', 'no ready ticket fits this worker');
   }
 
   // ── the worker calls (§11) ──────────────────────────────────────────────────────────────
