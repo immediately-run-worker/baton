@@ -8,7 +8,7 @@ declare module '*/shared/vocabulary.mjs';
 
 interface Env {
   BATON: DurableObjectNamespace;
-  PUBLIC_ORIGIN: string;
+  BATON_ORIGIN: string;
   OIDC_ISSUER: string;
   OIDC_JWKS_URL: string;
   OIDC_REPOSITORY: string;

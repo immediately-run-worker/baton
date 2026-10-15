@@ -33,14 +33,14 @@ describe('the sync principal (R-BTN-15, G-BTN-11)', () => {
     expect((await call('/v1/sync/head')).status).toBe(401);
     const { privateKey } = await generateKeyPair('ES256');
     const forged = await new SignJWT({ repository: 'immediately-run/docs', ref: 'refs/heads/main', job_workflow_ref: env.SYNC_WORKFLOW_REF })
-      .setProtectedHeader({ alg: 'ES256', kid: 'baton-test' }).setIssuer(env.OIDC_ISSUER).setAudience(env.PUBLIC_ORIGIN).setExpirationTime('5m').sign(privateKey);
+      .setProtectedHeader({ alg: 'ES256', kid: 'baton-test' }).setIssuer(env.OIDC_ISSUER).setAudience(env.BATON_ORIGIN).setExpirationTime('5m').sign(privateKey);
     expect((await syncCall('/v1/sync/head', undefined, forged)).status).toBe(401);
   });
 
   it('accepts exactly its own origin as the audience (R3-1229, R-BTN-56)', async () => {
     // The retired host, spelled in parts so `git grep` for it stays empty (R3-1229's exit criterion).
     const retired = ['https://work', 'items.immediately.run'].join('');
-    expect(env.PUBLIC_ORIGIN).toBe('https://baton.immediately.run');
+    expect(env.BATON_ORIGIN).toBe('https://baton.immediately.run');
     const ok = await syncCall('/v1/sync/head', undefined, await syncToken({}, { audience: 'https://baton.immediately.run' }));
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ sha: null, unconfirmed: [] });

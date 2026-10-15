@@ -20,7 +20,7 @@ globs = ["**/*.sql", "**/*.html", "**/*.css", "**/ui/*.js"]
 fallthrough = false
 
 [vars]
-PUBLIC_ORIGIN = "https://baton.immediately.run"
+BATON_ORIGIN = "https://baton.immediately.run"
 # R-BTN-15: the sync principal — GitHub Actions OIDC, from named workflows on docs main.
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 OIDC_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks"
@@ -46,7 +46,7 @@ name = "BATON"
 class_name = "Baton"
 
 [env.staging.vars]
-PUBLIC_ORIGIN = "https://baton-staging.immediately.run"
+BATON_ORIGIN = "https://baton-staging.immediately.run"
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 OIDC_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks"
 OIDC_REPOSITORY = "immediately-run/docs"
