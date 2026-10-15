@@ -3,7 +3,8 @@
 // R-BTN-37).
 //
 //   npm run vendor                   copy docs/scripts/lib/{baton,vocabulary,sessionUsage,batonSync}.mjs into
-//                                    src/shared/ and rewrite src/shared/manifest.json
+//                                    src/shared/, and docs files the tests read (FIXTURES) into
+//                                    test/fixtures/, and rewrite src/shared/manifest.json
 //   npm run vendor -- --check        exit 1 when a copy differs from the sibling checkout
 //   DOCS_DIR=<path> npm run vendor   use a docs checkout somewhere else (default ../docs)
 //
@@ -13,12 +14,16 @@
 // wherever one exists (test/unit/shared.test.ts).
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 export const SHARED = ['baton.mjs', 'vocabulary.mjs', 'sessionUsage.mjs', 'batonSync.mjs'];
+/** docs files the tests read, copied byte for byte: {path here: path in docs}. */
+export const FIXTURES = {
+  'test/fixtures/courses/roadmap-pr/course.json': '.baton/courses/roadmap-pr/course.json',
+};
 export const docsDir = () => resolve(process.env.DOCS_DIR ?? join(ROOT, '..', 'docs'));
 export const sha256 = (buf) => createHash('sha256').update(buf).digest('hex');
 
@@ -31,6 +36,22 @@ function main(argv) {
   const check = argv.includes('--check');
   let drift = 0;
   const files = {};
+  const fixtures = {};
+  for (const [here, there] of Object.entries(FIXTURES)) {
+    const src = readFileSync(join(docs, there));
+    const dest = join(ROOT, here);
+    fixtures[here] = sha256(src);
+    const cur = existsSync(dest) ? readFileSync(dest) : null;
+    if (cur && sha256(cur) === fixtures[here]) continue;
+    if (check) {
+      console.error(`✗ ${here} differs from ${docs}/${there} — run npm run vendor`);
+      drift++;
+    } else {
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(dest, src);
+      console.log(`vendored ${here}`);
+    }
+  }
   for (const name of SHARED) {
     const src = readFileSync(join(docs, 'scripts/lib', name));
     const dest = join(ROOT, 'src/shared', name);
@@ -49,8 +70,8 @@ function main(argv) {
     if (drift) process.exit(1);
     return console.log('✓ src/shared matches the docs checkout');
   }
-  const commit = execFileSync('git', ['-C', docs, 'log', '-n1', '--format=%H', '--', ...SHARED.map((n) => `scripts/lib/${n}`)], { encoding: 'utf8' }).trim();
-  const manifest = { $comment: 'Written by scripts/vendor.mjs (R-BTN-37): the docs commit these copies were taken from and their SHA-256. Never edit the copies here; change them in docs and re-vendor.', docs_commit: commit, files };
+  const commit = execFileSync('git', ['-C', docs, 'log', '-n1', '--format=%H', '--', ...SHARED.map((n) => `scripts/lib/${n}`), ...Object.values(FIXTURES)], { encoding: 'utf8' }).trim();
+  const manifest = { $comment: 'Written by scripts/vendor.mjs (R-BTN-37): the docs commit these copies were taken from and their SHA-256. Never edit the copies here; change them in docs and re-vendor.', docs_commit: commit, files, fixtures };
   writeFileSync(join(ROOT, 'src/shared/manifest.json'), JSON.stringify(manifest, null, 2) + '\n');
   console.log(`manifest: docs@${commit.slice(0, 8)}`);
 }

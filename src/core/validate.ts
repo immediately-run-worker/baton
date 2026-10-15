@@ -2,6 +2,7 @@
 // §5). One module, called by every endpoint before any write (R3-1211); a value that fails is
 // refused with `invalid-params` naming the field, never trimmed into shape.
 import { BatonError } from './http';
+import { FREE_TEXT_MAX, isFreeText } from './text';
 
 /** §5: the harness's own session id, the rule `claim.sh --session` already applies. */
 export const SESSION_NAME = /^[A-Za-z0-9_.:-]{1,128}$/;
@@ -31,8 +32,8 @@ const isInt = (v: unknown) => Number.isInteger(v);
 const isTime = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
 
 /** §10.4's free text: at most 500 characters, no control characters, none of `< > { }`. */
-export function freeText(v: unknown, field: string, max = 500): string {
-  if (typeof v !== 'string' || v.length === 0 || v.length > max || /[\u0000-\u001f\u007f<>{}]/.test(v)) {
+export function freeText(v: unknown, field: string, max = FREE_TEXT_MAX): string {
+  if (!isFreeText(v, max)) {
     bad(field, `must be 1–${max} characters with no control characters and none of < > { }`);
   }
   return v as string;

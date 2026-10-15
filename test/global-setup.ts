@@ -34,6 +34,11 @@ export default async function setup(project: TestProject) {
   const vendored = Object.fromEntries(Object.keys(manifest.files).map((n) => [n, sha256(join(ROOT, 'src/shared', n))]));
   const upstream = haveDocs ? Object.fromEntries(Object.keys(manifest.files).map((n) => [n, sha256(join(docs, 'scripts/lib', n))])) : null;
   project.provide('shared', { manifest: manifest.files, vendored, upstream });
+  // The docs files the tests read (scripts/vendor.mjs FIXTURES), checked the same way.
+  const { FIXTURES } = await import('../scripts/vendor.mjs');
+  const fixtures = Object.fromEntries(Object.keys(FIXTURES).map((p) => [p, sha256(join(ROOT, p))]));
+  const fixturesUpstream = haveDocs ? Object.fromEntries(Object.entries(FIXTURES as Record<string, string>).map(([p, d]) => [p, sha256(join(docs, d))])) : null;
+  project.provide('fixtures', { manifest: manifest.fixtures ?? {}, vendored: fixtures, upstream: fixturesUpstream });
   project.provide('wranglerToml', readFileSync(join(ROOT, 'wrangler.toml'), 'utf8'));
 
   // One input from the real producer: what the docs sync would post for today's board —

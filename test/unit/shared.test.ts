@@ -16,6 +16,13 @@ describe('src/shared', () => {
     expect(vendored).toEqual(upstream);
   });
 
+  it('each vendored docs fixture is the file its manifest pins, and matches the sibling checkout', () => {
+    const f = inject('fixtures');
+    expect(Object.keys(f.manifest)).toEqual(['test/fixtures/courses/roadmap-pr/course.json']);
+    expect(f.vendored).toEqual(f.manifest);
+    if (f.upstream) expect(f.vendored).toEqual(f.upstream);
+  });
+
   it('bundles and runs in the Workers runtime', () => {
     expect([...vocabulary.capabilitiesOf(['agent-venue'])].sort()).toEqual(['authentication', 'create-pr', 'drivable-browser', 'llm-call']);
     expect(vocabulary.fitsTier(null, 'judgement')).toBe(false);

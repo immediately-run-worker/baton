@@ -9,6 +9,7 @@ declare module 'vitest' {
       ancestry: Record<string, boolean>;
     };
     shared: { manifest: Record<string, string>; vendored: Record<string, string>; upstream: Record<string, string> | null };
+    fixtures: { manifest: Record<string, string>; vendored: Record<string, string>; upstream: Record<string, string> | null };
     wranglerToml: string;
     liveBoard: Record<string, unknown> | null;
     /** The local project's host settings: wrangler.toml's vars and the run's test bindings. */

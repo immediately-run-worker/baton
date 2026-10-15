@@ -24,6 +24,7 @@ How Baton differs from a durable-execution engine such as Temporal, and where ea
 | `src/core/attempts.ts` | Pure: the retry policy (§6.10 R-BTN-23) — which ends count, backoff, holds, the review-capacity run, the resume record (R-BTN-24) |
 | `src/core/cutover.ts` | The one-way cutover (R-BTN-28): `POST /v1/ui/cutover`, the legacy import, adoption on the owner's confirmation |
 | `src/core/validate.ts` | Pure: every worker- and owner-supplied field checked before any write (§10.4) |
+| `src/core/course.ts` | Pure: `validateCourse`, every way a course file breaks R-BTN-69's rules (stations reachable, an end from everywhere, cycles bounded, `start_leg`, inputs) |
 | `src/core/board.ts` | Pure: snapshot validation, the `tickets` row an item becomes, peaks, prices |
 | `src/core/auth.ts` | JWT verification (R-BTN-15, R-BTN-16); worker tokens against `TOKEN_HASHES` (R-BTN-13) |
 | `src/cloudflare/` | The Cloudflare host: the Worker (`worker.ts`) and the `Baton` Durable Object (`baton.ts`), wiring `ctx.storage`, the alarm and `waitUntil` into the ports |
