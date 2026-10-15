@@ -2,9 +2,9 @@
 // one insert, the random hex nonces and secrets, and recognising a unique-index refusal.
 
 /** Append to the event log (§4): the one place an event row is written. */
-export function logEvent(sql: SqlStorage, at: number, kind: string, actor: string, detail: unknown, workItemId: string | null = null, claimId: number | null = null) {
-  sql.exec('INSERT INTO events (at, kind, work_item_id, claim_id, actor, detail_json) VALUES (?, ?, ?, ?, ?, ?)',
-    at, kind, workItemId, claimId, actor, JSON.stringify(detail));
+export function logEvent(sql: SqlStorage, at: number, kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null) {
+  sql.exec('INSERT INTO events (at, kind, ticket_id, claim_id, actor, detail_json) VALUES (?, ?, ?, ?, ?, ?)',
+    at, kind, ticketId, claimId, actor, JSON.stringify(detail));
 }
 
 /** `bytes` random bytes as hex: a claim's 6-hex nonce, a legacy worker's unusable secret hash. */

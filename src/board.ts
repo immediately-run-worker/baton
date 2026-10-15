@@ -1,4 +1,4 @@
-// board.ts — what a board snapshot becomes in the `work_items` cache (BATON_SPEC §4, §7.1,
+// board.ts — what a board snapshot becomes in the `tickets` cache (BATON_SPEC §4, §7.1,
 // R-BTN-33/35). Pure: the Durable Object does the SQL. Only filter fields survive — an item's
 // body, Status notes, exit criteria and PR list never reach Baton; the dashboard links each
 // item to its file on GitHub instead.
@@ -55,8 +55,8 @@ export interface ProvidersData {
   models: { provider: string; model: string; monthly_limit_usd: number | null; peak_schedule?: string }[];
 }
 
-/** A `work_items` row (§4) plus its expanded requirements (`work_item_requires`). */
-export interface WorkItemRow {
+/** A `tickets` row (§4) plus its expanded requirements (`ticket_requires`). */
+export interface TicketRow {
   id: string;
   path: string;
   title: string;
@@ -213,7 +213,7 @@ function checkReference(p: BoardPayload) {
 /** The row an item becomes (R-BTN-33). `rank` is its index in the sync's `ready` list. A
  *  clause is stored expanded (§7.2 rule 4): a role becomes its capabilities, a legacy name
  *  stays itself, `none` stores nothing; `operator_only` carries rule 6. */
-export function rowFor(it: StateItem, rankOf: Map<string, number>): WorkItemRow {
+export function rowFor(it: StateItem, rankOf: Map<string, number>): TicketRow {
   const tags = it.tags ?? [];
   const names = it.requires ?? null;
   const clause = names == null ? 'absent' : names.every((n) => n === 'none') ? 'none' : 'listed';
@@ -250,7 +250,7 @@ export function calendarDate(v: unknown): string | null {
 }
 
 /** The row's hash: what decides whether an accepted snapshot rewrites it (§7.1). */
-export async function rowHash(row: WorkItemRow): Promise<string> {
+export async function rowHash(row: TicketRow): Promise<string> {
   const bytes = new TextEncoder().encode(JSON.stringify(row));
   const digest = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');

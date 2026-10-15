@@ -44,7 +44,7 @@ describe('§12: the event feed', () => {
     expect(all.cutover_at).toBe(T0);
     expect(all.next).toBe(all.events.at(-1).seq);
     const claimed = all.events[1];
-    expect(claimed).toMatchObject({ kind: 'claimed', work_item_id: 'R3-9001', claim_id: c.claim_id, actor: 'worker', detail: {} });
+    expect(claimed).toMatchObject({ kind: 'claimed', ticket_id: 'R3-9001', claim_id: c.claim_id, actor: 'worker', detail: {} });
     expect(claimed.claim).toMatchObject({ nonce: c.nonce, status: 'released', started: true, legacy: false });
     expect(claimed.claim.request_id).toBeUndefined();
     const released = all.events[2];
@@ -71,17 +71,17 @@ describe('§12: the event feed', () => {
 });
 
 describe('§12: foreign claims', () => {
-  const report = (body: Record<string, unknown>) => mirrorCall('/v1/sync/foreign-claim', { work_item_id: 'R3-9001', nonce: 'f0f0f0', sha: sha.B, at: T0, ...body });
+  const report = (body: Record<string, unknown>) => mirrorCall('/v1/sync/foreign-claim', { ticket_id: 'R3-9001', nonce: 'f0f0f0', sha: sha.B, at: T0, ...body });
 
   it('before cutover git decides alone: ignored', async () => {
     expect(await (await report({})).json()).toEqual({ ignored: 'shadow' });
-    expect(await rows('SELECT count(*) AS n FROM work_item_claims')).toEqual([{ n: 0 }]);
+    expect(await rows('SELECT count(*) AS n FROM claims')).toEqual([{ n: 0 }]);
   });
 
   it('a held item keeps its holder: the answer names the holder’s nonce and the report is logged', async () => {
     await cutover(T0);
     const { secret } = await register('vm-a');
-    const { json: c } = await claimItem('vm-a', secret, { work_item_id: 'R3-9001' });
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'R3-9001' });
     expect(await (await report({})).json()).toEqual({ held: true, claim_id: c.claim_id, nonce: c.nonce, claimed_at: T0 });
     expect((await beat('vm-a', secret)).json.claim).toMatchObject({ id: c.claim_id, nonce: c.nonce });
     expect(await rows(`SELECT kind, json_extract(detail_json, '$.nonce') AS nonce FROM events WHERE kind = 'foreign-claim'`)).toEqual([{ kind: 'foreign-claim', nonce: 'f0f0f0' }]);
@@ -94,17 +94,17 @@ describe('§12: foreign claims', () => {
     await cutover(T0);
     expect(await (await report({})).json()).toEqual({ imported: true, claim_id: expect.any(Number), nonce: 'f0f0f0' });
     expect(await (await report({})).json()).toEqual({ imported: true, claim_id: expect.any(Number), nonce: 'f0f0f0' });
-    expect(await rows(`SELECT c.nonce, c.reap_after, w.kind FROM work_item_claims c JOIN workers w ON w.id = c.worker_id`)).toEqual([
+    expect(await rows(`SELECT c.nonce, c.reap_after, w.kind FROM claims c JOIN workers w ON w.id = c.worker_id`)).toEqual([
       { nonce: 'f0f0f0', reap_after: T0 + 7 * 24 * 3_600_000, kind: 'legacy' }]);
     // The cutover import's shape, its claimed (legacy) event included: the export's claim record.
-    const feedKinds = (await feed()).events.filter((e) => e.work_item_id === 'R3-9001').map((e) => [e.kind, e.detail]);
+    const feedKinds = (await feed()).events.filter((e) => e.ticket_id === 'R3-9001').map((e) => [e.kind, e.detail]);
     expect(feedKinds).toEqual([['claimed', { legacy: true, foreign: true }], ['foreign-claim', { nonce: 'f0f0f0', sha: sha.B, imported: true }]]);
     expect((await feed()).events.find((e) => e.kind === 'claimed').claim).toMatchObject({ nonce: 'f0f0f0', legacy: true });
   });
 
   it('refuses a malformed report', async () => {
     await cutover(T0);
-    for (const bad of [{ nonce: 'xyz' }, { work_item_id: '../R3' }, { sha: 'abc' }, { at: -1 }]) {
+    for (const bad of [{ nonce: 'xyz' }, { ticket_id: '../R3' }, { sha: 'abc' }, { at: -1 }]) {
       expect([JSON.stringify(bad), (await report(bad)).status]).toEqual([JSON.stringify(bad), 400]);
     }
   });
@@ -114,9 +114,9 @@ describe('§10.3: Baton dispatches the workflows after a transition', () => {
   it('nothing before cutover; after it, a claim and an end dispatch the mirror, a completion the sync too', async () => {
     const sent = await captureDispatches();
     const { secret } = await register('vm-a');
-    await workerCall('/v1/worker/shadow-report', { secret, body: { transition: 'claim', work_item_id: 'R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 } });
+    await workerCall('/v1/worker/shadow-report', { secret, body: { transition: 'claim', ticket_id: 'R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 } });
     expect(sent).toEqual([]);
-    await workerCall('/v1/worker/shadow-report', { secret, body: { transition: 'set', work_item_id: 'R3-9001', status: 'available', at: T0 } });
+    await workerCall('/v1/worker/shadow-report', { secret, body: { transition: 'set', ticket_id: 'R3-9001', status: 'available', at: T0 } });
     expect(sent).toEqual([]);
     await cutover(T0);
     const { json: c } = await claimItem('vm-a', secret);
@@ -129,7 +129,7 @@ describe('§10.3: Baton dispatches the workflows after a transition', () => {
     await cutover(T0);
     const sent = await captureDispatches();
     const { secret } = await register('vm-a');
-    expect((await claimItem('vm-a', secret, { work_item_id: 'R3-9004' })).status).toBe(409);
+    expect((await claimItem('vm-a', secret, { ticket_id: 'R3-9004' })).status).toBe(409);
     expect(sent).toEqual([]);
     await claimItem('vm-a', secret);
     sent.length = 0;

@@ -38,8 +38,8 @@ export class Mirror {
    */
   events(after: number, limit: number) {
     const n = Math.min(Math.max(1, limit || MAX_PAGE), MAX_PAGE);
-    const rows = this.rows<{ seq: number; at: number; kind: string; work_item_id: string | null; claim_id: number | null; actor: string; detail_json: string | null }>(
-      'SELECT seq, at, kind, work_item_id, claim_id, actor, detail_json FROM events WHERE seq > ? ORDER BY seq LIMIT ?', after, n);
+    const rows = this.rows<{ seq: number; at: number; kind: string; ticket_id: string | null; claim_id: number | null; actor: string; detail_json: string | null }>(
+      'SELECT seq, at, kind, ticket_id, claim_id, actor, detail_json FROM events WHERE seq > ? ORDER BY seq LIMIT ?', after, n);
     const events = rows.map((e) => {
       let detail: Record<string, unknown> = {};
       try {
@@ -48,7 +48,7 @@ export class Mirror {
         detail = {};
       }
       const kept = Object.fromEntries(Object.entries(detail).filter(([k]) => DETAIL_KEYS.has(k)));
-      return { seq: e.seq, at: e.at, kind: e.kind, work_item_id: e.work_item_id, claim_id: e.claim_id, actor: actorKind(e.actor), detail: kept, claim: e.claim_id ? this.claim(e.claim_id) : null };
+      return { seq: e.seq, at: e.at, kind: e.kind, ticket_id: e.ticket_id, claim_id: e.claim_id, actor: actorKind(e.actor), detail: kept, claim: e.claim_id ? this.claim(e.claim_id) : null };
     });
     const at = this.rows<{ value: string }>(`SELECT value FROM baton_settings WHERE key = 'cutover_at'`)[0]?.value;
     return { events, next: events.at(-1)?.seq ?? after, cutover_at: at == null ? null : Number(at) };
@@ -56,7 +56,7 @@ export class Mirror {
 
   private claim(id: number) {
     const c = this.rows<{ id: number; nonce: string; status: string; end_reason: string | null; claimed_at: number; ended_at: number | null; ended_at_sha: string | null; request_id: string }>(
-      'SELECT id, nonce, status, end_reason, claimed_at, ended_at, ended_at_sha, request_id FROM work_item_claims WHERE id = ?', id)[0];
+      'SELECT id, nonce, status, end_reason, claimed_at, ended_at, ended_at_sha, request_id FROM claims WHERE id = ?', id)[0];
     if (!c) return null;
     // §13 step 3: an imported claim (the cutover's, or a foreign one) is legacy for good — even
     // once adopted — and its git note is claim.sh's, not the mirror's: the mirror ends it on that.
@@ -82,22 +82,22 @@ export class Mirror {
    */
   foreignClaim(body: unknown) {
     const b = (body ?? {}) as Record<string, unknown>;
-    if (typeof b.work_item_id !== 'string' || !ITEM_ID.test(b.work_item_id)) throw new BatonError('invalid-params', 'work_item_id: must be a work item id');
+    if (typeof b.ticket_id !== 'string' || !ITEM_ID.test(b.ticket_id)) throw new BatonError('invalid-params', 'ticket_id: must be a work item id');
     if (typeof b.nonce !== 'string' || !NONCE.test(b.nonce)) throw new BatonError('invalid-params', 'nonce: must be the claim note’s 6 hex');
     if (typeof b.sha !== 'string' || !GIT_SHA.test(b.sha)) throw new BatonError('invalid-params', 'sha: must be the claim commit');
     if (!Number.isInteger(b.at) || (b.at as number) < 0) throw new BatonError('invalid-params', 'at: must be the commit’s epoch ms');
-    const item = b.work_item_id;
+    const item = b.ticket_id;
     const nonce = b.nonce;
     const cut = this.rows(`SELECT 1 FROM baton_settings WHERE key = 'cutover_at'`).length > 0;
     if (!cut) return { ignored: 'shadow' };
     const now = this.c.now();
     const holder = this.rows<{ id: number; nonce: string; claimed_at: number }>(
-      `SELECT id, nonce, claimed_at FROM work_item_claims WHERE work_item_id = ? AND status = 'active'`, item)[0];
+      `SELECT id, nonce, claimed_at FROM claims WHERE ticket_id = ? AND status = 'active'`, item)[0];
     if (holder && holder.nonce === nonce) return { imported: true, claim_id: holder.id, nonce };
     if (holder) {
       // A repeated report of the same commit (a run that failed before its scan point moved)
       // logs nothing new.
-      const seen = this.rows(`SELECT 1 FROM events WHERE kind = 'foreign-claim' AND work_item_id = ? AND json_extract(detail_json, '$.sha') = ?`, item, b.sha).length;
+      const seen = this.rows(`SELECT 1 FROM events WHERE kind = 'foreign-claim' AND ticket_id = ? AND json_extract(detail_json, '$.sha') = ?`, item, b.sha).length;
       if (!seen) logEvent(this.c.storage.sql, now, 'foreign-claim', 'sync', { nonce, holder_nonce: holder.nonce, sha: b.sha }, item, holder.id);
       return { held: true, claim_id: holder.id, nonce: holder.nonce, claimed_at: holder.claimed_at };
     }

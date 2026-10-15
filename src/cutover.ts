@@ -27,7 +27,7 @@ export function importLegacyClaim(sql: SqlStorage, now: number,
   sql.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at)
             VALUES ('legacy', ?, ?, 'legacy', 'claude-code', 'legacy', 'critical', 0, '', ?, ?)`, session, randomHex(32), now, now);
   const workerId = sql.exec('SELECT last_insert_rowid() AS id').one().id as number;
-  sql.exec(`INSERT INTO work_item_claims (work_item_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, reap_after)
+  sql.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, reap_after)
             VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`, o.item, workerId, o.requestId, o.nonce, o.sha, o.claimedAt, o.claimedAt + LEGACY_REAP_MS);
   const claimId = sql.exec('SELECT last_insert_rowid() AS id').one().id as number;
   logEvent(sql, now, 'claimed', 'baton', { legacy: true, session, ...(o.detail ?? {}) }, o.item, claimId);
@@ -48,8 +48,8 @@ export class Cutover {
   private exec(q: string, ...p: unknown[]) {
     return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[]));
   }
-  private event(kind: string, actor: string, detail: unknown, workItemId: string | null = null, claimId: number | null = null) {
-    logEvent(this.c.storage.sql, this.c.now(), kind, actor, detail, workItemId, claimId);
+  private event(kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null) {
+    logEvent(this.c.storage.sql, this.c.now(), kind, actor, detail, ticketId, claimId);
   }
 
   cutoverAt(): number | null {
@@ -84,8 +84,8 @@ export class Cutover {
    *  active claim reaped at the note's date plus 7 days. */
   private importLegacy(sha: string, now: number): string[] {
     const items = this.rows<{ id: string; since: string | null; holder: string | null }>(
-      `SELECT id, since, holder FROM work_items w WHERE status = 'in-progress'
-       AND NOT EXISTS (SELECT 1 FROM work_item_claims c WHERE c.work_item_id = w.id AND c.status = 'active') ORDER BY id`);
+      `SELECT id, since, holder FROM tickets w WHERE status = 'in-progress'
+       AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.ticket_id = w.id AND c.status = 'active') ORDER BY id`);
     const out: string[] = [];
     for (const it of items) {
       // A holder session that two notes share falls back to the item's own name rather than
@@ -104,19 +104,19 @@ export class Cutover {
    *  note named no holder (`item-<id>`), any session may ask; the owner's confirmation is the
    *  gate either way. The claim does not move here. */
   adopt(workerId: number, body: unknown) {
-    const item = (body as { work_item_id?: unknown } | null)?.work_item_id;
-    if (typeof item !== 'string' || !ITEM_ID.test(item)) throw new BatonError('invalid-params', 'work_item_id: must be a work item id');
+    const item = (body as { ticket_id?: unknown } | null)?.ticket_id;
+    if (typeof item !== 'string' || !ITEM_ID.test(item)) throw new BatonError('invalid-params', 'ticket_id: must be a work item id');
     if (this.cutoverAt() == null) throw new BatonError('not-cut-over', 'adoption follows the cutover import');
     const c = this.rows<{ id: number; nonce: string; session_name: string }>(
-      `SELECT c.id, c.nonce, w.session_name FROM work_item_claims c JOIN workers w ON w.id = c.worker_id
-       WHERE c.work_item_id = ? AND c.status = 'active' AND w.kind = 'legacy'`, item)[0];
+      `SELECT c.id, c.nonce, w.session_name FROM claims c JOIN workers w ON w.id = c.worker_id
+       WHERE c.ticket_id = ? AND c.status = 'active' AND w.kind = 'legacy'`, item)[0];
     if (!c) throw new BatonError('not-found', `${item} has no legacy claim to adopt`);
     const me = this.rows<{ session_name: string }>('SELECT session_name FROM workers WHERE id = ?', workerId)[0];
     if (c.session_name !== `item-${item}` && c.session_name !== me.session_name) {
       throw new BatonError('forbidden', 'only the session the claim note names may ask to adopt it');
     }
-    this.exec(`INSERT INTO adoptions (work_item_id, claim_id, worker_id, requested_at) VALUES (?, ?, ?, ?)
-               ON CONFLICT (work_item_id) DO UPDATE SET claim_id = excluded.claim_id, worker_id = excluded.worker_id, requested_at = excluded.requested_at`,
+    this.exec(`INSERT INTO adoptions (ticket_id, claim_id, worker_id, requested_at) VALUES (?, ?, ?, ?)
+               ON CONFLICT (ticket_id) DO UPDATE SET claim_id = excluded.claim_id, worker_id = excluded.worker_id, requested_at = excluded.requested_at`,
       item, c.id, workerId, this.c.now());
     return { claim_id: c.id, nonce: c.nonce, pending: true };
   }
@@ -125,10 +125,10 @@ export class Cutover {
    *  that asked. The per-worker index refuses it if that session already holds another item. */
   confirmAdoption(owner: string, item: string, body: unknown) {
     checkConfirm(body);
-    const a = this.rows<{ claim_id: number; worker_id: number }>('SELECT claim_id, worker_id FROM adoptions WHERE work_item_id = ?', item)[0];
+    const a = this.rows<{ claim_id: number; worker_id: number }>('SELECT claim_id, worker_id FROM adoptions WHERE ticket_id = ?', item)[0];
     if (!a) throw new BatonError('not-found', 'no adoption request for that item');
     // (A legacy claim that ends deletes its request in Claims.finish, so it is never stale here.)
-    const live = this.rows(`SELECT 1 FROM work_item_claims c JOIN workers w ON w.id = c.worker_id WHERE c.id = ? AND c.status = 'active' AND w.kind = 'legacy'`, a.claim_id).length;
+    const live = this.rows(`SELECT 1 FROM claims c JOIN workers w ON w.id = c.worker_id WHERE c.id = ? AND c.status = 'active' AND w.kind = 'legacy'`, a.claim_id).length;
     if (!live) throw new BatonError('claim-ended', 'the legacy claim has ended');
     // A late confirmation must not hand a live claim to a session that has since gone silent:
     // the alarm would reap it at once, as a failed attempt (§6.10).
@@ -138,20 +138,20 @@ export class Cutover {
       throw new BatonError('not-eligible', 'the session that asked is no longer alive; it must ask again', { rule: 'requester-silent' });
     }
     try {
-      this.exec('UPDATE work_item_claims SET worker_id = ?, reap_after = NULL WHERE id = ?', a.worker_id, a.claim_id);
+      this.exec('UPDATE claims SET worker_id = ?, reap_after = NULL WHERE id = ?', a.worker_id, a.claim_id);
     } catch (e) {
       if (isUniqueViolation(e)) throw new BatonError('not-eligible', 'that session already holds another item', { rule: 'one-claim-per-worker' });
       throw e;
     }
-    this.exec('DELETE FROM adoptions WHERE work_item_id = ?', item);
+    this.exec('DELETE FROM adoptions WHERE ticket_id = ?', item);
     this.event('adopted', `owner:${owner}`, { worker_id: a.worker_id }, item, a.claim_id);
     return { ok: true };
   }
 
   adoptions() {
     // Only requests the owner can act on: the legacy claim still active, the asker still alive.
-    return this.rows(`SELECT a.work_item_id, a.claim_id, a.worker_id, a.requested_at, w.hostname, w.session_name, l.session_name AS legacy_session
-                      FROM adoptions a JOIN workers w ON w.id = a.worker_id JOIN work_item_claims c ON c.id = a.claim_id
+    return this.rows(`SELECT a.ticket_id, a.claim_id, a.worker_id, a.requested_at, w.hostname, w.session_name, l.session_name AS legacy_session
+                      FROM adoptions a JOIN workers w ON w.id = a.worker_id JOIN claims c ON c.id = a.claim_id
                       JOIN workers l ON l.id = c.worker_id
                       WHERE c.status = 'active' AND l.kind = 'legacy' AND w.reaped_at IS NULL AND ? - w.last_seen_at < w.lease_timeout_ms
                       ORDER BY a.requested_at`, this.c.now());

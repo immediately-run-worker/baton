@@ -69,7 +69,7 @@ describe('S-BTN-8 / S-BTN-9 server halves', () => {
     expect((await owner('/v1/ui/suspensions', { provider_id: 'opencode_go_plus', mode: 'no-new-work', starts_at: T0, ends_at: null, reason: 'over budget' })).status).toBe(200);
     const hb = await beat('vm-a', go.secret, GO);
     expect(hb.json.suspensions).toEqual([expect.objectContaining({ provider_id: 'opencode_go_plus', mode: 'no-new-work' })]);
-    expect(hb.json.claim).toMatchObject({ work_item_id: 'R3-9001' });
+    expect(hb.json.claim).toMatchObject({ ticket_id: 'R3-9001' });
     expect(hb.json.messages).toEqual([]);
     expect(await releases(go.id)).toEqual([]);
   });
@@ -83,7 +83,7 @@ describe('S-BTN-8 / S-BTN-9 server halves', () => {
 
     const hb = await beat('vm-a', go.secret, GO);
     expect(hb.json.suspensions).toEqual([expect.objectContaining({ provider_id: 'opencode_go_plus', mode: 'stop' })]);
-    expect(hb.json.messages).toEqual([expect.objectContaining({ kind: 'release', payload: { work_item_id: 'R3-9001', reason: 'provider-suspended' } })]);
+    expect(hb.json.messages).toEqual([expect.objectContaining({ kind: 'release', payload: { ticket_id: 'R3-9001', reason: 'provider-suspended' } })]);
     expect((await beat('vm-b', zai.secret)).json.messages).toEqual([]);
     expect(await releases(zai.id)).toEqual([]);
 

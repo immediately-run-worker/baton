@@ -50,11 +50,11 @@ describe('POST /v1/sync/board', () => {
     // The sync re-posts every 15 minutes: a repeat changes nothing.
     await setClock(Date.parse('2026-10-13T12:15:00Z'));
     expect((await body(await post(D, B, 'D', { force: true }))).code).toBe('snapshot-rejected');
-    const held = await rows('SELECT sha, parent_sha, head_sha, item_count, received_at, auto_accept_at, accepted_at FROM held_snapshots');
-    expect(held).toEqual([{ sha: D, parent_sha: B, head_sha: B, item_count: 3, received_at: Date.parse('2026-10-13T12:00:00Z'), auto_accept_at: Date.parse('2026-10-14T12:00:00Z'), accepted_at: null }]);
+    const held = await rows('SELECT sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at, accepted_at FROM held_snapshots');
+    expect(held).toEqual([{ sha: D, parent_sha: B, head_sha: B, ticket_count: 3, received_at: Date.parse('2026-10-13T12:00:00Z'), auto_accept_at: Date.parse('2026-10-14T12:00:00Z'), accepted_at: null }]);
     expect(await rows(`SELECT 1 FROM events WHERE kind = 'snapshot-rejected'`)).toHaveLength(1);
     // Nothing of D reached the cache: R3-9003 (archived in D) is still there.
-    expect(await rows(`SELECT id FROM work_items WHERE id = 'R3-9003'`)).toHaveLength(1);
+    expect(await rows(`SELECT id FROM tickets WHERE id = 'R3-9003'`)).toHaveLength(1);
   });
 
   it.each([
@@ -87,7 +87,7 @@ describe('POST /v1/sync/board', () => {
     const live = inject('liveBoard') as { state: { items: unknown[] }; ready: string[]; providers: { accounts: unknown[] }; reviewers: object };
     const res = await syncCall('/v1/sync/board', payload('f'.repeat(40), null, live));
     expect(res.status).toBe(200);
-    expect(await rows('SELECT count(*) AS n FROM work_items')).toEqual([{ n: live.state.items.length }]);
+    expect(await rows('SELECT count(*) AS n FROM tickets')).toEqual([{ n: live.state.items.length }]);
     expect(await rows('SELECT count(*) AS n FROM model_providers')).toEqual([{ n: live.providers.accounts.length }]);
     expect(await rows('SELECT count(*) AS n FROM reviewer_agents')).toEqual([{ n: Object.keys(live.reviewers).length }]);
   });

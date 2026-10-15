@@ -17,7 +17,7 @@ beforeEach(async () => {
 describe('S-BTN-2 silent worker reaped (server half)', () => {
   it('reaped exactly at its timeout, the item re-issued, the dead session fenced out', async () => {
     const dead = await register('vm-a');
-    const { json: c } = await claimItem('vm-a', dead.secret, { work_item_id: 'R3-9001' });
+    const { json: c } = await claimItem('vm-a', dead.secret, { ticket_id: 'R3-9001' });
     // The sidecar is killed after its last heartbeat at T0 + 2 min.
     await setClock(T0 + 120_000);
     await beat('vm-a', dead.secret);
@@ -26,7 +26,7 @@ describe('S-BTN-2 silent worker reaped (server half)', () => {
     await setClock(T0 + 120_000 + 900_000 - 1);
     await tick();
     expect((await claimRow(c.claim_id)).status).toBe('active');
-    expect((await claimItem('vm-b', live.secret, { work_item_id: 'R3-9001' })).json.rule).toBe(3);
+    expect((await claimItem('vm-b', live.secret, { ticket_id: 'R3-9001' })).json.rule).toBe(3);
 
     await setClock(T0 + 120_000 + 900_000);
     await tick();
@@ -37,10 +37,10 @@ describe('S-BTN-2 silent worker reaped (server half)', () => {
     // A reap for silence is a failed attempt (R-BTN-23): the item is re-issued after its
     // 1-hour backoff, with the dead claim's resume record.
     await beat('vm-b', live.secret);
-    expect((await claimItem('vm-b', live.secret, { work_item_id: 'R3-9001' })).json).toMatchObject({ code: 'backing-off', rule: 10 });
+    expect((await claimItem('vm-b', live.secret, { ticket_id: 'R3-9001' })).json).toMatchObject({ code: 'backing-off', rule: 10 });
     await setClock(T0 + 1_020_000 + 3_600_000);
     await beat('vm-b', live.secret);
-    const reissued = await claimItem('vm-b', live.secret, { work_item_id: 'R3-9001' });
+    const reissued = await claimItem('vm-b', live.secret, { ticket_id: 'R3-9001' });
     expect(reissued.status).toBe(200);
     expect(reissued.json.previous_attempts).toEqual([{ claim_id: c.claim_id, status: 'reaped', end_reason: 'reaped:silent', ended_at: T0 + 1_020_000,
       resume: expect.objectContaining({ end_reason: 'reaped:silent', ended_at: T0 + 1_020_000, last_activity: null }) }]);
@@ -48,8 +48,8 @@ describe('S-BTN-2 silent worker reaped (server half)', () => {
     // The dead session, resumed: its heartbeat is refused, and its pre-push hook's holder query
     // (token alone) finds another live holder.
     expect((await beat('vm-a', dead.secret)).json.code).toBe('worker-reaped');
-    expect(await (await workerCall('/v1/worker/items/R3-9001/holder', { cred: 'vm-a' })).json()).toEqual({ held_by_other: true, fence_pending: false });
+    expect(await (await workerCall('/v1/worker/tickets/R3-9001/holder', { cred: 'vm-a' })).json()).toEqual({ held_by_other: true, fence_pending: false });
     // The new holder asking about its own item is not "another".
-    expect(await (await workerCall('/v1/worker/items/R3-9001/holder', { cred: 'vm-b', secret: live.secret })).json()).toEqual({ held_by_other: false, fence_pending: false });
+    expect(await (await workerCall('/v1/worker/tickets/R3-9001/holder', { cred: 'vm-b', secret: live.secret })).json()).toEqual({ held_by_other: false, fence_pending: false });
   });
 });

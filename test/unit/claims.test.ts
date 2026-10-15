@@ -37,19 +37,19 @@ describe('the claim and end contracts (§6.2, §6.5, §11)', () => {
     await cutover();
     const c = await claimItem('vm-a', secret);
     expect(c.status).toBe(200);
-    expect(c.json).toEqual({ claim_id: expect.any(Number), work_item_id: 'R3-9001', path: 'content/roadmap/R3-9001.mdx', nonce: expect.stringMatching(/^[0-9a-f]{6}$/), snapshot_sha: sha.A, previous_attempts: [] });
-    expect((await beat('vm-a', secret)).json.claim).toMatchObject({ id: c.json.claim_id, work_item_id: 'R3-9001', nonce: c.json.nonce });
+    expect(c.json).toEqual({ claim_id: expect.any(Number), ticket_id: 'R3-9001', path: 'content/roadmap/R3-9001.mdx', nonce: expect.stringMatching(/^[0-9a-f]{6}$/), snapshot_sha: sha.A, previous_attempts: [] });
+    expect((await beat('vm-a', secret)).json.claim).toMatchObject({ id: c.json.claim_id, ticket_id: 'R3-9001', nonce: c.json.nonce });
   });
 
   it('GET next answers what a claim would, without claiming; a named item that is not ready is refused with its rule', async () => {
     const { secret } = await register('vm-a');
-    expect(await (await workerCall('/v1/worker/next', { secret })).json()).toEqual({ work_item_id: 'R3-9001', rank_reason: 'autonomous queue · rank 0' });
-    expect(await rows('SELECT count(*) AS n FROM work_item_claims')).toEqual([{ n: 0 }]);
-    const blocked = await claimItem('vm-a', secret, { work_item_id: 'R3-9004' });
+    expect(await (await workerCall('/v1/worker/next', { secret })).json()).toEqual({ ticket_id: 'R3-9001', rank_reason: 'autonomous queue · rank 0' });
+    expect(await rows('SELECT count(*) AS n FROM claims')).toEqual([{ n: 0 }]);
+    const blocked = await claimItem('vm-a', secret, { ticket_id: 'R3-9004' });
     expect([blocked.status, blocked.json.code, blocked.json.rule]).toEqual([409, 'not-eligible', 1]);
-    const op = await claimItem('vm-a', secret, { work_item_id: 'R3-9003' });
+    const op = await claimItem('vm-a', secret, { ticket_id: 'R3-9003' });
     expect([op.json.code, op.json.rule]).toEqual(['not-eligible', 4]); // github-admin is not declared
-    expect((await claimItem('vm-a', secret, { work_item_id: 'R3-9002' })).json.work_item_id).toBe('R3-9002');
+    expect((await claimItem('vm-a', secret, { ticket_id: 'R3-9002' })).json.ticket_id).toBe('R3-9002');
   });
 
   it('ends only in §6.5’s vocabulary; a completed end names its commit; only the holder ends; a retried end is a no-op', async () => {
@@ -86,8 +86,8 @@ describe('the claim and end contracts (§6.2, §6.5, §11)', () => {
     const vm = await register('vm-a');
     // R3-9003 also needs github-admin, which neither declares: refused on rule 4 for both. The
     // ordering of refusals is isEligible's: capabilities (4) come before operator-only (6).
-    expect((await claimItem('mac', mac.secret, { work_item_id: 'R3-9003' })).json.rule).toBe(4);
-    expect((await claimItem('vm-a', vm.secret, { work_item_id: 'R3-9003' })).json.rule).toBe(4);
+    expect((await claimItem('mac', mac.secret, { ticket_id: 'R3-9003' })).json.rule).toBe(4);
+    expect((await claimItem('vm-a', vm.secret, { ticket_id: 'R3-9003' })).json.rule).toBe(4);
   });
 });
 
@@ -95,20 +95,20 @@ describe('G-BTN-1: one active claim per item and per worker', () => {
   it('two concurrent claims for one item: exactly one succeeds', async () => {
     const a = await register('vm-a');
     const b = await register('vm-b');
-    const [x, y] = await Promise.all([claimItem('vm-a', a.secret, { work_item_id: 'R3-9001' }), claimItem('vm-b', b.secret, { work_item_id: 'R3-9001' })]);
+    const [x, y] = await Promise.all([claimItem('vm-a', a.secret, { ticket_id: 'R3-9001' }), claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })]);
     expect([x.status, y.status].sort()).toEqual([200, 409]);
     expect([x, y].find((r) => r.status === 409)!.json).toMatchObject({ code: 'not-eligible', rule: 3 });
-    expect(await rows(`SELECT count(*) AS n FROM work_item_claims WHERE status = 'active'`)).toEqual([{ n: 1 }]);
+    expect(await rows(`SELECT count(*) AS n FROM claims WHERE status = 'active'`)).toEqual([{ n: 1 }]);
   });
 
   it('two claims by one worker: the second is refused; the index refuses a second row however it is written', async () => {
     const a = await register('vm-a');
     expect((await claimItem('vm-a', a.secret)).status).toBe(200);
     expect(await claimItem('vm-a', a.secret)).toMatchObject({ status: 409, json: { code: 'not-eligible', rule: 'one-claim-per-worker' } });
-    await expect(rows(`INSERT INTO work_item_claims (work_item_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
+    await expect(rows(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
                        VALUES ('R3-9002', ?, 'raw-1', 'abcdef', '', 0, 'active')`, a.id)).rejects.toThrow(/UNIQUE/);
     const b = await register('vm-b');
-    await expect(rows(`INSERT INTO work_item_claims (work_item_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
+    await expect(rows(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
                        VALUES ('R3-9001', ?, 'raw-2', 'abcdef', '', 0, 'active')`, b.id)).rejects.toThrow(/UNIQUE/);
   });
 });
@@ -121,7 +121,7 @@ describe('G-BTN-2: a repeated request_id returns the original claim', () => {
     const first = await claimItem('vm-a', a.secret, body);
     const again = await claimItem('vm-a', a.secret, body);
     expect(again.json).toEqual(first.json);
-    expect(await rows('SELECT count(*) AS n FROM work_item_claims')).toEqual([{ n: 1 }]);
+    expect(await rows('SELECT count(*) AS n FROM claims')).toEqual([{ n: 1 }]);
     expect((await claimItem('vm-b', b.secret, body)).json.code).toBe('invalid-params');
   });
 });
@@ -163,7 +163,7 @@ describe('G-BTN-6: a completion is confirmed only by ancestry and status; until 
     },
     statusOf: (id: string) => itemsOf(next).find((i) => i.id === id)?.status ?? null,
   });
-  const decided = (endedAt: keyof typeof sha, next: keyof typeof sha) => confirmations([{ claim_id: 1, work_item_id: 'R3-9001', ended_at_sha: sha[endedAt] }], sha[next], deps(next));
+  const decided = (endedAt: keyof typeof sha, next: keyof typeof sha) => confirmations([{ claim_id: 1, ticket_id: 'R3-9001', ended_at_sha: sha[endedAt] }], sha[next], deps(next));
 
   it('the sync confirms none of: a stale snapshot, a wrong status, a force-pushed sha; it confirms a landed one', async () => {
     expect(await decided('B', 'A')).toEqual([]); // B is not an ancestor of A: the snapshot is stale
@@ -175,15 +175,15 @@ describe('G-BTN-6: a completion is confirmed only by ancestry and status; until 
   it('the server: unconfirmed blocks the item; the sync’s post confirms it and the item is claimable again', async () => {
     const a = await register('vm-a');
     const b = await register('vm-b');
-    const { json: c } = await claimItem('vm-a', a.secret, { work_item_id: 'R3-9001' });
+    const { json: c } = await claimItem('vm-a', a.secret, { ticket_id: 'R3-9001' });
     await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'done', ended_at_sha: sha.A });
-    expect((await claimItem('vm-b', b.secret, { work_item_id: 'R3-9001' })).json).toMatchObject({ code: 'not-eligible', rule: 3 });
+    expect((await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })).json).toMatchObject({ code: 'not-eligible', rule: 3 });
     expect((await (await syncCall('/v1/sync/head')).json() as { unconfirmed: unknown[] }).unconfirmed).toEqual([
-      { claim_id: c.claim_id, work_item_id: 'R3-9001', end_reason: 'done', ended_at_sha: sha.A }]);
-    const confirmed = await confirmations([{ claim_id: c.claim_id, work_item_id: 'R3-9001', ended_at_sha: sha.A }], sha.D, deps('D'));
+      { claim_id: c.claim_id, ticket_id: 'R3-9001', end_reason: 'done', ended_at_sha: sha.A }]);
+    const confirmed = await confirmations([{ claim_id: c.claim_id, ticket_id: 'R3-9001', ended_at_sha: sha.A }], sha.D, deps('D'));
     expect((await syncCall('/v1/sync/board', payload(sha.D, sha.A, board.states.D, { confirmations: confirmed }))).status).toBe(200);
     expect((await claimRow(c.claim_id)).confirmed_at).toBe(T0);
-    expect((await claimItem('vm-b', b.secret, { work_item_id: 'R3-9001' })).status).toBe(200);
+    expect((await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })).status).toBe(200);
   });
 
   it('a confirm-only post (the head re-sent) confirms too; a confirmation for anything else is ignored', async () => {
@@ -203,8 +203,8 @@ describe('G-BTN-14: a force-reaped live worker’s item waits for its fence', ()
     expect((await owner(`/v1/ui/claims/${c.claim_id}/reap`, {})).status).toBe(400); // names its confirmation
     expect(await (await owner(`/v1/ui/claims/${c.claim_id}/reap`, { confirm: true })).json()).toEqual({ ok: true, fence_pending: true });
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'reaped', end_reason: 'reaped:owner', fence_pending: 1 });
-    expect((await claimItem('vm-b', b.secret, { work_item_id: 'R3-9001' })).json.rule).toBe(3);
-    const token = await (await workerCall('/v1/worker/items/R3-9001/holder', { cred: 'vm-b' })).json();
+    expect((await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })).json.rule).toBe(3);
+    const token = await (await workerCall('/v1/worker/tickets/R3-9001/holder', { cred: 'vm-b' })).json();
     expect(token).toEqual({ held_by_other: false, fence_pending: true });
     // The live worker is told: its heartbeat no longer lists the claim.
     const told = await beat('vm-a', a.secret);
@@ -215,7 +215,7 @@ describe('G-BTN-14: a force-reaped live worker’s item waits for its fence', ()
     await beat('vm-a', a.secret, { fenced: { claim_id: c.claim_id, terminated: true } });
     expect((await claimRow(c.claim_id)).fence_pending).toBe(0);
     expect(await rows(`SELECT actor, json_extract(detail_json, '$.by') AS by FROM events WHERE kind = 'fence-cleared'`)).toEqual([{ actor: `worker:${a.id}`, by: 'sidecar' }]);
-    expect((await claimItem('vm-b', b.secret, { work_item_id: 'R3-9001' })).status).toBe(200);
+    expect((await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })).status).toBe(200);
   });
 
   it('a re-key never clears a fence; the worker’s own timeout does', async () => {
@@ -232,13 +232,13 @@ describe('G-BTN-14: a force-reaped live worker’s item waits for its fence', ()
     expect(await rows(`SELECT json_extract(detail_json, '$.by') AS by FROM events WHERE kind = 'fence-cleared'`)).toEqual([{ by: 'timeout' }]);
     await setClock(T0 + 900 * S);
     await beat('vm-b', b.secret);
-    expect((await claimItem('vm-b', b.secret, { work_item_id: 'R3-9001' })).status).toBe(200);
+    expect((await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })).status).toBe(200);
   });
 
   it('§9: a release unacknowledged for 2 hours reaps the claim, fence-pending', async () => {
     const a = await register('vm-a', { lease_timeout_s: 43_200 });
     const { json: c } = await claimItem('vm-a', a.secret);
-    await owner('/v1/ui/messages', { to_worker_id: a.id, kind: 'release', payload: { work_item_id: 'R3-9001', reason: 'requested' } });
+    await owner('/v1/ui/messages', { to_worker_id: a.id, kind: 'release', payload: { ticket_id: 'R3-9001', reason: 'requested' } });
     await beat('vm-a', a.secret, { lease_timeout_s: 43_200 }); // delivered at T0
     await alarmAt(T0 + 2 * 3_600_000 - S);
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'active' });
@@ -289,16 +289,16 @@ describe('G-BTN-40: the matching query and isEligible agree; git overtaking a cl
     ['re-tiered above the holder’s ceiling', (items: any[]) => items.map((i) => (i.id === 'R3-9002' ? { ...i, tier: 'critical' } : i))],
   ])('%s: the claim ends released:stale-board and the holder is told', async (_what, mutate) => {
     const { secret } = await register('vm-a', { tier_ceiling: 'judgement' });
-    const { json: c } = await claimItem('vm-a', secret, { work_item_id: 'R3-9002' });
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'R3-9002' });
     const res = await syncCall('/v1/sync/board', overtaken(mutate));
     expect(await res.json()).toMatchObject({ ok: true, stale_released: 1 });
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'released', end_reason: 'released:stale-board' });
-    expect((await beat('vm-a', secret)).json.messages).toEqual([expect.objectContaining({ kind: 'release', payload: expect.objectContaining({ work_item_id: 'R3-9002', reason: 'stale-board' }) })]);
+    expect((await beat('vm-a', secret)).json.messages).toEqual([expect.objectContaining({ kind: 'release', payload: expect.objectContaining({ ticket_id: 'R3-9002', reason: 'stale-board' }) })]);
   });
 
   it('an unchanged item keeps its claim', async () => {
     const { secret } = await register('vm-a');
-    const { json: c } = await claimItem('vm-a', secret, { work_item_id: 'R3-9002' });
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'R3-9002' });
     expect(await (await syncCall('/v1/sync/board', overtaken((items) => items))).json()).toMatchObject({ stale_released: 0 });
     expect((await claimRow(c.claim_id)).status).toBe('active');
   });

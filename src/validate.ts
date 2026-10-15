@@ -276,11 +276,11 @@ export function checkMessage(body: unknown): { to_worker_id: number; kind: 'rele
   if (b.kind === 'status_request') return { to_worker_id: b.to_worker_id as number, kind: 'status_request', payload: null };
   if (b.kind !== 'release') bad('kind', "must be 'release' or 'status_request'");
   const p = b.payload;
-  if (!isObj(p)) bad('payload', 'a release names {work_item_id, reason}');
+  if (!isObj(p)) bad('payload', 'a release names {ticket_id, reason}');
   const x = p as Record<string, unknown>;
-  const work_item_id = matches(ITEM_ID, 'payload.work_item_id')(x.work_item_id);
+  const ticket_id = matches(ITEM_ID, 'payload.ticket_id')(x.ticket_id);
   if (!RELEASE_REASONS.includes(x.reason as never)) bad('payload.reason', `must be one of ${RELEASE_REASONS.join(', ')}`);
-  return { to_worker_id: b.to_worker_id as number, kind: 'release', payload: { work_item_id, reason: x.reason } };
+  return { to_worker_id: b.to_worker_id as number, kind: 'release', payload: { ticket_id, reason: x.reason } };
 }
 
 export function checkSuspension(body: unknown, now: number) {
@@ -311,7 +311,7 @@ export function checkShadowReport(body: unknown) {
   if (b.transition !== 'claim' && b.transition !== 'set') bad('transition', "must be 'claim' or 'set'");
   return {
     transition: b.transition as 'claim' | 'set',
-    work_item_id: matches(ITEM_ID, 'work_item_id')(b.work_item_id),
+    ticket_id: matches(ITEM_ID, 'ticket_id')(b.ticket_id),
     status: matches(NAME, 'status')(b.status),
     // `claim.sh claim` writes the nonce; a later `set` may not know it.
     nonce: b.transition === 'claim' ? matches(/^[0-9a-f]{6}$/, 'nonce')(b.nonce) : optional(b.nonce, matches(/^[0-9a-f]{6}$/, 'nonce')),
@@ -328,12 +328,12 @@ export const RELEASE_END_REASONS = ['stale-board', 'cannot-finish:transient', 'c
   'lease-lost', 'requested', 'owner-cancel', 'provider-suspended', 'awaiting-review-capacity'] as const;
 const BUFFER = /^[a-z][a-z0-9-]{0,63}$/;
 
-export function checkClaim(body: unknown): { request_id: string; work_item_id: string | null } {
+export function checkClaim(body: unknown): { request_id: string; ticket_id: string | null } {
   if (!isObj(body)) bad('body', 'must be a JSON object');
   const b = body as Record<string, unknown>;
   return {
     request_id: matches(REQUEST_ID, 'request_id')(b.request_id),
-    work_item_id: optional(b.work_item_id, matches(ITEM_ID, 'work_item_id')) ?? null,
+    ticket_id: optional(b.ticket_id, matches(ITEM_ID, 'ticket_id')) ?? null,
   };
 }
 

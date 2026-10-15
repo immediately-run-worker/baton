@@ -203,7 +203,7 @@ export function claimBlocks(claim) {
  *   when it has none; `expedite` true for the expedite lane or an expedite override.
  * - `ctx`: `{now, claims, override, suspensions, minSkillsVersion, expediteActive,
  *   expediteBound, lastEndReason, authorFamilies, catalog, matrix}` — `claims` the item's
- *   claim rows, `override` its `item_overrides` row or `null`, `expediteActive` the active
+ *   claim rows, `override` its `ticket_overrides` row or `null`, `expediteActive` the active
  *   Baton claims on expedited items, `lastEndReason` its most recent claim's end.
  */
 export function isEligible(worker, item, ctx) {

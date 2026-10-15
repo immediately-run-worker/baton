@@ -119,9 +119,9 @@ export async function beat(cred: keyof typeof TOKENS, secret: string, over: Reco
 
 /** An active claim row, seeded directly: claims are R3-1212's; R3-1211 only reads them. */
 export async function seedClaim(workerId: number, item: string, at = 0) {
-  await rows(`INSERT INTO work_item_claims (work_item_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
+  await rows(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
               VALUES (?, ?, ?, 'abc123', '', ?, 'active')`, item, workerId, `seed:${workerId}:${item}`, at);
-  return (await rows<{ id: number }>(`SELECT id FROM work_item_claims WHERE work_item_id = ? AND status = 'active'`, item))[0].id;
+  return (await rows<{ id: number }>(`SELECT id FROM claims WHERE ticket_id = ? AND status = 'active'`, item))[0].id;
 }
 
 // ── claims (R3-1212) ──────────────────────────────────────────────────────────────────────
@@ -149,8 +149,8 @@ export async function endClaim(cred: keyof typeof TOKENS, secret: string, claimI
 
 /** A claim's row, for assertions. */
 export async function claimRow(id: number) {
-  return (await rows<{ status: string; end_reason: string | null; fence_pending: number; confirmed_at: number | null; work_item_id: string }>(
-    'SELECT status, end_reason, fence_pending, confirmed_at, work_item_id FROM work_item_claims WHERE id = ?', id))[0];
+  return (await rows<{ status: string; end_reason: string | null; fence_pending: number; confirmed_at: number | null; ticket_id: string }>(
+    'SELECT status, end_reason, fence_pending, confirmed_at, ticket_id FROM claims WHERE id = ?', id))[0];
 }
 
 /** One alarm tick, run directly. Not `runDurableObjectAlarm`: the fake clock sits behind the

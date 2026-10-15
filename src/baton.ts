@@ -151,7 +151,7 @@ export class Baton extends DurableObject<Env> {
         await this.workers.authWorker(cred, secret);
         return json(this.workers.mode());
       }
-      const holder = /^\/v1\/worker\/items\/([^/]+)\/holder$/.exec(p);
+      const holder = /^\/v1\/worker\/tickets\/([^/]+)\/holder$/.exec(p);
       if (m === 'GET' && holder) {
         // R-BTN-7: callable with the token alone (the witness has no sidecar); with a secret, the
         // caller's own claim is not "another".
@@ -248,7 +248,7 @@ export class Baton extends DurableObject<Env> {
   head() {
     const row = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0];
     const unconfirmed = this.sql(
-      `SELECT id AS claim_id, work_item_id, end_reason, ended_at_sha FROM work_item_claims
+      `SELECT id AS claim_id, ticket_id, end_reason, ended_at_sha FROM claims
        WHERE status = 'completed' AND confirmed_at IS NULL ORDER BY id`);
     return { sha: row?.sha ?? null, unconfirmed };
   }
@@ -283,9 +283,9 @@ export class Baton extends DurableObject<Env> {
       const deadline = known?.auto_accept_at ?? at + HELD_AUTO_ACCEPT_MS;
       if (!known) {
         this.ctx.storage.transactionSync(() => {
-          this.ctx.storage.sql.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, item_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
+          this.ctx.storage.sql.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
             p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
-          this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, item_count: p.state.items.length, auto_accept_at: deadline }, at);
+          this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, ticket_count: p.state.items.length, auto_accept_at: deadline }, at);
         });
       }
       throw new BatonError('snapshot-rejected', `a rewritten history is held for the owner until ${new Date(deadline).toISOString()}; claims continue on the current head`);
@@ -305,13 +305,13 @@ export class Baton extends DurableObject<Env> {
     }));
     const changed = { upserted: 0, deleted: 0 };
     this.ctx.storage.transactionSync(() => {
-      const have = new Map(this.sql<{ id: string; row_hash: string }>('SELECT id, row_hash FROM work_items').map((r) => [r.id, r.row_hash]));
+      const have = new Map(this.sql<{ id: string; row_hash: string }>('SELECT id, row_hash FROM tickets').map((r) => [r.id, r.row_hash]));
       for (const { row, hash } of rows) {
         const before = have.get(row.id);
         have.delete(row.id);
         if (before === hash) continue;
         this.ctx.storage.sql.exec(
-          `INSERT INTO work_items (id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only,
+          `INSERT INTO tickets (id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only,
              depends_on, blocked_by, repos, ord, rank, snapshot_sha, row_hash, since, holder)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (id) DO UPDATE SET path = excluded.path, title = excluded.title, project = excluded.project,
@@ -322,18 +322,18 @@ export class Baton extends DurableObject<Env> {
              since = excluded.since, holder = excluded.holder`,
           row.id, row.path, row.title, row.project, row.status, row.node, row.queue, row.tags, row.tier,
           row.requires_clause, row.operator_only, row.depends_on, row.blocked_by, row.repos, row.ord, row.rank, p.sha, hash, row.since, row.holder);
-        this.ctx.storage.sql.exec('DELETE FROM work_item_requires WHERE work_item_id = ?', row.id);
-        for (const name of row.requires) this.ctx.storage.sql.exec('INSERT INTO work_item_requires (work_item_id, name) VALUES (?, ?)', row.id, name);
+        this.ctx.storage.sql.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', row.id);
+        for (const name of row.requires) this.ctx.storage.sql.exec('INSERT INTO ticket_requires (ticket_id, name) VALUES (?, ?)', row.id, name);
         changed.upserted++;
       }
       // Items no longer live leave the cache (R-BTN-35); their claims and events stay.
       for (const gone of have.keys()) {
-        this.ctx.storage.sql.exec('DELETE FROM work_item_requires WHERE work_item_id = ?', gone);
-        this.ctx.storage.sql.exec('DELETE FROM work_items WHERE id = ?', gone);
+        this.ctx.storage.sql.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', gone);
+        this.ctx.storage.sql.exec('DELETE FROM tickets WHERE id = ?', gone);
         changed.deleted++;
       }
       this.reference(p);
-      this.ctx.storage.sql.exec('INSERT INTO board_snapshots (sha, parent_sha, received_at, item_count) VALUES (?, ?, ?, ?) ON CONFLICT (sha) DO NOTHING', p.sha, p.parent_sha, at, p.state.items.length);
+      this.ctx.storage.sql.exec('INSERT INTO board_snapshots (sha, parent_sha, received_at, ticket_count) VALUES (?, ?, ?, ?) ON CONFLICT (sha) DO NOTHING', p.sha, p.parent_sha, at, p.state.items.length);
       this.ctx.storage.sql.exec('INSERT INTO board_head (id, sha) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET sha = excluded.sha', p.sha);
       // A hold is against one head (R3-1223): when the head moves — an accepted rewrite or a
       // plain fast-forward — every row held against the head it leaves is retired, answered or
@@ -342,7 +342,7 @@ export class Baton extends DurableObject<Env> {
       // its sha is held afresh. So every row left is a hold against the current head. Their
       // history stays in the events.
       this.ctx.storage.sql.exec('DELETE FROM held_snapshots WHERE head_sha IS ?', head);
-      this.event('snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, item_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
+      this.event('snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, ticket_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
       (changed as Record<string, number>).confirmed = this.claims.confirm(confirmations);
       // R-BTN-35: git wins over a claim it has overtaken.
       (changed as Record<string, number>).stale_released = this.claims.staleBoard();
@@ -403,13 +403,13 @@ export class Baton extends DurableObject<Env> {
   uiState() {
     const now = this.now();
     const headSha = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? null;
-    const snap = headSha ? this.sql('SELECT sha, parent_sha, received_at, item_count FROM board_snapshots WHERE sha = ?', headSha)[0] : null;
+    const snap = headSha ? this.sql('SELECT sha, parent_sha, received_at, ticket_count FROM board_snapshots WHERE sha = ?', headSha)[0] : null;
     const items = this.sql<Record<string, SqlStorageValue>>(
       `SELECT id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only, ord, rank
-       FROM work_items WHERE node LIKE 'ready-%' AND rank IS NOT NULL ORDER BY rank`);
+       FROM tickets WHERE node LIKE 'ready-%' AND rank IS NOT NULL ORDER BY rank`);
     const requires = new Map<string, string[]>();
-    for (const r of this.sql<{ work_item_id: string; name: string }>('SELECT work_item_id, name FROM work_item_requires ORDER BY name')) {
-      requires.set(r.work_item_id, [...(requires.get(r.work_item_id) ?? []), r.name]);
+    for (const r of this.sql<{ ticket_id: string; name: string }>('SELECT ticket_id, name FROM ticket_requires ORDER BY name')) {
+      requires.set(r.ticket_id, [...(requires.get(r.ticket_id) ?? []), r.name]);
     }
     const ready = items.map((r) => ({
       id: r.id,
@@ -442,7 +442,7 @@ export class Baton extends DurableObject<Env> {
     });
 
     const held = this.sql(
-      `SELECT sha, parent_sha, head_sha, item_count, received_at, auto_accept_at FROM held_snapshots
+      `SELECT sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at FROM held_snapshots
        WHERE accepted_at IS NULL ORDER BY received_at`);
     const suspensions = this.sql(`SELECT id, provider_id, model_id, mode, starts_at, ends_at, reason, set_by, lifted_at FROM provider_suspensions
                                   WHERE lifted_at IS NULL AND (ends_at IS NULL OR ends_at > ?) ORDER BY starts_at`, now);
