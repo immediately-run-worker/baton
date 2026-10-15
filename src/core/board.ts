@@ -41,6 +41,8 @@ export const DEFAULT_COURSE = 'roadmap-pr';
 export interface BoardPayload {
   sha: string;
   parent_sha: string | null;
+  /** The number `POST /v1/sync/observation` handed out before the sync read anything (R-BTN-62). */
+  observation: number;
   force?: boolean;
   state: { items: StateItem[] };
   /** The ready items in `rankReady` order (lib/factoryState.mjs), computed by the sync. */
@@ -105,6 +107,7 @@ export function checkPayload(body: unknown): BoardPayload {
   if (!p || typeof p !== 'object') throw new BatonError('invalid-params', 'a JSON object is required');
   if (typeof p.sha !== 'string' || !SHA.test(p.sha)) throw new BatonError('invalid-params', 'sha must be a 40-hex commit');
   if (p.parent_sha !== null && (typeof p.parent_sha !== 'string' || !SHA.test(p.parent_sha))) throw new BatonError('invalid-params', 'parent_sha must be a 40-hex commit or null');
+  if (!Number.isSafeInteger(p.observation) || p.observation < 1) throw new BatonError('invalid-params', 'observation must be the number POST /v1/sync/observation handed out (R-BTN-62)');
   if (!p.state || !Array.isArray(p.state.items)) throw new BatonError('invalid-params', 'state.items is required');
   if (!Array.isArray(p.ready) || !p.ready.every((id) => typeof id === 'string' && ID.test(id))) throw new BatonError('invalid-params', 'ready must be the rankReady id list');
   const seen = new Set<string>();

@@ -129,6 +129,12 @@ export class Claims {
     return { matrix: m ? JSON.parse(m) : null, catalog: c ? JSON.parse(c) : null };
   }
 
+  /** The counter's last number handed out for `repo` (R-BTN-62): recorded with a claim and an
+   *  end, so only a reading numbered above it can judge them. */
+  handedOut(repo: string): number {
+    return this.rows<{ n: number }>('SELECT last_handed_out AS n FROM board_head WHERE repository_id = ?', repo)[0]?.n ?? 0;
+  }
+
   /** `isEligible`'s context for one item (§7.2), from Baton's own tables (R-BTN-33). */
   private contextFor(item: ItemFacts, now: number, shared: { suspensions: Row[]; expediteActive: number; reviewer: ReturnType<Claims['reviewerData']> }) {
     const claims = this.rows('SELECT status, confirmed_at, fence_pending FROM claims WHERE ticket_id = ?', item.id);
@@ -277,8 +283,11 @@ export class Claims {
     if (mine) throw new BatonError('not-eligible', `this worker holds ${mine.ticket_id}; end it before claiming another (R-BTN-4)`, { rule: 'one-claim-per-worker' });
     const { item } = this.decide(w, b.ticket_id, now);
     try {
-      this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
-                 VALUES (?, ?, ?, ?, ?, ?, 'active')`, item.id, workerId, b.request_id, randomHex(3), this.headOf(repositoryOf(item.id)) ?? '', now);
+      // R-BTN-62: the counter's last handed-out number now; only a reading numbered above it can
+      // make this claim stale.
+      this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, claim_observation)
+                 VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`, item.id, workerId, b.request_id, randomHex(3), this.headOf(repositoryOf(item.id)) ?? '', now,
+        this.handedOut(repositoryOf(item.id)));
     } catch (e) {
       // R-BTN-4: the partial unique indexes refuse a second holder of the item or the worker.
       if (isUniqueViolation(e)) throw new BatonError('not-eligible', `${item.id} is already held`, { rule: 3, rule_code: RULE_CODES[3] });
@@ -325,7 +334,8 @@ export class Claims {
       // stale-board (R-BTN-35) before the worker's own end arrives: that completion is the
       // truth, recorded as such, and the release it no longer needs is withdrawn.
       if (c.status === 'released' && c.end_reason === 'released:stale-board' && e.status === 'completed' && this.gitEnded(c.ticket_id, c.id)) {
-        this.exec(`UPDATE claims SET status = 'completed', end_reason = ?, ended_at_sha = ? WHERE id = ?`, e.end_reason, e.ended_at_sha, c.id);
+        this.exec(`UPDATE claims SET status = 'completed', end_reason = ?, ended_at_sha = ?, end_observation = ? WHERE id = ?`,
+          e.end_reason, e.ended_at_sha, this.handedOut(repositoryOf(c.ticket_id)), c.id);
         this.exec(`UPDATE messages SET status = 'expired' WHERE to_worker_id = ? AND kind = 'release' AND status IN ('pending','delivered')
                    AND json_extract(payload_json, '$.ticket_id') = ? AND json_extract(payload_json, '$.reason') = 'stale-board'`, workerId, c.ticket_id);
         this.event('completed', `worker:${workerId}`, { end_reason: e.end_reason, ended_at_sha: e.ended_at_sha, after: 'released:stale-board' }, c.ticket_id, c.id);
@@ -342,8 +352,9 @@ export class Claims {
   private finish(claimId: number, item: string, status: 'completed' | 'released' | 'reaped', reason: string, actor: string,
     opts: { ended_at_sha?: string | null; fence?: { incarnation: number } | null } = {}) {
     const now = this.c.now();
-    this.exec(`UPDATE claims SET status = ?, ended_at = ?, end_reason = ?, ended_at_sha = ?, fence_pending = ?, fence_incarnation = ? WHERE id = ?`,
-      status, now, reason, opts.ended_at_sha ?? null, opts.fence ? 1 : 0, opts.fence?.incarnation ?? null, claimId);
+    // R-BTN-62: only a reading numbered above the counter's value now can confirm this end.
+    this.exec(`UPDATE claims SET status = ?, ended_at = ?, end_reason = ?, ended_at_sha = ?, fence_pending = ?, fence_incarnation = ?, end_observation = ? WHERE id = ?`,
+      status, now, reason, opts.ended_at_sha ?? null, opts.fence ? 1 : 0, opts.fence?.incarnation ?? null, this.handedOut(repositoryOf(item)), claimId);
     this.exec(`UPDATE activities SET ended_at = ?, outcome = 'abandoned' WHERE claim_id = ? AND ended_at IS NULL`, now, claimId);
     this.event(status, actor, { end_reason: reason, ...(opts.ended_at_sha ? { ended_at_sha: opts.ended_at_sha } : {}), ...(opts.fence ? { fence_pending: true } : {}) }, item, claimId);
     // §12: the mirror writes the end; a completion also wants a board sync, which confirms it
@@ -556,11 +567,13 @@ export class Claims {
 
   /** §6.7: the sync confirms a completion once git carries it (it checked the ancestry and the
    *  status); anything but an unconfirmed completion is ignored. */
-  confirm(confirmations: { claim_id: number; sha: string }[]) {
+  confirm(confirmations: { claim_id: number; sha: string }[], observation: number) {
     const now = this.c.now();
     let n = 0;
     for (const k of confirmations) {
-      const c = this.rows<{ ticket_id: string }>(`SELECT ticket_id FROM claims WHERE id = ? AND status = 'completed' AND confirmed_at IS NULL`, k.claim_id)[0];
+      // R-BTN-62: a reading confirms an end only if it was numbered after the end happened.
+      const c = this.rows<{ ticket_id: string }>(`SELECT ticket_id FROM claims WHERE id = ? AND status = 'completed' AND confirmed_at IS NULL
+                                                  AND COALESCE(end_observation, 0) < ?`, k.claim_id, observation)[0];
       if (!c) continue;
       this.exec('UPDATE claims SET confirmed_at = ? WHERE id = ?', now, k.claim_id);
       this.event('confirmed', 'sync', { sha: k.sha }, c.ticket_id, k.claim_id);
@@ -573,11 +586,12 @@ export class Claims {
    *  git now shows done, archived, superseded, deferred, re-tiered above the holder's ceiling or
    *  gone ends `released:stale-board`, and the holder is told. Before cutover git decides alone
    *  and the shadow reports end claims. */
-  staleBoard(repo: string) {
+  staleBoard(repo: string, observation: number) {
     if (!this.rows('SELECT 1 FROM repositories WHERE id = ? AND cutover_at IS NOT NULL', repo).length) return 0;
     const active = this.rows<{ id: number; ticket_id: string; worker_id: number; tier_ceiling: string; kind: string }>(
       `SELECT c.id, c.ticket_id, c.worker_id, w.tier_ceiling, w.kind FROM claims c JOIN workers w ON w.id = c.worker_id
-       WHERE c.status = 'active' AND substr(c.ticket_id, 1, length(?) + 1) = ? || ':'`, repo, repo);
+       WHERE c.status = 'active' AND substr(c.ticket_id, 1, length(?) + 1) = ? || ':'
+         AND c.claim_observation < ?`, repo, repo, observation); // R-BTN-62: a reading from before the claim cannot judge it
     let n = 0;
     for (const c of active) {
       const it = this.rows<{ status: string; tier: string | null }>('SELECT status, tier FROM tickets WHERE id = ?', c.ticket_id)[0];

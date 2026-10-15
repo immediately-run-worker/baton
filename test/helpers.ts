@@ -36,11 +36,25 @@ export function call(path: string, init: RequestInit = {}) {
 }
 
 export async function syncCall(path: string, body?: unknown, token?: string) {
-  return call(path, {
-    method: body === undefined ? 'GET' : 'POST',
-    headers: { Authorization: `Bearer ${token ?? (await syncToken())}`, 'Content-Type': 'application/json' },
-    body: body === undefined ? undefined : JSON.stringify(body),
+  const auth = token ?? (await syncToken());
+  const send = (p: string, b?: unknown) => call(p, {
+    method: b === undefined ? 'GET' : 'POST',
+    headers: { Authorization: `Bearer ${auth}`, 'Content-Type': 'application/json' },
+    body: b === undefined ? undefined : JSON.stringify(b),
   });
+  // R-BTN-62: a board post carries a number from POST /v1/sync/observation, taken first as the
+  // sync does; a test that names its own (or none, as `null`) posts it as it is.
+  if (path === '/v1/sync/board' && body && typeof body === 'object' && !('observation' in body)) {
+    const o = await send('/v1/sync/observation', {});
+    if (o.ok) body = { ...(body as object), observation: ((await o.json()) as { observation: number }).observation };
+  }
+  return send(path, body);
+}
+
+/** `POST /v1/sync/observation` as a repository's sync (R-BTN-62): its JSON and status. */
+export async function observe(token?: string) {
+  const res = await call('/v1/sync/observation', { method: 'POST', headers: { Authorization: `Bearer ${token ?? (await syncToken())}`, 'Content-Type': 'application/json' }, body: '{}' });
+  return { status: res.status, json: (await res.json()) as { sha: string | null; observation: number; bars: unknown[]; code?: string } };
 }
 
 export async function ownerCall(path: string, init: RequestInit = {}) {

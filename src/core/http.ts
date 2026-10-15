@@ -10,13 +10,13 @@ export const SECURITY_HEADERS: Record<string, string> = {
 
 export type ErrorCode =
   | 'unauthenticated' | 'forbidden' | 'invalid-params' | 'not-found'
-  | 'head-moved' | 'snapshot-rejected' | 'unavailable' | 'internal'
+  | 'head-moved' | 'snapshot-rejected' | 'stale-observation' | 'sync-busy' | 'unavailable' | 'internal'
   | 'session-taken' | 'worker-reaped' | 'claim-ended' | 'not-holder'
   | 'not-eligible' | 'no-eligible-ticket' | 'provider-suspended' | 'stale-skills' | 'backing-off' | 'not-cut-over';
 
 const STATUS: Record<ErrorCode, number> = {
   unauthenticated: 401, forbidden: 403, 'invalid-params': 400, 'not-found': 404,
-  'head-moved': 409, 'snapshot-rejected': 409, unavailable: 503, internal: 500,
+  'head-moved': 409, 'snapshot-rejected': 409, 'stale-observation': 409, 'sync-busy': 409, unavailable: 503, internal: 500,
   'session-taken': 409, 'worker-reaped': 409, 'claim-ended': 409, 'not-holder': 409,
   'not-eligible': 409, 'no-eligible-ticket': 404, 'provider-suspended': 409, 'stale-skills': 409, 'backing-off': 409,
   'not-cut-over': 409,
