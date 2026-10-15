@@ -4,7 +4,7 @@
 // (scripts/lib/batonSync.mjs, vendored) over the fixture repository's real ancestry.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
 import { syncOnce } from '../../src/shared/batonSync.mjs';
-import { claimItem, claimRow, cutover, endClaim, ownerCall, payload, register, setClock, stub, syncCall , tick } from '../helpers';
+import { claimItem, claimRow, cutover, endClaim, ownerCall, payload, register, setClock, syncCall , tick } from '../helpers';
 
 const board = inject('board');
 const sha = board.shas;

@@ -3,7 +3,7 @@
 import { describe, it, expect, inject } from 'vitest';
 import { env } from 'cloudflare:test';
 import { errors, generateKeyPair, SignJWT } from 'jose';
-import { verifyFailure, verifySync } from '../../src/auth';
+import { verifyFailure, verifySync } from '../../src/core/auth';
 import { accessToken, call, ORIGIN, ownerCall, syncCall, syncToken } from '../helpers';
 
 const code = async (res: Response) => ((await res.json()) as { code: string }).code;

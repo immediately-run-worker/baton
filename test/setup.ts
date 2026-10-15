@@ -1,6 +1,6 @@
-// setup.ts — every test starts from an empty Baton: storage is wiped between tests.
-import { reset } from 'cloudflare:test';
+// setup.ts — every test starts from an empty Baton, on whichever host the project runs.
 import { afterEach } from 'vitest';
+import { reset } from '#host';
 
 afterEach(async () => {
   await reset();

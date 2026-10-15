@@ -1,9 +1,10 @@
-// helpers.ts — tokens signed by the per-run test key (vitest.config.ts), requests to the
-// Worker, and the fake clock (R-BTN-32). Runs inside the Workers runtime.
-import { env, runInDurableObject } from 'cloudflare:test';
-import { exports } from 'cloudflare:workers';
+// helpers.ts — tokens signed by the per-run test key (vitest.config.ts), requests to Baton, and
+// the fake clock (R-BTN-32). Host-neutral (S-BTN-31): `#host` is the Cloudflare host (workerd)
+// or the local one (Node), per vitest project.
 import { importJWK, SignJWT } from 'jose';
-import type { Baton } from '../src/baton';
+import { call as hostCall, config as env, tick as hostTick, withCore } from '#host';
+
+export { HOST, withCore } from '#host';
 
 export const ORIGIN = env.BATON_ORIGIN;
 const SYNC_CLAIMS = {
@@ -29,7 +30,7 @@ export function accessToken(email = 'owner@example.com', opts: { audience?: stri
 }
 
 export function call(path: string, init: RequestInit = {}) {
-  return (exports as unknown as { default: { fetch: (r: Request) => Promise<Response> } }).default.fetch(new Request(ORIGIN + path, init));
+  return hostCall(new Request(ORIGIN + path, init));
 }
 
 export async function syncCall(path: string, body?: unknown, token?: string) {
@@ -46,21 +47,16 @@ export async function ownerCall(path: string, init: RequestInit = {}) {
   return call(path, { ...init, headers });
 }
 
-/** The fixed object, for direct inspection and the fake clock. */
-export function stub() {
-  return env.BATON.get(env.BATON.idFromName('baton'));
-}
-
-/** Set the object's clock to a fixed time (R-BTN-32). */
+/** Set the core's clock to a fixed time (R-BTN-32). */
 export function setClock(ms: number) {
-  return runInDurableObject(stub(), (o: Baton) => {
-    o.now = () => ms;
+  return withCore((c) => {
+    c.now = () => ms;
   });
 }
 
-/** Run SQL in the object and return the rows. */
+/** Run SQL in the core's store and return the rows. */
 export function rows<T = Record<string, unknown>>(query: string, ...params: unknown[]): Promise<T[]> {
-  return runInDurableObject(stub(), (_o: Baton, state: DurableObjectState) => state.storage.sql.exec(query, ...(params as SqlStorageValue[])).toArray() as T[]);
+  return withCore((c) => c.store.exec<T>(query, ...params).toArray());
 }
 
 /** A board payload as the sync posts it (§7.1, §11): either a fixture snapshot (the real
@@ -153,11 +149,9 @@ export async function claimRow(id: number) {
     'SELECT status, end_reason, fence_pending, confirmed_at, ticket_id FROM claims WHERE id = ?', id))[0];
 }
 
-/** One alarm tick, run directly. Not `runDurableObjectAlarm`: the fake clock sits behind the
- *  real one, so every alarm the object arms is already overdue and workerd may be running it in
- *  the background — when it is, nothing is scheduled and `runDurableObjectAlarm` runs nothing. */
+/** One alarm tick, run directly (each host says how). */
 export function tick() {
-  return runInDurableObject(stub(), (o: Baton) => o.alarm());
+  return hostTick();
 }
 
 // ── the mirror (R3-1218) ──────────────────────────────────────────────────────────────────
@@ -167,11 +161,11 @@ export async function mirrorCall(path: string, body?: unknown) {
   return syncCall(path, body, await syncToken({ job_workflow_ref: env.MIRROR_WORKFLOW_REF }));
 }
 
-/** Record the object's workflow dispatches instead of sending them; returns the live list. */
+/** Record the core's workflow dispatches instead of sending them; returns the live list. */
 export async function captureDispatches() {
   const sent: string[] = [];
-  await runInDurableObject(stub(), (o: Baton) => {
-    o.dispatcher = async (wf) => {
+  await withCore((c) => {
+    c.dispatcher = async (wf) => {
       sent.push(wf);
       return true;
     };

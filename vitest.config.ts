@@ -1,10 +1,15 @@
-// vitest.config.ts — the Workers runtime under test (BATON_SPEC §13a R-BTN-29). The test
-// signing keys are made here, per run, and exist only in these bindings: wrangler.toml has no
-// BATON_TEST_BINDINGS, so no deployed Worker — baton-staging included — ever trusts them.
-import { defineConfig } from 'vitest/config';
+// vitest.config.ts — Baton under test on both hosts (BATON_SPEC §13a R-BTN-29, S-BTN-31): the
+// `cloudflare` project runs every test in the Workers runtime; the `local` project runs every
+// integration scenario again against the local Node host (R-BTN-55), plus the tests only Node
+// can run. The test signing keys are made here, per run, and exist only in these bindings:
+// wrangler.toml has no BATON_TEST_BINDINGS, so no deployed Worker — baton-staging included —
+// ever trusts them, and a local start refuses them (src/local/main.ts).
+import { defineConfig, type Plugin } from 'vitest/config';
 import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import { exportJWK, generateKeyPair } from 'jose';
 import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 /** The test credentials (R-BTN-13): tokens, their hashes and their policy — the shapes the
  *  TOKEN_HASHES and CREDENTIALS Worker secrets take in production (R3-1208). The `test`
@@ -28,31 +33,68 @@ async function testKeys() {
   return { jwks: JSON.stringify({ keys: [pub] }), priv: JSON.stringify(priv) };
 }
 
+/** wrangler.toml's top-level `[vars]`: the production Worker's settings, which the local
+ *  project's host takes too, so both hosts run with the same values. */
+function wranglerVars(): Record<string, string> {
+  const toml = readFileSync(resolve(import.meta.dirname, 'wrangler.toml'), 'utf8');
+  const block = /^\[vars\]\n([\s\S]*?)(?=^\[)/m.exec(toml)?.[1] ?? '';
+  return Object.fromEntries([...block.matchAll(/^([A-Z_]+) = "([^"]*)"$/gm)].map((m) => [m[1], m[2]]));
+}
+
+/** Schema migrations and the dashboard load as text, as wrangler's Text rule bundles them. */
+const textModules: Plugin = {
+  name: 'baton-text-modules',
+  enforce: 'pre',
+  load(id) {
+    const file = id.split('?')[0];
+    if (/\.(sql|html|css)$/.test(file) || /[\\/]ui[\\/]app\.js$/.test(file)) return `export default ${JSON.stringify(readFileSync(file, 'utf8'))};`;
+    return null;
+  },
+};
+
+/** The tests only the local project runs: they need Node (the request queue, the file scan). */
+const NODE_ONLY = ['test/unit/local-queue.test.ts', 'test/unit/boundary-host.test.ts'];
+const host = (name: string) => ({ '#host': resolve(import.meta.dirname, `test/hosts/${name}.ts`) });
+
+const keys = await testKeys();
+const bindings = {
+  BATON_TEST_BINDINGS: 'true',
+  TEST_OIDC_JWKS: keys.jwks,
+  TEST_ACCESS_JWKS: keys.jwks,
+  TEST_SIGNING_JWK: keys.priv,
+  ACCESS_TEAM_DOMAIN: 'baton-test.cloudflareaccess.com',
+  ACCESS_AUD: 'baton-test-aud',
+  OWNER_EMAILS: 'owner@example.com',
+  TOKEN_HASHES: JSON.stringify(Object.fromEntries(Object.entries(TEST_TOKENS).map(([id, t]) => [id, sha(t)]))),
+  CREDENTIALS: JSON.stringify(CREDENTIALS),
+};
+
 export default defineConfig({
-  plugins: [
-    cloudflareTest(async () => {
-      const k = await testKeys();
-      return {
-        wrangler: { configPath: './wrangler.toml' },
-        miniflare: {
-          bindings: {
-            BATON_TEST_BINDINGS: 'true',
-            TEST_OIDC_JWKS: k.jwks,
-            TEST_ACCESS_JWKS: k.jwks,
-            TEST_SIGNING_JWK: k.priv,
-            ACCESS_TEAM_DOMAIN: 'baton-test.cloudflareaccess.com',
-            ACCESS_AUD: 'baton-test-aud',
-            OWNER_EMAILS: 'owner@example.com',
-            TOKEN_HASHES: JSON.stringify(Object.fromEntries(Object.entries(TEST_TOKENS).map(([id, t]) => [id, sha(t)]))),
-            CREDENTIALS: JSON.stringify(CREDENTIALS),
-          },
-        },
-      };
-    }),
-  ],
   test: {
-    globalSetup: ['./test/global-setup.ts'],
-    setupFiles: ['./test/setup.ts'],
-    include: ['test/**/*.test.ts'],
+    projects: [
+      {
+        plugins: [cloudflareTest(async () => ({ wrangler: { configPath: './wrangler.toml' }, miniflare: { bindings } }))],
+        resolve: { alias: host('cloudflare') },
+        test: {
+          name: 'cloudflare',
+          globalSetup: ['./test/global-setup.ts'],
+          setupFiles: ['./test/setup.ts'],
+          include: ['test/**/*.test.ts'],
+          exclude: NODE_ONLY,
+        },
+      },
+      {
+        plugins: [textModules],
+        resolve: { alias: host('local') },
+        test: {
+          name: 'local',
+          environment: 'node',
+          globalSetup: ['./test/global-setup.ts'],
+          setupFiles: ['./test/setup.ts'],
+          include: ['test/integration/**/*.test.ts', ...NODE_ONLY],
+          provide: { localConfig: { ...wranglerVars(), ...bindings } },
+        },
+      },
+    ],
   },
 });

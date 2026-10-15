@@ -3,7 +3,7 @@
 // re-issued; the dead session can no longer act on it (its heartbeat is worker-reaped, and the
 // holder query its pre-push hook asks names another holder). The client half is R3-1213's.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { beat, claimItem, claimRow, cutover, payload, register, rows, setClock, stub, syncCall, workerCall , tick } from '../helpers';
+import { beat, claimItem, claimRow, cutover, payload, register, rows, setClock, syncCall, workerCall , tick } from '../helpers';
 
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');

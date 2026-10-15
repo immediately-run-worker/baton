@@ -3,7 +3,7 @@
 // or a non-retryable class, holds the item. The policy is pure (src/attempts.ts) and is tested
 // both alone and through the server.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord, reviewCapacityRun } from '../../src/attempts';
+import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord, reviewCapacityRun } from '../../src/core/attempts';
 import {
   beat, claimItem, claimRow, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, tick, workerCall,
 } from '../helpers';

@@ -1,8 +1,9 @@
 // db.ts — the small helpers every class that writes the object's tables shares: the event log's
 // one insert, the random hex nonces and secrets, and recognising a unique-index refusal.
+import type { Store } from './ports';
 
 /** Append to the event log (§4): the one place an event row is written. */
-export function logEvent(sql: SqlStorage, at: number, kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null) {
+export function logEvent(sql: Store, at: number, kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null) {
   sql.exec('INSERT INTO events (at, kind, ticket_id, claim_id, actor, detail_json) VALUES (?, ?, ?, ?, ?, ?)',
     at, kind, ticketId, claimId, actor, JSON.stringify(detail));
 }

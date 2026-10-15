@@ -5,13 +5,13 @@
 // by the shadow report, whose rows the unique indexes guard.
 import { BatonError } from './http';
 import { logEvent } from './db';
-import { capabilitiesOf } from './shared/vocabulary.mjs';
+import { capabilitiesOf } from '../shared/vocabulary.mjs';
 import {
   checkAck, checkActivity, checkHeartbeat, checkMessage, checkShadowReport, checkSuspension, bad,
   type ActivityReport, type Heartbeat,
 } from './validate';
 
-type Row = Record<string, SqlStorageValue>;
+import type { Config, Row, SqlValue, Store } from './ports';
 /** §6.8: the transcript repositories, until the board sync posts `baton.json`'s list. */
 export const DEFAULT_TRANSCRIPT_REPOS = ['immediately-run/claude-sessions', 'immediately-run-worker/session-transcripts'];
 const CLOSE_GRACE_MS = 10 * 60_000; // §6.9: closing updates are accepted 10 minutes after a claim ends
@@ -33,8 +33,8 @@ export async function sha256Hex(text: string): Promise<string> {
 }
 
 export interface Ctx {
-  storage: DurableObjectStorage;
-  env: Env;
+  store: Store;
+  config: Config;
   now: () => number;
   /** R-BTN-19: a heartbeat's `fenced` report, handed to the claims (R3-1212). */
   fenced?: (workerId: number, incarnation: number, claimId: number) => boolean;
@@ -44,13 +44,13 @@ export class WorkerApi {
   constructor(private readonly c: Ctx) {}
 
   private rows<T = Row>(q: string, ...p: unknown[]): T[] {
-    return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[])).toArray() as T[];
+    return this.c.store.exec(q, ...p).toArray() as T[];
   }
   private exec(q: string, ...p: unknown[]) {
-    return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[]));
+    return this.c.store.exec(q, ...p);
   }
   private event(kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null) {
-    logEvent(this.c.storage.sql, this.c.now(), kind, actor, detail, ticketId, claimId);
+    logEvent(this.c.store, this.c.now(), kind, actor, detail, ticketId, claimId);
   }
   private setting(key: string): string | null {
     return (this.rows<{ value: string }>('SELECT value FROM baton_settings WHERE key = ?', key)[0]?.value) ?? null;
@@ -64,14 +64,14 @@ export class WorkerApi {
     let policy: Record<string, { hostname: string; allowed_capabilities: string[] }> = {};
     let hashes: Record<string, string> = {};
     try {
-      policy = JSON.parse(this.c.env.CREDENTIALS ?? '{}');
-      hashes = JSON.parse(this.c.env.TOKEN_HASHES ?? '{}');
+      policy = JSON.parse(this.c.config.CREDENTIALS ?? '{}');
+      hashes = JSON.parse(this.c.config.TOKEN_HASHES ?? '{}');
     } catch {
       throw new BatonError('unavailable', 'the credential tables are unreadable');
     }
     // §3's write budget: mirror only when either secret changed since the last mirror, so a
     // heartbeat writes no credential rows. The marker is a change detector, not a security check.
-    const marker = fnv1a(`${this.c.env.CREDENTIALS ?? ''}\u0000${this.c.env.TOKEN_HASHES ?? ''}`);
+    const marker = fnv1a(`${this.c.config.CREDENTIALS ?? ''}\u0000${this.c.config.TOKEN_HASHES ?? ''}`);
     const now = this.c.now();
     if (this.setting('credentials_marker') !== marker) this.mirrorCredentials(policy, hashes, marker, now);
     const row = this.rows<{ id: string; hostname: string; allowed_capabilities: string; revoked_at: number | null }>(
@@ -104,7 +104,7 @@ export class WorkerApi {
   async authWorker(credentialId: string, secret: string | null) {
     if (!secret) throw new BatonError('unauthenticated', 'X-Worker-Secret is required after the first heartbeat');
     const hash = await sha256Hex(secret);
-    return this.c.storage.transactionSync(() => this.authWorkerTx(credentialId, hash));
+    return this.c.store.transaction(() => this.authWorkerTx(credentialId, hash));
   }
 
   private authWorkerTx(credentialId: string, hash: string) {
@@ -145,7 +145,7 @@ export class WorkerApi {
       billing: Object.entries(hb.billing).sort(), capabilities: [...hb.capabilities].sort(), tier: hb.tier_ceiling,
       lease: hb.lease_timeout_s, skills: hb.skills_version,
     }));
-    return this.c.storage.transactionSync(() => this.heartbeatTx(credentialId, presented, settingsHash, hb));
+    return this.c.store.transaction(() => this.heartbeatTx(credentialId, presented, settingsHash, hb));
   }
 
   private heartbeatTx(credentialId: string, presented: string | null, settingsHash: string, hb: Heartbeat) {
@@ -357,7 +357,7 @@ export class WorkerApi {
     const now = this.c.now();
     for (const [i, raw] of (list as unknown[]).entries()) {
       try {
-        this.c.storage.transactionSync(() => this.upsertActivity(workerId, checkActivity(raw, `activities[${i}]`), now));
+        this.c.store.transaction(() => this.upsertActivity(workerId, checkActivity(raw, `activities[${i}]`), now));
       } catch (e) {
         if (!(e instanceof BatonError)) throw e;
         refused.push({ id: (raw as { id?: string })?.id ?? null, code: e.code, message: e.message });

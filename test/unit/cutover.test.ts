@@ -1,7 +1,7 @@
 // R3-1217, closing baton#6's round-one findings: the board's `since` and `holder`, the cutover's
 // refusals, the legacy import's name collisions, and adoption requests that went stale.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { calendarDate } from '../../src/board';
+import { calendarDate } from '../../src/core/board';
 import { hbBody, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, tick, workerCall } from '../helpers';
 
 const board = inject('board');

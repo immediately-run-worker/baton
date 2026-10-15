@@ -11,5 +11,7 @@ declare module 'vitest' {
     shared: { manifest: Record<string, string>; vendored: Record<string, string>; upstream: Record<string, string> | null };
     wranglerToml: string;
     liveBoard: Record<string, unknown> | null;
+    /** The local project's host settings: wrangler.toml's vars and the run's test bindings. */
+    localConfig: import('../src/core/ports').Config;
   }
 }

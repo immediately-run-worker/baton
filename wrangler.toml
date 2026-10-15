@@ -1,6 +1,6 @@
 # Baton — BATON_SPEC §3. One Worker, one SQLite Durable Object (`Baton`, fixed name).
 name = "baton"
-main = "src/worker.ts"
+main = "src/cloudflare/worker.ts"
 compatibility_date = "2026-09-01"
 routes = [{ pattern = "baton.immediately.run/*", zone_name = "immediately.run" }]
 
