@@ -117,15 +117,16 @@ export class WorkerApi {
     return w.id;
   }
 
-  /** §6.8: the repositories any transcript pointer may name — every registered repository's
-   *  transcript repositories (R-BTN-66), or the defaults while none names any. The heartbeat's
+  /** §6.8: the repositories any transcript pointer may name — the union of what each registered
+   *  repository's claims accept (its `transcript_repos`, or the defaults while it names none;
+   *  the defaults when no repository is registered). The heartbeat's
    *  shape check uses it; a pointer is then held to its claim's own repository's list. */
   transcriptRepos(): string[] {
-    const all = new Set<string>();
-    for (const r of this.rows<{ transcript_repos: string }>('SELECT transcript_repos FROM repositories WHERE retired_at IS NULL')) {
-      for (const x of JSON.parse(r.transcript_repos) as string[]) all.add(x);
-    }
-    return all.size ? [...all].sort() : DEFAULT_TRANSCRIPT_REPOS;
+    // Each repository's own list as its claims read it — the defaults for one that names none —
+    // so this check never refuses what a claim's own repository allows.
+    const repos = this.rows<{ id: string }>('SELECT id FROM repositories WHERE retired_at IS NULL');
+    if (!repos.length) return DEFAULT_TRANSCRIPT_REPOS;
+    return [...new Set(repos.flatMap((r) => transcriptReposOf(this.c.store, r.id)))].sort();
   }
 
   private activeClaim(workerId: number) {

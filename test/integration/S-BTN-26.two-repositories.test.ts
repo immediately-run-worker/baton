@@ -148,6 +148,17 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     expect(await rows(`SELECT repo, path FROM transcripts`)).toEqual([{ repo: 'immediately-run/ops-sessions', path: 'cc/b.jsonl' }]);
   });
 
+  it('a repository that names no transcript repositories keeps the defaults when another names its own', async () => {
+    await rows(`UPDATE repositories SET transcript_repos = '["immediately-run/docs-sessions"]' WHERE id = 'docs'`);
+    await rows(`UPDATE repositories SET transcript_repos = '[]' WHERE id = 'ops'`);
+    const { secret } = await register('vm-a');
+    await cutover(1, 'ops');
+    await claimItem('vm-a', secret, { ticket_id: 'ops:R3-9001' });
+    const res = await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'cc/a.jsonl' }] });
+    expect(res.json.transcripts_refused).toBeUndefined();
+    expect(await rows(`SELECT repo FROM transcripts`)).toEqual([{ repo: 'immediately-run/claude-sessions' }]);
+  });
+
   it('a pointer reported before the claim is linked only if the claim’s repository allows it', async () => {
     await rows(`UPDATE repositories SET transcript_repos = '["immediately-run/ops-sessions"]' WHERE id = 'ops'`);
     const { secret } = await register('vm-a');
