@@ -147,9 +147,16 @@ export class WorkerApi {
   async heartbeat(credentialId: string, secretHeader: string | null, body: unknown) {
     const hb = checkHeartbeat(body, this.transcriptRepos());
     // R-BTN-66: a per-repository ceiling names a tier of that registered repository's ladder.
+    // One for a repository Baton does not serve (unknown or retired) is set aside and reported,
+    // never the heartbeat: a refused heartbeat would cost the worker its leases everywhere.
+    const ignoredCeilings: string[] = [];
     for (const [repo, tier] of Object.entries(hb.tier_ceilings)) {
       const r = this.rows<{ tiers: string }>('SELECT tiers FROM repositories WHERE id = ? AND retired_at IS NULL', repo)[0];
-      if (!r) throw new BatonError('invalid-params', `tier_ceilings.${repo}: not a registered repository`);
+      if (!r) {
+        ignoredCeilings.push(repo);
+        delete hb.tier_ceilings[repo];
+        continue;
+      }
       const ladder = JSON.parse(r.tiers) as string[];
       if (!ladder.includes(tier)) throw new BatonError('invalid-params', `tier_ceilings.${repo}: must be one of ${ladder.join(', ')}`);
     }
@@ -162,7 +169,8 @@ export class WorkerApi {
       lease: hb.lease_timeout_s,
       courses: hb.courses.map((c) => `${c.repository}:${c.course}@${c.version}`).sort(),
     }));
-    return this.c.store.transaction(() => this.heartbeatTx(credentialId, presented, settingsHash, hb));
+    const answer = this.c.store.transaction(() => this.heartbeatTx(credentialId, presented, settingsHash, hb));
+    return ignoredCeilings.length ? { ...answer, tier_ceilings_ignored: ignoredCeilings } : answer;
   }
 
   private heartbeatTx(credentialId: string, presented: string | null, settingsHash: string, hb: Heartbeat) {
@@ -596,6 +604,7 @@ export class WorkerApi {
          UNION ALL SELECT repo, path, COALESCE(last_pushed_at, first_seen_at) FROM pending_transcripts WHERE worker_id = ?) ORDER BY t DESC LIMIT 1`, id, id)[0];
       return {
         ...w,
+        tier_ceilings: JSON.parse(w.tier_ceilings as string) as Record<string, string>,
         alive,
         capabilities: this.rows<{ capability: string; declared: string }>('SELECT capability, declared FROM worker_capabilities WHERE worker_id = ? ORDER BY capability', id),
         providers: this.rows<{ prefix: string; provider_id: string }>('SELECT prefix, provider_id FROM worker_providers WHERE worker_id = ? ORDER BY prefix', id),

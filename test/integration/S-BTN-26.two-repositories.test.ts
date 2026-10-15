@@ -1,10 +1,12 @@
-// S-BTN-26 two repositories (BATON_SPEC §2a R-BTN-47, §7.1, §10.3 R-BTN-15, R-BTN-61), the
-// registry half R3-1231 part 2a delivers: a second repository `ops` with weight 50 and a ticket
-// whose local id docs also has. Must hold: `docs:R3-9001` and `ops:R3-9001` are distinct
-// tickets; `ops`' sync token cannot post `docs`' board; head, cutover and events are each
-// repository's own; every `docs` candidate ranks above every `ops` one. The course clauses
-// (W1 never offered `ops`, per-group limits, `min_worker_version`) and the branch clause arrive
-// with part 2b and R3-1232.
+// S-BTN-26 two repositories, two courses (BATON_SPEC §2a R-BTN-47, R-BTN-48, §7.1, §10.3
+// R-BTN-15, R-BTN-61, §6.3), the clauses R3-1231 delivers: a second repository `ops` with weight
+// 50, its own course `runbook`, and tickets whose local ids docs also has. Must hold: `docs:T-1`
+// and `ops:T-1` are distinct tickets; `ops`' sync token cannot post `docs`' board; head, cutover
+// and events are each repository's own; every `docs` candidate ranks above every `ops` one; W1
+// (roadmap-pr only) is never offered `ops`' tickets; a `runbook` change raising
+// `min_worker_version` stops W2 there until it declares that version; a branch both `T-1`s map to
+// is refused while either is held. The recommendation clauses — each repository in its own
+// hook's or default order, the per-group limit with 60 ready docs legs — are R3-1232's.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
 import {
   beat, captureDispatches, claimItem, claimRow, course, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, syncToken, withCore, workerCall,
@@ -276,6 +278,7 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     expect((await claimItem('vm-a', w2.secret, { ticket_id: 'ops:T-1' })).status).toBe(200);
     expect(await ask('claude/T-1-fix', w1.secret)).toMatchObject({ held_by_other: true });
     expect(await ask('claude/t-1-fix', w1.secret)).toMatchObject({ held_by_other: true }); // GitHub branch case
+    expect(await ask('claude/T-1-fix#2', w1.secret)).toMatchObject({ held_by_other: true }); // any legal git name (1-A-1)
     expect(await ask('claude/T-1-fix', w2.secret)).toMatchObject({ held_by_other: false }); // its own claim
     // A branch no pattern maps, or a repository neither ticket lists, maps to nothing.
     expect(await ask('claude/T-1')).toMatchObject({ tickets: [] });
@@ -287,4 +290,6 @@ describe('S-BTN-26 two repositories (registry half)', () => {
       expect((await workerCall(`/v1/runner/branch-holder?${bad}`, { cred: 'vm-b' })).status).toBe(400);
     }
   });
+
+  it.todo('R3-1232: each repository in its own hook’s or default order, and with 60 ready docs legs ops’ first five still reach the merge (per-group limit)');
 });

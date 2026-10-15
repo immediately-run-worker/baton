@@ -19,7 +19,11 @@ export const REPOSITORY_ID = new RegExp(`^${REPOSITORY_SRC}$`);
 export { COURSE_ID };
 /** A GitHub repository, `owner/name` (R-BTN-47), and a branch name as a push names it (§6.3). */
 export const GIT_REPO = /^[A-Za-z0-9-]{1,39}\/[A-Za-z0-9._-]{1,100}$/;
-export const GIT_BRANCH = /^(?!.*\.\.)[A-Za-z0-9._\/-]{1,255}$/;
+/** What `git check-ref-format --branch` allows, in short: no control, space, `~ ^ : ? * [ \`,
+ *  no `..` or `@{`, at most 255 characters. A legal branch the hook asks about is never refused. */
+export const GIT_BRANCH = /^(?!.*\.\.)(?!.*@\{)(?![/.])(?!.*[/.]$)[^\u0000-\u0020\u007f~^:?*[\\]{1,255}$/;
+/** Repositories one heartbeat may name a tier ceiling for (spec-silent, recorded on R3-1231). */
+export const TIER_CEILINGS_MAX = 64;
 /** A course's `version` and a worker's declared one: non-negative, at most this. */
 export const COURSE_VERSION_MAX = 1_000_000_000;
 /** Courses in one registry, and courses one heartbeat declares (spec-silent, recorded on R3-1231). */
@@ -190,7 +194,7 @@ export const TIER_NAME = /^[a-z][a-z0-9-]{0,39}$/;
 
 function checkTierCeilings(v: unknown): Record<string, string> {
   if (v === undefined) return {};
-  if (!isObj(v) || Object.keys(v).length > COURSES_MAX) bad('tier_ceilings', `must map at most ${COURSES_MAX} repositories to a tier`);
+  if (!isObj(v) || Object.keys(v).length > TIER_CEILINGS_MAX) bad('tier_ceilings', `must map at most ${TIER_CEILINGS_MAX} repositories to a tier`);
   const out: Record<string, string> = {};
   for (const [repo, tier] of Object.entries(v as object)) {
     out[checkRepositoryId(repo, `tier_ceilings key ${repo}`)] = matches(TIER_NAME, `tier_ceilings.${repo}`)(tier);

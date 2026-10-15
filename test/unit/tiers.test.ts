@@ -68,10 +68,16 @@ describe('tiers per repository (R-BTN-66)', () => {
   });
 
   it('a heartbeat’s per-repository ceiling must name a tier of that registered repository’s ladder', async () => {
-    for (const tier_ceilings of [{ ops: 'critical' }, { nope: 'small' }, { ops: 'Small' }]) {
+    for (const tier_ceilings of [{ ops: 'critical' }, { ops: 'Small' }]) {
       const res = await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { secret_hash: await sha256('s'), tier_ceilings }) });
       expect([res.status, ((await res.json()) as { code: string }).code]).toEqual([400, 'invalid-params']);
     }
+    // One for a repository Baton does not serve is set aside and reported, never the heartbeat
+    // (round 1, 1-A-5): a refused heartbeat would cost the worker its leases everywhere.
+    const res = await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { secret_hash: await sha256('s'), tier_ceilings: { nope: 'small', ops: 'small' } }) });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ tier_ceilings_ignored: ['nope'] });
+    expect(await rows(`SELECT tier_ceilings FROM workers WHERE hostname = 'vm-a'`)).toEqual([{ tier_ceilings: '{"ops":"small"}' }]);
   });
 
   it('a ticket re-tiered above its holder’s ceiling in that ladder ends stale-board', async () => {
@@ -82,4 +88,27 @@ describe('tiers per repository (R-BTN-66)', () => {
       registry: [course(1, 1, { id: 'runbook', skill: 'run', course: RUNBOOK, step_kinds: ['orient'] })] }), await opsToken());
     expect(await res.json()).toMatchObject({ ok: true, stale_released: 1 });
   });
+
+  it('G-BTN-40 for rule 5: the query and isEligible agree for every ceiling, in docs’ ladder and ops’', async () => {
+    const workers = [
+      { cred: 'vm-a' as const, over: { tier_ceilings: { ops: 'small' } } },
+      { cred: 'vm-b' as const, over: { tier_ceilings: { ops: 'large', docs: 'routine' } } },
+      { cred: 'mac' as const, over: { tier_ceiling: 'judgement' } }, // ops' ladder lacks it: its bottom
+      { cred: 'test' as const, over: {} },
+    ];
+    await cutover(1, 'docs');
+    for (const w of workers) {
+      const { id } = await register(w.cred, { ...DECLARES, ...w.over });
+      const agree = await withCore((o) => {
+        const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown;
+          item: (id: string) => unknown; eligible: (w: unknown, item: unknown, now: number, shared: unknown) => { ok: boolean }; shared: (now: number) => unknown };
+        const facts = c.worker(id);
+        const query = new Set(c.candidates(facts, T0, 100));
+        const all = (o.store.exec<{ id: string }>(`SELECT id FROM tickets WHERE node LIKE 'ready-%'`).toArray()).map((r) => r.id);
+        return all.map((t) => [t, query.has(t), c.eligible(facts, c.item(t), T0, c.shared(T0)).ok]);
+      });
+      for (const [t, q, e] of agree) expect([w.cred, t, q]).toEqual([w.cred, t, e]);
+    }
+  });
 });
+

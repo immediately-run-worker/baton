@@ -5,14 +5,14 @@
 // repository Baton already knows. The sync principal is bound to one repository here.
 import { BatonError } from './http';
 import type { Config, Store } from './ports';
-import { GIT_REPO, REPOSITORY_ID } from './validate';
+import { GIT_BRANCH, GIT_REPO, REPOSITORY_ID, TIER_NAME } from './validate';
 
 export { REPOSITORY_ID, TICKET_ID, qualify, repositoryOf, localOf } from './validate';
 
 const GITHUB = GIT_REPO;
-const BRANCH = /^(?!.*\.\.)[A-Za-z0-9._/-]{1,100}$/;
+const BRANCH = GIT_BRANCH;
 const WORKFLOW = /^\.github\/workflows\/[A-Za-z0-9._-]{1,100}\.ya?ml$/;
-const TIER = /^[a-z][a-z0-9-]{0,39}$/;
+const TIER = TIER_NAME;
 const DEFAULT_TIERS = ['routine', 'judgement', 'critical'];
 
 export interface Repository {
@@ -91,7 +91,7 @@ export function transcriptReposOf(store: Store, repo: string): string[] {
  *  An interim until grants' `max_tier` (R3-1240) caps it. */
 export function ceilingIn(repo: string, ladder: string[], ceilings: Record<string, string>, legacy: string): string {
   const named = ceilings[repo];
-  if (named && ladder.includes(named)) return named;
+  if (named !== undefined) return ladder.includes(named) ? named : ladder[0]; // a ceiling it named, never widened
   if (ladder.includes(legacy)) return legacy;
   return legacy === 'critical' ? ladder[ladder.length - 1] : ladder[0];
 }

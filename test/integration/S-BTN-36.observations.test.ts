@@ -86,4 +86,6 @@ describe('S-BTN-36 (observation half)', () => {
     expect(((await held.json()) as { code: string }).code).toBe('snapshot-rejected');
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'released', end_reason: 'released:stale-board' });
   });
+
+  it.todo('R3-1232: the station half — a suspension confirmed by the first snapshot observed after it placing the ticket at fixed, never by ancestry; W3’s R-BTN-5 check passes on the ticket in-review at its station');
 });

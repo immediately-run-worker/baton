@@ -63,14 +63,33 @@ interface ItemFacts {
 
 /** A course with no registry row maps branches the default way (R-BTN-51). */
 const DEFAULT_BRANCH_PATTERN = 'claude/{ticket}-*';
-const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
 /** Whether `branch` is `pattern` with `{ticket}` = `local` and `{repository}` = `repository`,
- *  `*` matching anything, compared case-insensitively as GitHub branch names are typed. */
+ *  `*` matching any run of characters, compared case-insensitively as GitHub branch names are
+ *  typed. A linear wildcard match, not a regex: a pattern's stars cannot make it backtrack. */
 export function branchMatches(pattern: string, branch: string, local: string, repository: string): boolean {
-  const re = pattern.split(/(\{ticket\}|\{repository\}|\*)/).map((part) =>
-    part === '{ticket}' ? escapeRe(local) : part === '{repository}' ? escapeRe(repository) : part === '*' ? '.*' : escapeRe(part)).join('');
-  return new RegExp(`^${re}$`, 'i').test(branch);
+  const p = pattern.replace(/\{ticket\}|\{repository\}/g, (m) => (m === '{ticket}' ? local : repository)).toLowerCase();
+  // `*` in a local id or repository id cannot occur (LOCAL_ID, REPOSITORY_ID), so every star is the pattern's.
+  const b = branch.toLowerCase();
+  let i = 0;
+  let j = 0;
+  let star = -1;
+  let mark = 0;
+  while (i < b.length) {
+    if (j < p.length && p[j] !== '*' && p[j] === b[i]) {
+      i++;
+      j++;
+    } else if (j < p.length && p[j] === '*') {
+      star = j++;
+      mark = i;
+    } else if (star >= 0) {
+      j = star + 1;
+      i = ++mark;
+    } else {
+      return false;
+    }
+  }
+  while (j < p.length && p[j] === '*') j++;
+  return j === p.length;
 }
 
 export class Claims {

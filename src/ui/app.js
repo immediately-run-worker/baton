@@ -57,7 +57,15 @@ function renderHead() {
 }
 
 function renderReady() {
-  const tier = document.getElementById('tier').value;
+  // R-BTN-66: the ceilings on offer are every ladder's tier names, as the server lists them.
+  const select = document.getElementById('tier');
+  const names = Object.keys(state.ready_by_tier ?? {});
+  if (names.length && [...select.options].map((o) => o.value).join() !== names.join()) {
+    const keep = names.includes(select.value) ? select.value : names[names.length - 1];
+    select.replaceChildren(...names.map((t) => el('option', { text: t, attrs: { value: t } })));
+    select.value = keep;
+  }
+  const tier = select.value;
   const order = state.ready_by_tier?.[tier] ?? [];
   const byId = new Map(state.ready.map((r) => [r.id, r]));
   const body = document.getElementById('ready');
@@ -136,7 +144,9 @@ function renderWorkers() {
     // §14: tier ceiling, capabilities, providers and lease timeout.
     const caps = (w.capabilities ?? []).map((c) => c.capability).join(', ') || 'no capabilities';
     const provs = (w.providers ?? []).map((p) => `${p.prefix}→${p.provider_id}`).join(', ') || 'no known accounts';
-    who.append(el('div', { text: `ceiling ${w.tier_ceiling} · lease ${Math.round(w.lease_timeout_ms / 60_000)} min`, cls: 'muted' }));
+    // R-BTN-66: a ceiling per repository where the worker named one.
+    const per = Object.entries(w.tier_ceilings ?? {}).map(([r, t]) => `${r} ${t}`).join(', ');
+    who.append(el('div', { text: `ceiling ${w.tier_ceiling}${per ? ` (${per})` : ''} · lease ${Math.round(w.lease_timeout_ms / 60_000)} min`, cls: 'muted' }));
     who.append(el('div', { text: caps, cls: 'muted' }));
     who.append(el('div', { text: provs, cls: 'muted' }));
     // R-BTN-48: the courses its checkouts run, flagged where below the course's minimum.

@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import { checkRegistration } from '../../src/core/registry';
 import { branchMatches } from '../../src/core/claims';
+import { checkRegistry } from '../../src/core/courses';
 import type { DispatchTarget } from '../../src/core/ports';
 import { rows, withCore } from '../helpers';
 
@@ -106,8 +107,24 @@ describe('branch patterns (R-BTN-51, §6.3)', () => {
     ['claude/{repository}/{ticket}', 'claude/ops/T-1', 'T-1', true],
     ['claude/{repository}/{ticket}', 'claude/docs/T-1', 'T-1', false],
     ['feat.{ticket}', 'featX{ticket}'.replace('{ticket}', 'T-1'), 'T-1', false], // `.` is literal
+    ['{ticket}*x*y', 'T-1-a-x-b-y', 'T-1', true],
+    ['{ticket}*x*y', 'T-1-a-x-b-z', 'T-1', false],
+    ['*/{ticket}', 'claude/x/T-1', 'T-1', true],
   ])('%s against %s (ticket %s): %s', (pattern, branch, local, want) => {
     expect(branchMatches(pattern as string, branch as string, local as string, 'ops')).toBe(want);
+  });
+});
+
+describe('a branch pattern cannot stall the object (round 1, 1-B-0)', () => {
+  it('four stars against a long branch that never matches return at once', () => {
+    const t0 = performance.now();
+    expect(branchMatches('*{ticket}*-*-*', 'a'.repeat(250) + 'b', 'T-1', 'ops')).toBe(false);
+    expect(performance.now() - t0).toBeLessThan(50);
+  });
+
+  it('the registry refuses a pattern with more than four stars', () => {
+    expect(() => checkRegistry([{ id: 'c', version: 1, min_worker_version: 1, skill: 's', course: {}, step_kinds: [], branch_pattern: 'claude/{ticket}*-*-*-*-*' }]))
+      .toThrow(/at most 4 \*/);
   });
 });
 
