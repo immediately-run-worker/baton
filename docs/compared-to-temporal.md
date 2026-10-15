@@ -26,7 +26,9 @@ The rules referred to (`R-BTN-n`) are in `BATON_SPEC`.
 | Event history | **Git history**, plus Baton's per-ticket **history** (R-BTN-81) | Baton's history is a record of what it saw. Nothing is rebuilt from it. |
 | Task queue | A leg's **queue**: the unheld tickets whose queued leg it is | Optional `max_queue` warnings and course intake closing (R-BTN-79). |
 | Worker | A **worker** running `baton run` | It holds a lease (a claim) and heartbeats. |
-| Timer, signal | A suspension at a station, a `waiting` leg, a block, a **decision** | Long waits are states, not code (R-BTN-71, §2g). |
+| Timer, signal | A queued leg's `not_before`, a suspension at a station, a `waiting` leg, a block, a **decision** | Long waits are states, not code (R-BTN-71, R-BTN-89, §2g). Baton makes a timed leg ready by its own clock; the instant itself is written in git. |
+| Activity timeout | A leg's `max_duration` | At the deadline the holder is told to stop and the claim is taken away, fenced (R-BTN-90). Baton cannot stop the worker's process. |
+| Cron schedule, recurring workflow | A **series** ticket whose runs are child tickets, each run writing the next | Runs never overlap, and missed fires are not replayed (R-BTN-89). |
 | Human task | A **decision** block, delivered to people by **couriers** | Answers are given in git (R-BTN-78, R-BTN-80). |
 | Workflow versioning, patching | Course `version`, `min_worker_version`, `renamed_from`, `course-changed` | §2e, R-BTN-64. |
 | Replay | Git history re-read by `locate`; `baton replay` for one leg run | See below. |
@@ -42,7 +44,9 @@ The rules referred to (`R-BTN-n`) are in `BATON_SPEC`.
    Work inside a leg that was never committed is lost.
 3. **Waits as code.** Temporal has durable timers of any length, signals, queries, child
    workflows and sagas, all written inline in workflow code. Baton models waiting outside code,
-   as stations, `waiting` legs, blocks and decisions.
+   as stations, `waiting` legs, timed legs (`not_before`), blocks and decisions. A Baton timer is
+   coarse: a due leg starts within a worker's heartbeat (2 minutes), or about a second with the
+   push doorbell (R-BTN-91), not to the millisecond.
 4. **Step-through debugging of production history.** You can load a Temporal history into a
    local worker and step through the orchestration exactly as it ran. `baton replay` re-runs one
    recorded leg on its recorded inputs (R-BTN-84). It reproduces the leg's **code and inputs**,
