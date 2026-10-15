@@ -158,6 +158,16 @@ describe('validateCourse (R-BTN-69)', () => {
     // Both lists are refused as shapes (the graph then misses implement's edge, as it should).
     expect(rules(big).filter((r) => r.startsWith('shape'))).toEqual(['shape legs.implement.from', 'shape legs.implement.to']);
     expect(Date.now() - t).toBeLessThan(1000);
+    // Faults beyond the result's size cost nothing (review gate 3-A-0): a million unknown ends,
+    // and as many unknown keys, keep the result at its 100.
+    const ends = copy();
+    ends.end = Array(1_000_000).fill('x');
+    t = Date.now();
+    expect(rules(ends).filter((r) => r.startsWith('shape end'))).toEqual(['shape end']);
+    const keys = copy();
+    for (let i = 0; i < 200_000; i++) keys[`k${i}`] = 1;
+    expect(validateCourse(keys)).toHaveLength(100);
+    expect(Date.now() - t).toBeLessThan(3000);
     const wide = copy();
     for (let i = 0; i < 5000; i++) wide.stations[`s${i}`] = {};
     for (let i = 0; i < 5000; i++) wide.legs[`l${i}`] = { from: ['filed'], to: [`s${i}`] };

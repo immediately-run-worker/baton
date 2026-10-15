@@ -33,7 +33,10 @@ const WAIT_LABEL = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
 const COURSE_STATIONS_MAX = 100;
 const COURSE_LEGS_MAX = 200;
 const COURSE_LIST_MAX = 64;
-const MAX_VIOLATIONS = 100;
+/** The most violations a result holds: enough to fix a file from, small enough for a Needs
+ *  you entry (spec-silent, recorded on R3-1231). The list is kept to this while it fills, so a
+ *  hostile file's thousand faults cost no more memory than a hundred. */
+const COURSE_VIOLATIONS_MAX = 100;
 const TOP_KEYS = new Set(['start', 'start_leg', 'end', 'short_waits', 'stations', 'legs']);
 const STATION_KEYS = new Set(['label', 'renamed_from']);
 const LEG_KEYS = new Set(['from', 'to', 'label', 'max_runs', 'max_duration', 'max_queue', 'version', 'inputs', 'outputs', 'replay_safe', 'renamed_from']);
@@ -57,7 +60,12 @@ const own = (o: Record<string, unknown>, k: string) => Object.prototype.hasOwnPr
  */
 export function validateCourse(json: unknown): CourseViolation[] {
   const out: CourseViolation[] = [];
-  const add = (rule: CourseRule, path: string, message: string) => out.push({ rule, path, message });
+  const add = (rule: CourseRule, path: string, message: string) => {
+    out.push({ rule, path, message });
+    // Sort and cut while filling: the result equals sorting everything and taking the first
+    // COURSE_VIOLATIONS_MAX, at a bounded size.
+    if (out.length >= 10 * COURSE_VIOLATIONS_MAX) out.splice(0, out.length, ...finish(out));
+  };
 
   if (!isObject(json)) {
     add('shape', '', 'a course file is a JSON object');
@@ -142,8 +150,8 @@ export function validateCourse(json: unknown): CourseViolation[] {
   const start = typeof json.start === 'string' ? json.start : null;
   if (start === null) add('shape', 'start', 'start must name a station');
   else if (!isStation.has(start)) add('unknown-station', 'start', `"${start}" is not a station`);
-  const ends = Array.isArray(json.end) && json.end.length > 0 && json.end.every((x) => typeof x === 'string') ? (json.end as string[]) : null;
-  if (!ends) add('shape', 'end', 'end must be a non-empty list of stations');
+  const ends = Array.isArray(json.end) && json.end.length > 0 && json.end.length <= COURSE_STATIONS_MAX && json.end.every((x) => typeof x === 'string') ? [...new Set(json.end as string[])] : null;
+  if (!ends) add('shape', 'end', `end must be a list of 1–${COURSE_STATIONS_MAX} stations`);
   else for (const [i, e] of ends.entries()) if (!isStation.has(e)) add('unknown-station', `end.${i}`, `"${e}" is not a station`);
   if (typeof json.start_leg !== 'string') add('shape', 'start_leg', 'start_leg must name a leg');
   else if (!isLeg.has(json.start_leg)) add('start-leg', 'start_leg', `"${json.start_leg}" is not a leg`);
@@ -256,7 +264,7 @@ export function validateCourse(json: unknown): CourseViolation[] {
 
 function finish(out: CourseViolation[]): CourseViolation[] {
   out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : a.rule < b.rule ? -1 : a.rule > b.rule ? 1 : 0));
-  return out.slice(0, MAX_VIOLATIONS);
+  return out.slice(0, COURSE_VIOLATIONS_MAX);
 }
 
 /** Tarjan's strongly connected components, iteratively (no recursion on a 100-station file). */
