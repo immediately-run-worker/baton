@@ -5,7 +5,7 @@ import { exports } from 'cloudflare:workers';
 import { importJWK, SignJWT } from 'jose';
 import type { Baton } from '../src/baton';
 
-export const ORIGIN = 'https://baton.immediately.run';
+export const ORIGIN = env.PUBLIC_ORIGIN;
 const SYNC_CLAIMS = {
   repository: 'immediately-run/docs',
   ref: 'refs/heads/main',

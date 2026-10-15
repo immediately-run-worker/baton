@@ -37,14 +37,18 @@ describe('the sync principal (R-BTN-15, G-BTN-11)', () => {
     expect((await syncCall('/v1/sync/head', undefined, forged)).status).toBe(401);
   });
 
-  it('accepts the baton.immediately.run audience and refuses the retired one (R3-1229)', async () => {
+  it('accepts exactly its own origin as the audience (R3-1229, R-BTN-56)', async () => {
     // The retired host, spelled in parts so `git grep` for it stays empty (R3-1229's exit criterion).
-    const retired = ['work', 'items.immediately.run'].join('');
-    expect(env.OIDC_AUDIENCE).toBe('baton.immediately.run');
-    expect((await syncCall('/v1/sync/head', undefined, await syncToken({}, { audience: 'baton.immediately.run' }))).status).not.toBe(401);
-    const old = await syncCall('/v1/sync/head', undefined, await syncToken({}, { audience: retired }));
-    expect(old.status).toBe(401);
-    expect(await code(old)).toBe('unauthenticated');
+    const retired = ['https://work', 'items.immediately.run'].join('');
+    expect(env.OIDC_AUDIENCE).toBe('https://baton.immediately.run');
+    const ok = await syncCall('/v1/sync/head', undefined, await syncToken({}, { audience: 'https://baton.immediately.run' }));
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ sha: null, unconfirmed: [] });
+    for (const audience of [retired, 'baton.immediately.run', 'https://baton-staging.immediately.run']) {
+      const res = await syncCall('/v1/sync/head', undefined, await syncToken({}, { audience }));
+      expect(res.status).toBe(401);
+      expect(await code(res)).toBe('unauthenticated');
+    }
   });
 
   it('an owner token is no sync token', async () => {
