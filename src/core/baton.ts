@@ -361,6 +361,8 @@ export class BatonCore {
       this.store.transaction(() => {
         this.observations.accept(r, n);
         this.claims.confirm(confirmations, n);
+        // …and judges claims as a refresh would, so staleness does not stall for the hold's 24 hours.
+        this.claims.staleBoard(r, n);
         this.store.exec('UPDATE held_snapshots SET observation = ? WHERE repository_id = ? AND sha = ?', n, r, p.sha);
       });
       // Held once per sha: a repeat (the sync re-posts every 15 minutes) changes nothing, so

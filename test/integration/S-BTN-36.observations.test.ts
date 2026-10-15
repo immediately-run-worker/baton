@@ -73,4 +73,17 @@ describe('S-BTN-36 (observation half)', () => {
     expect(await (await syncCall('/v1/sync/board', doneBoard('e'.repeat(40), 'e'.repeat(40), m))).json()).toMatchObject({ ok: true, unchanged: true, stale_released: 1 });
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'released', end_reason: 'released:stale-board' });
   });
+
+  it('a held force post judges claims too, so staleness does not stall for the hold (round 2, 2-A-0)', async () => {
+    const { secret } = await register('vm-a');
+    const n = (await observe()).json.observation;
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9002' });
+    await syncCall('/v1/sync/board', doneBoard('e'.repeat(40), sha.A, n));
+    expect((await claimRow(c.claim_id)).status).toBe('active');
+    // main is rewritten: every run now posts a force, held for the owner.
+    const m = (await observe()).json.observation;
+    const held = await syncCall('/v1/sync/board', { ...payload(sha.D, sha.A, board.states.D, { force: true }), observation: m });
+    expect(((await held.json()) as { code: string }).code).toBe('snapshot-rejected');
+    expect(await claimRow(c.claim_id)).toMatchObject({ status: 'released', end_reason: 'released:stale-board' });
+  });
 });

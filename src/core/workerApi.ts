@@ -550,7 +550,10 @@ export class WorkerApi {
     if (!holder) return keeps ? conflict('no-claim') : { ok: true };
     if (holder.worker_id !== workerId) return conflict(`held-by-worker:${holder.worker_id}`);
     if (keeps) return { ok: true, claim_id: holder.id };
-    this.exec(`UPDATE claims SET status = 'released', ended_at = ?, end_reason = ? WHERE id = ?`, r.at, `shadow:${r.status}`, holder.id);
+    // R-BTN-62: the counter when it ended, as every end records.
+    this.exec(`UPDATE claims SET status = 'released', ended_at = ?, end_reason = ?,
+                 end_observation = COALESCE((SELECT last_handed_out FROM board_head WHERE repository_id = ?), 0) WHERE id = ?`,
+      r.at, `shadow:${r.status}`, repo, holder.id);
     this.event('released', actor, { shadow: true, status: r.status }, r.ticket_id, holder.id);
     return { ok: true, claim_id: holder.id };
   }
