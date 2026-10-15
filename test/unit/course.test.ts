@@ -64,6 +64,9 @@ describe('validateCourse (R-BTN-69)', () => {
   });
 
   it('a from or to that names no station', () => {
+    const one = copy();
+    one.legs.implement.from = ['filed', 'nowhere'];
+    expect(only(one, 'unknown-station').map((v) => v.path)).toEqual(['legs.implement.from.1']);
     const c = copy();
     c.legs.implement.from = ['filed', 'nowhere'];
     c.legs.adjudicate.to = 'elsewhere';
@@ -88,9 +91,79 @@ describe('validateCourse (R-BTN-69)', () => {
     expect(validateCourse(c)[0].message).toContain('"ghost" is not a leg');
     c.legs.fix.inputs = { findings: { from: 'findings' } };
     expect(rules(c)).toEqual(['input legs.fix.inputs.findings.from']);
+    // An inherited property is no declared output (review gate 1-A-0, 1-B-0).
+    for (const name of ['toString', 'constructor', 'hasOwnProperty', '__proto__', 'valueOf']) {
+      c.legs.fix.inputs = { findings: { from: `review.${name}` } };
+      expect([name, rules(c)]).toEqual([name, ['input legs.fix.inputs.findings.from']]);
+    }
   });
 
-  it('ids, unknown keys and bounds', () => {
+  it('each of id, unknown-key and bound alone', () => {
+    const id = copy();
+    id.short_waits = ['ci', 'bad label'];
+    expect(only(id, 'id').map((v) => v.path)).toEqual(['short_waits.1']);
+    const key = copy();
+    key.legs.review.max_run = 3;
+    expect(only(key, 'unknown-key').map((v) => v.path)).toEqual(['legs.review.max_run']);
+    const bound = copy();
+    bound.legs.merge.max_duration = 30;
+    expect(only(bound, 'bound').map((v) => v.path)).toEqual(['legs.merge.max_duration']);
+    const shape = copy();
+    shape.end = [];
+    expect(only(shape, 'shape').map((v) => v.path)).toEqual(['end']);
+  });
+
+  it('labels are §10.4 free text (review gate 1-A-2)', () => {
+    const c = copy();
+    c.stations.filed.label = '<b>{x}</b>';
+    c.legs.review.label = '';
+    expect(rules(c)).toEqual(['bound legs.review.label', 'bound stations.filed.label']);
+    c.stations.filed.label = 'x'.repeat(500);
+    delete c.legs.review.label;
+    expect(validateCourse(c)).toEqual([]);
+  });
+
+  it('short_waits labels and input and output names are not station ids (review gate 1-B-2)', () => {
+    const c = copy();
+    c.short_waits = ['ci', 'review_seats', 'CI', 'ci:main'];
+    c.legs.review.outputs = { pr_url: {}, Findings: {} };
+    c.legs.fix.inputs = { pr_url: { from: 'review.pr_url' } };
+    expect(validateCourse(c)).toEqual([]);
+    c.legs.review.outputs = { 'a.b': {} };
+    expect(rules(c)).toContain('id legs.review.outputs.a.b');
+  });
+
+  it('a repeated station in a from or to names the same edge (review gate 1-B-3)', () => {
+    const c = copy();
+    c.legs.review.from = ['pr-open', 'fixed', 'pr-open'];
+    c.legs.merge.to = ['merged', 'merged'];
+    expect(validateCourse(c)).toEqual([]);
+  });
+
+  it('a hostile file stays within its caps, quickly (review gate 1-A-1, 1-B-1)', () => {
+    const big = copy();
+    big.legs.implement.from = Array(8000).fill('filed');
+    big.legs.implement.to = Array(8000).fill('pr-open');
+    let t = Date.now();
+    // Both lists are refused as shapes (the graph then misses implement's edge, as it should).
+    expect(rules(big).filter((r) => r.startsWith('shape'))).toEqual(['shape legs.implement.from', 'shape legs.implement.to']);
+    expect(Date.now() - t).toBeLessThan(1000);
+    const wide = copy();
+    for (let i = 0; i < 5000; i++) wide.stations[`s${i}`] = {};
+    for (let i = 0; i < 5000; i++) wide.legs[`l${i}`] = { from: ['filed'], to: [`s${i}`] };
+    t = Date.now();
+    expect(rules(wide).slice(0, 2)).toEqual(['shape legs', 'shape stations']);
+    expect(Date.now() - t).toBeLessThan(1000);
+    const full = copy();
+    for (let i = 0; i < 94; i++) full.stations[`s${i}`] = {};
+    const all = Object.keys(full.stations);
+    for (let i = 0; i < 195; i++) full.legs[`l${i}`] = { from: all, to: all, max_runs: 1 };
+    t = Date.now();
+    validateCourse(full);
+    expect(Date.now() - t).toBeLessThan(2000);
+  });
+
+  it('ids, unknown keys and bounds together', () => {
     const c = copy();
     c.stations.Bad_Id = { label: 'x' };
     c.legs.implement.to = 'pr-open';

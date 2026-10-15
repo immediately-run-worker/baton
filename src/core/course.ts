@@ -1,6 +1,8 @@
 // course.ts — the course file's schema and graph rules (BATON_SPEC §2e R-BTN-69; contracts
-// R-BTN-82, R-BTN-84; bounds R-BTN-79, R-BTN-90; renames R-BTN-64). Pure, with no imports, so
-// the course test kit (R3-1248) runs the very function Baton runs on every registry post.
+// R-BTN-82, R-BTN-84; bounds R-BTN-79, R-BTN-90; renames R-BTN-64; labels §10.4). Pure, importing
+// only the pure text.ts, so the course test kit (R3-1248) runs the very function Baton runs on
+// every registry post. The work is bounded by the file's caps whatever it holds: lists are
+// deduplicated and capped, and the graph pass runs only on a file within them.
 //
 // To core a course is names and edges: stations, and legs from stations to stations. What a
 // station or a leg means is the course's own; this only checks that every ticket can finish
@@ -17,7 +19,14 @@ export interface CourseViolation {
   message: string;
 }
 
+import { isFreeText } from './text';
+
 const ID = /^[a-z][a-z0-9-]{0,39}$/;
+/** An input's or output's name: no `.`, which `from: "<leg>.<output>"` separates on. */
+const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+/** A `short_waits` label is a `waiting_on` label, compared as a string (R-BTN-69, §6). */
+const WAIT_LABEL = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const MAX_INPUTS = 64;
 const MAX_STATIONS = 100;
 const MAX_LEGS = 200;
 const MAX_VIOLATIONS = 100;
@@ -31,8 +40,7 @@ const SCHEMA_PATH = /^(?!.*(^|\/)\.\.(\/|$))[A-Za-z0-9._-][A-Za-z0-9._/-]{0,199}
 
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isInt = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v);
-/** Plain text for a label: printable, no control characters (§10.4). */
-const isLabel = (v: unknown) => typeof v === 'string' && v.length <= 200 && !/[\u0000-\u001f\u007f]/.test(v);
+const own = (o: Record<string, unknown>, k: string) => Object.prototype.hasOwnProperty.call(o, k);
 
 /**
  * Every way `json` fails to be a course file, sorted by path then rule (at most 100); empty
@@ -67,7 +75,7 @@ export function validateCourse(json: unknown): CourseViolation[] {
       continue;
     }
     for (const k of Object.keys(s)) if (!STATION_KEYS.has(k)) add('unknown-key', `${at}.${k}`, `unknown key "${k}"`);
-    if ('label' in s && !isLabel(s.label)) add('bound', `${at}.label`, 'a label is plain text of at most 200 characters');
+    if ('label' in s && !isFreeText(s.label)) add('bound', `${at}.label`, 'a label is §10.4 free text: 1–500 characters, no control characters, none of < > { }');
   }
 
   // Legs.
@@ -97,12 +105,13 @@ export function validateCourse(json: unknown): CourseViolation[] {
     if ('max_queue' in l && !(isInt(l.max_queue) && l.max_queue >= 1 && l.max_queue <= 10_000)) add('bound', `${at}.max_queue`, 'max_queue is an integer from 1 to 10000');
     if ('version' in l && !(isInt(l.version) && l.version >= 0)) add('bound', `${at}.version`, 'a contract version is an integer of at least 0');
     if ('replay_safe' in l && typeof l.replay_safe !== 'boolean') add('bound', `${at}.replay_safe`, 'replay_safe is true or false');
-    if ('label' in l && !isLabel(l.label)) add('bound', `${at}.label`, 'a label is plain text of at most 200 characters');
+    if ('label' in l && !isFreeText(l.label)) add('bound', `${at}.label`, 'a label is §10.4 free text: 1–500 characters, no control characters, none of < > { }');
     if ('outputs' in l) {
       if (!isObject(l.outputs)) add('shape', `${at}.outputs`, 'outputs is an object of output names');
+      else if (Object.keys(l.outputs).length > MAX_INPUTS) add('shape', `${at}.outputs`, `at most ${MAX_INPUTS} outputs`);
       else for (const [name, o] of Object.entries(l.outputs)) {
         const op = `${at}.outputs.${name}`;
-        if (!ID.test(name)) add('id', op, `output name "${name}" must match ${ID.source}`);
+        if (!NAME.test(name)) add('id', op, `output name "${name}" must match ${NAME.source}`);
         if (!isObject(o)) { add('shape', op, 'an output is an object'); continue; }
         for (const k of Object.keys(o)) if (!OUTPUT_KEYS.has(k)) add('unknown-key', `${op}.${k}`, `unknown key "${k}"`);
         if ('schema' in o && !(typeof o.schema === 'string' && SCHEMA_PATH.test(o.schema))) add('shape', `${op}.schema`, 'a schema is a relative path in the course directory');
@@ -110,17 +119,17 @@ export function validateCourse(json: unknown): CourseViolation[] {
     }
   }
 
-  /** A non-empty list of distinct station ids, each one a station. */
+  /** A non-empty list of station ids, each one a station, deduplicated (a repeat names the
+   *  same edge). Longer than a file may have stations, it is a shape violation, and empty. */
   function stationList(v: unknown, path: string, single: boolean): string[] {
-    if (!Array.isArray(v) || v.length === 0 || !v.every((x) => typeof x === 'string')) {
-      add('shape', path, single ? 'must name a station' : 'must be a station id or a non-empty list of them');
+    if (!Array.isArray(v) || v.length === 0 || v.length > MAX_STATIONS || !v.every((x) => typeof x === 'string')) {
+      add('shape', path, single ? 'must name a station' : `must be a station id or a list of 1–${MAX_STATIONS} of them`);
       return [];
     }
-    if (new Set(v).size !== v.length) add('shape', path, 'lists a station twice');
     for (const [i, s] of (v as string[]).entries()) {
       if (!isStation.has(s)) add('unknown-station', single ? path : `${path}.${i}`, `"${s}" is not a station`);
     }
-    return (v as string[]).filter((s) => isStation.has(s));
+    return [...new Set((v as string[]).filter((s) => isStation.has(s)))];
   }
 
   // start, end, start_leg, short_waits.
@@ -134,8 +143,8 @@ export function validateCourse(json: unknown): CourseViolation[] {
   else if (!isLeg.has(json.start_leg)) add('start-leg', 'start_leg', `"${json.start_leg}" is not a leg`);
   else if (start !== null && !(edges.get(json.start_leg)?.from ?? []).includes(start)) add('start-leg', 'start_leg', `"${json.start_leg}" does not leave the start station "${start}"`);
   if ('short_waits' in json) {
-    if (!Array.isArray(json.short_waits) || !json.short_waits.every((x) => typeof x === 'string')) add('shape', 'short_waits', 'short_waits is a list of waiting_on labels');
-    else for (const [i, w] of (json.short_waits as string[]).entries()) if (!ID.test(w)) add('id', `short_waits.${i}`, `label "${w}" must match ${ID.source}`);
+    if (!Array.isArray(json.short_waits) || json.short_waits.length > MAX_INPUTS || !json.short_waits.every((x) => typeof x === 'string')) add('shape', 'short_waits', `short_waits is a list of at most ${MAX_INPUTS} waiting_on labels`);
+    else for (const [i, w] of (json.short_waits as string[]).entries()) if (!WAIT_LABEL.test(w)) add('id', `short_waits.${i}`, `label "${w}" must match ${WAIT_LABEL.source}`);
   }
 
   // Inputs: each reads one leg's declared output.
@@ -144,18 +153,20 @@ export function validateCourse(json: unknown): CourseViolation[] {
     if (!isObject(l) || !('inputs' in l)) continue;
     const at = `legs.${id}.inputs`;
     if (!isObject(l.inputs)) { add('shape', at, 'inputs is an object of input names'); continue; }
+    if (Object.keys(l.inputs).length > MAX_INPUTS) { add('shape', at, `at most ${MAX_INPUTS} inputs`); continue; }
     for (const [name, inp] of Object.entries(l.inputs)) {
       const ip = `${at}.${name}`;
-      if (!ID.test(name)) add('id', ip, `input name "${name}" must match ${ID.source}`);
+      if (!NAME.test(name)) add('id', ip, `input name "${name}" must match ${NAME.source}`);
       if (!isObject(inp)) { add('shape', ip, 'an input is an object'); continue; }
       for (const k of Object.keys(inp)) if (!INPUT_KEYS.has(k)) add('unknown-key', `${ip}.${k}`, `unknown key "${k}"`);
-      if ('accepts' in inp && !(Array.isArray(inp.accepts) && inp.accepts.length > 0 && inp.accepts.every((v) => isInt(v) && v >= 0))) add('bound', `${ip}.accepts`, 'accepts is a non-empty list of contract versions');
+      if ('accepts' in inp && !(Array.isArray(inp.accepts) && inp.accepts.length > 0 && inp.accepts.length <= MAX_INPUTS && inp.accepts.every((v) => isInt(v) && v >= 0))) add('bound', `${ip}.accepts`, `accepts is a list of 1–${MAX_INPUTS} contract versions`);
       if ('required' in inp && typeof inp.required !== 'boolean') add('bound', `${ip}.required`, 'required is true or false');
       const m = typeof inp.from === 'string' ? /^([^.]+)\.([^.]+)$/.exec(inp.from) : null;
       if (!m) { add('input', `${ip}.from`, 'from is "<leg>.<output>"'); continue; }
-      const producer = legs![m[1]];
+      const producer = isLeg.has(m[1]) ? legs![m[1]] : undefined;
       if (!isLeg.has(m[1])) add('input', `${ip}.from`, `"${m[1]}" is not a leg`);
-      else if (!isObject(producer) || !isObject(producer.outputs) || !(m[2] in producer.outputs)) add('input', `${ip}.from`, `leg "${m[1]}" declares no output "${m[2]}"`);
+      // Own keys only: an inherited name (`toString`, `__proto__`) is no declared output.
+      else if (!isObject(producer) || !isObject(producer.outputs) || !NAME.test(m[2]) || !own(producer.outputs, m[2])) add('input', `${ip}.from`, `leg "${m[1]}" declares no output "${m[2]}"`);
     }
   }
 
@@ -167,7 +178,7 @@ export function validateCourse(json: unknown): CourseViolation[] {
       const v = all && isObject(all[id]) ? (all[id] as Record<string, unknown>).renamed_from : undefined;
       if (v === undefined) continue;
       const at = `${kind}.${id}.renamed_from`;
-      const names = typeof v === 'string' ? [v] : Array.isArray(v) && v.every((x) => typeof x === 'string') ? (v as string[]) : null;
+      const names = typeof v === 'string' ? [v] : Array.isArray(v) && v.length <= MAX_INPUTS && v.every((x) => typeof x === 'string') ? (v as string[]) : null;
       if (!names || names.length === 0) { add('renamed-from', at, 'renamed_from is an id or a list of ids'); continue; }
       for (const n of names) {
         if (!ID.test(n)) add('renamed-from', at, `"${n}" must match ${ID.source}`);
@@ -179,6 +190,10 @@ export function validateCourse(json: unknown): CourseViolation[] {
   };
   renames('stations', stationIds, isStation, stations);
   renames('legs', legIds, isLeg, legs);
+
+  // The graph rules run only on a file within its caps, so the work is bounded whatever it
+  // holds (at most 200 legs × 100 × 100 edges); past them the shape violations stand alone.
+  if (stationIds.length > MAX_STATIONS || legIds.length > MAX_LEGS) return finish(out);
 
   // The graph: station → station along every leg's every outcome.
   const next = new Map<string, Set<string>>(stationIds.map((s) => [s, new Set()]));
@@ -217,6 +232,10 @@ export function validateCourse(json: unknown): CourseViolation[] {
     add('unbounded-cycle', `legs.${names[0]}`, `the legs ${names.map((n) => `"${n}"`).join(', ')} form a cycle with no max_runs`);
   }
 
+  return finish(out);
+}
+
+function finish(out: CourseViolation[]): CourseViolation[] {
   out.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : a.rule < b.rule ? -1 : a.rule > b.rule ? 1 : 0));
   return out.slice(0, MAX_VIOLATIONS);
 }
