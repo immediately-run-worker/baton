@@ -28,8 +28,10 @@ export function importLegacyClaim(sql: Store, now: number,
   sql.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at)
             VALUES ('legacy', ?, ?, 'legacy', 'claude-code', 'legacy', 'critical', 0, '', ?, ?)`, session, randomHex(32), now, now);
   const workerId = sql.exec('SELECT last_insert_rowid() AS id').one().id as number;
-  sql.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, reap_after)
-            VALUES (?, ?, ?, ?, ?, ?, 'active', ?)`, o.item, workerId, o.requestId, o.nonce, o.sha, o.claimedAt, o.claimedAt + LEGACY_REAP_MS);
+  // R-BTN-62: the counter's value now, as for any claim.
+  sql.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, reap_after, claim_observation)
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, COALESCE((SELECT last_handed_out FROM board_head WHERE repository_id = ?), 0))`,
+    o.item, workerId, o.requestId, o.nonce, o.sha, o.claimedAt, o.claimedAt + LEGACY_REAP_MS, repositoryOf(o.item));
   const claimId = sql.exec('SELECT last_insert_rowid() AS id').one().id as number;
   logEvent(sql, now, 'claimed', 'baton', { legacy: true, session, ...(o.detail ?? {}) }, o.item, claimId);
   return { claimId, session };

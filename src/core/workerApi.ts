@@ -536,8 +536,10 @@ export class WorkerApi {
       const mine = this.activeClaim(workerId);
       if (mine) return conflict(`worker-holds:${mine.ticket_id}`);
       const head = this.rows<{ sha: string | null }>('SELECT sha FROM board_head WHERE repository_id = ?', repo)[0]?.sha ?? '';
-      this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
-                 VALUES (?, ?, ?, ?, ?, ?, 'active')`, r.ticket_id, workerId, `shadow:${workerId}:${r.ticket_id}:${r.nonce}`, r.nonce!, head, r.at);
+      // R-BTN-62: as any claim, judged only by a reading numbered after it.
+      this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, claim_observation)
+                 VALUES (?, ?, ?, ?, ?, ?, 'active', COALESCE((SELECT last_handed_out FROM board_head WHERE repository_id = ?), 0))`,
+        r.ticket_id, workerId, `shadow:${workerId}:${r.ticket_id}:${r.nonce}`, r.nonce!, head, r.at, repo);
       const id = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
       this.event('claimed', actor, { shadow: true, nonce: r.nonce }, r.ticket_id, id);
       return { ok: true, claim_id: id };

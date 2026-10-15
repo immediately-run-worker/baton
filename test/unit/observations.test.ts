@@ -2,7 +2,7 @@
 // one number outstanding per repository, each used once, a post refused whole unless its number
 // is the outstanding one and above the last accepted reading's.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { MIRROR_WORKFLOW_REF, observe, payload, rows, setClock, syncCall, syncToken, withCore } from '../helpers';
+import { MIRROR_WORKFLOW_REF, observe, payload, register, rows, setClock, syncCall, syncToken, withCore, workerCall } from '../helpers';
 import { checkPayload } from '../../src/core/board';
 
 const board = inject('board');
@@ -93,5 +93,16 @@ describe('two posts judged at once (round 1, 1-B-2)', () => {
     expect(out.find((r) => 'code' in r)).toMatchObject({ code: expect.stringMatching(/^(head-moved|stale-observation)$/) });
     const h = await rows<{ sha: string; observation: number }>(`SELECT sha, observation FROM board_head WHERE repository_id = 'docs'`);
     expect([sha.B, sha.C]).toContain(h[0].sha);
+  });
+});
+
+describe('every claim records the counter (round 1, 1-A-3)', () => {
+  it('a shadow report’s claim, like a Baton claim, is judged only by readings numbered after it', async () => {
+    await syncCall('/v1/sync/board', payload(sha.A, null, board.states.A));
+    const n = (await observe()).json.observation;
+    const { secret } = await register('vm-a');
+    const res = await workerCall('/v1/runner/shadow-report', { secret, body: { transition: 'claim', ticket_id: 'docs:R3-9001', status: 'in-progress', nonce: 'abc123', at: T0 } });
+    expect(res.status).toBe(200);
+    expect(await rows(`SELECT claim_observation FROM claims WHERE ticket_id = 'docs:R3-9001'`)).toEqual([{ claim_observation: n }]);
   });
 });

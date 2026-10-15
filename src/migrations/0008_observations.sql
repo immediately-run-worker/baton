@@ -2,6 +2,9 @@
 -- sync saw — PRs, reviews, code repositories, which no commit orders — by a per-repository
 -- counter: POST /v1/sync/observation hands out its next number before the sync reads anything,
 -- and the board post carries it back.
+-- A repository 0006 created from claims or settings alone had no board head: give each one, so
+-- its sync can take a number and post.
+INSERT INTO board_head (repository_id, sha) SELECT id, NULL FROM repositories WHERE id NOT IN (SELECT repository_id FROM board_head);
 ALTER TABLE board_head ADD COLUMN observation INTEGER NOT NULL DEFAULT 0;      -- the last accepted post's
 ALTER TABLE board_head ADD COLUMN last_handed_out INTEGER NOT NULL DEFAULT 0;  -- the counter's last value handed out
 -- When the last number was handed out while it is outstanding (handed out, not yet posted or

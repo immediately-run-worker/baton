@@ -178,4 +178,20 @@ describe('migration 0008: observations (R3-1231)', () => {
       expect(all(`SELECT name FROM pragma_table_info('held_snapshots') WHERE name = 'observation'`)).toEqual([{ name: 'observation' }]);
     });
   });
+
+  it('gives a board head to a repository 0006 created without one (round 1, 1-A-2)', async () => {
+    const id = env.BATON.idFromName('migrations-0008-headless');
+    await runInDurableObject(env.BATON.get(id), (_o: unknown, state: DurableObjectState) => {
+      const sql = state.storage.sql;
+      sql.exec('PRAGMA foreign_keys = OFF');
+      const objects = sql.exec("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND type = 'table'").toArray() as { name: string }[];
+      for (const o of objects) sql.exec(`DROP TABLE IF EXISTS "${o.name}"`);
+      for (const m of MIGRATIONS.filter((x) => x.id <= 5)) sql.exec(m.sql);
+      sql.exec(`INSERT INTO baton_settings (key, value) VALUES ('cutover_at', '900')`); // a cutover, no board yet
+      for (const m of MIGRATIONS.filter((x) => x.id >= 6 && x.id <= 8)) sql.exec(m.sql);
+      const all = (q: string) => sql.exec(q).toArray() as Record<string, unknown>[];
+      expect(all('SELECT id FROM repositories')).toEqual([{ id: 'docs' }]);
+      expect(all('SELECT repository_id, sha, observation, last_handed_out FROM board_head')).toEqual([{ repository_id: 'docs', sha: null, observation: 0, last_handed_out: 0 }]);
+    });
+  });
 });
