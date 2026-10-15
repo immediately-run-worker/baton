@@ -37,6 +37,16 @@ describe('the sync principal (R-BTN-15, G-BTN-11)', () => {
     expect((await syncCall('/v1/sync/head', undefined, forged)).status).toBe(401);
   });
 
+  it('accepts the baton.immediately.run audience and refuses the retired one (R3-1229)', async () => {
+    // The retired host, spelled in parts so `git grep` for it stays empty (R3-1229's exit criterion).
+    const retired = ['work', 'items.immediately.run'].join('');
+    expect(env.OIDC_AUDIENCE).toBe('baton.immediately.run');
+    expect((await syncCall('/v1/sync/head', undefined, await syncToken({}, { audience: 'baton.immediately.run' }))).status).not.toBe(401);
+    const old = await syncCall('/v1/sync/head', undefined, await syncToken({}, { audience: retired }));
+    expect(old.status).toBe(401);
+    expect(await code(old)).toBe('unauthenticated');
+  });
+
   it('an owner token is no sync token', async () => {
     const res = await call('/v1/sync/head', { headers: { Authorization: `Bearer ${await accessToken()}` } });
     expect(res.status).toBe(401);

@@ -40,7 +40,7 @@ export const RESOURCES = [
   'gcloud-admin',
   'github-admin',
   // BATON_SPEC (2026-10-13): authority on the Cloudflare account behind
-  // workitems.immediately.run — Workers, Durable Objects, DNS routes, Access, the plan.
+  // baton.immediately.run — Workers, Durable Objects, DNS routes, Access, the plan.
   'cloudflare-admin',
   // BATON_SPEC: a session registered with Baton — a worker token for its host and a
   // running sidecar. Agent-held once the fleet is provisioned (AGENT_HOLDS).

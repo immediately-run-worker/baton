@@ -2,7 +2,7 @@
 name = "baton"
 main = "src/worker.ts"
 compatibility_date = "2026-09-01"
-routes = [{ pattern = "workitems.immediately.run/*", zone_name = "immediately.run" }]
+routes = [{ pattern = "baton.immediately.run/*", zone_name = "immediately.run" }]
 
 [[durable_objects.bindings]]
 name = "BATON"
@@ -20,11 +20,11 @@ globs = ["**/*.sql", "**/*.html", "**/*.css", "**/ui/*.js"]
 fallthrough = false
 
 [vars]
-PUBLIC_ORIGIN = "https://workitems.immediately.run"
+PUBLIC_ORIGIN = "https://baton.immediately.run"
 # R-BTN-15: the sync principal — GitHub Actions OIDC, from named workflows on docs main.
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 OIDC_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks"
-OIDC_AUDIENCE = "workitems.immediately.run"
+OIDC_AUDIENCE = "baton.immediately.run"
 OIDC_REPOSITORY = "immediately-run/docs"
 OIDC_REF = "refs/heads/main"
 SYNC_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-sync.yml@refs/heads/main"
@@ -40,17 +40,17 @@ OWNER_EMAILS = ""
 # Access application for the hostname.
 [env.staging]
 name = "baton-staging"
-routes = [{ pattern = "workitems-staging.immediately.run/*", zone_name = "immediately.run" }]
+routes = [{ pattern = "baton-staging.immediately.run/*", zone_name = "immediately.run" }]
 
 [[env.staging.durable_objects.bindings]]
 name = "BATON"
 class_name = "Baton"
 
 [env.staging.vars]
-PUBLIC_ORIGIN = "https://workitems-staging.immediately.run"
+PUBLIC_ORIGIN = "https://baton-staging.immediately.run"
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 OIDC_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks"
-OIDC_AUDIENCE = "workitems.immediately.run"
+OIDC_AUDIENCE = "baton.immediately.run"
 OIDC_REPOSITORY = "immediately-run/docs"
 OIDC_REF = "refs/heads/main"
 SYNC_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-sync.yml@refs/heads/main"
