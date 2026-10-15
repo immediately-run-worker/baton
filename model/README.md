@@ -87,7 +87,7 @@ releases at first use, which a sandboxed agent cannot always reach.
 | `noActAfterLoss` — no worker pushes for a claim the alarm reaped (unfenced) | R-BTN-6, R-BTN-26 |
 | `noStuckTicket` — no deadlock: a ticket git has not finished or withdrawn, once the syncs are idle and the head matches git, is held, fenced, owner-held, waiting on `policy`, flagged, or claimable | §6.7, R-BTN-10, R-BTN-35, R-BTN-67 |
 
-**Liveness** — `fencesClear`, `endsResolve`, `barsLiftClaimable`, `readyIsClaimed` — is stated
+**Liveness** — `fencesClear`, `endsResolveWithOwner` (implied by the owner's fairness alone, by design: §6.7), `barsLiftClaimable`, `readyIsClaimed` — is stated
 in `liveness.qnt` under weak fairness of each resolving step, per worker. The item's fifth,
 a held history accepted within 24 hours, is not stated: held histories are not modelled. See
 *Checked how* for what has been run.
@@ -116,7 +116,7 @@ outstanding (`sync-busy`). `overlappingSyncRunsRefusedTest` keeps it.
 | witnesses (a confirmed suspension, a resumed claim, a fence, an alarm reap; a fix leg, a regression, a merge, a confirmed `done`), seeded | `sim` | all reached |
 | a second review | — | reached by a regression run only (`maxRunsSurviveResumptionTest`) |
 | Apalache, `safety` | `small`, depth 5 | no violation (15 min 29 s on 4 CPUs) |
-| liveness, `fencesClear` | `small`, TLC (Apalache cannot check fairness) | no violation in 8,187 distinct states (971 million generated) before a 28-minute cap; **not exhaustive** — R3-1254 narrows the instance |
+| liveness, `fencesClear` | `small`, TLC (Apalache cannot check fairness) | **at `b76af9c`, the pre-round-2 formula and model**: no violation in 8,187 distinct states before a 28-minute cap, not exhaustive. The current formulas (rounds 2–3) have not been run; R3-1254 runs them to completion on a narrowed instance |
 
 Depth 5 on `small` reaches claims, advances, pushes and a sync; it does not reach a judged
 snapshot (a confirmation, a stale release or a regression needs 6–8 steps), so for those
