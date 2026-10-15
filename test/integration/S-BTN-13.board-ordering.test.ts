@@ -9,7 +9,7 @@
 // `git merge-base --is-ancestor` of the fixture repository.
 import { describe, it, expect, inject } from 'vitest';
 import { syncOnce } from '../../src/shared/batonSync.mjs';
-import { ownerCall, setClock, syncCall } from '../helpers';
+import { observe, ownerCall, setClock, syncCall } from '../helpers';
 
 type Label = 'A' | 'B' | 'C' | 'D';
 const board = inject('board');
@@ -29,6 +29,11 @@ const post = async (body: unknown) => {
 function depsFor(next: Label, seen?: { sha: string | null; unconfirmed: unknown[] }) {
   let first = seen;
   return {
+    // R-BTN-62: the run's number, from the real route, before it reads anything.
+    observe: async () => {
+      const o = await observe();
+      return o.status === 200 ? o.json : { ok: false, code: o.json.code };
+    },
     readHead: async () => {
       if (first) {
         const h = first;
@@ -74,9 +79,13 @@ describe('S-BTN-13 board ordering', () => {
     expect(late.steps).toEqual([`advance over ${sha.A}`, 'head-moved', `confirm-only over ${sha.C}`]);
     await record();
 
+    // B's run posted nothing, so its number stays outstanding: a run inside ten minutes is busy
+    // (R-BTN-62), and after them the number is void.
+    expect(await syncOnce(sha.D, depsFor('D'))).toMatchObject({ outcome: 'busy' });
+    await setClock(Date.parse('2026-10-13T12:10:00Z'));
     // main is rewritten: D descends from A but not from C. Its 15-minute re-post changes nothing.
     expect(await syncOnce(sha.D, depsFor('D'))).toMatchObject({ outcome: 'held' });
-    await setClock(Date.parse('2026-10-13T12:15:00Z'));
+    await setClock(Date.parse('2026-10-13T12:25:00Z'));
     expect(await syncOnce(sha.D, depsFor('D'))).toMatchObject({ outcome: 'held' });
     await record();
 
@@ -87,6 +96,6 @@ describe('S-BTN-13 board ordering', () => {
     // The held history is on the dashboard once, with its first 24-hour auto-accept time.
     const state = (await (await ownerCall('/v1/ui/state')).json()) as { held: { sha: string; head_sha: string; auto_accept_at: number }[]; repositories: { head: { sha: string } }[] };
     expect(state.repositories[0].head.sha).toBe(sha.C);
-    expect(state.held).toEqual([expect.objectContaining({ sha: sha.D, head_sha: sha.C, auto_accept_at: Date.parse('2026-10-14T12:00:00Z') })]);
+    expect(state.held).toEqual([expect.objectContaining({ sha: sha.D, head_sha: sha.C, auto_accept_at: Date.parse('2026-10-14T12:10:00Z') })]);
   });
 });

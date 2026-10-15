@@ -17,6 +17,7 @@ import { Cutover } from './cutover';
 import { Mirror } from './mirror';
 import { checkConfirmations, checkRepositoryId } from './validate';
 import { Courses } from './courses';
+import { Observations } from './observations';
 import { Registry, TICKET_ID, qualify, repositoryOf, type Repository, type SyncClaims } from './registry';
 import type { Ports, Row, SqlValue, Store, Workflow } from './ports';
 
@@ -33,6 +34,7 @@ export class BatonCore {
   readonly mirror: Mirror;
   readonly registry: Registry;
   readonly courses: Courses;
+  readonly observations: Observations;
   readonly store: Store;
   /** §12: workflows to dispatch once the current request or alarm has committed, one per
    *  repository and kind. */
@@ -51,6 +53,7 @@ export class BatonCore {
     const store = ports.store;
     this.registry = new Registry({ store, now: () => this.now() });
     this.courses = new Courses({ store });
+    this.observations = new Observations({ store, now: () => this.now() });
     const want = (wf: Workflow) => this.pendingDispatch.set(`${wf.repository}:${wf.kind}`, wf);
     this.claims = new Claims({ store, now: () => this.now(), dispatch: (kind, ticketId) => want({ repository: repositoryOf(ticketId), kind }) });
     this.cutover = new Cutover({ store, now: () => this.now() });
@@ -147,9 +150,22 @@ export class BatonCore {
         // R-BTN-15: the board's routes take only the repository's sync workflow, the feed's only
         // its mirror workflow; each touches that repository alone.
         if (req.method === 'GET' && url.pathname === '/v1/sync/head') return json(this.head(this.syncRepository(req, 'sync').id));
+        // R-BTN-62: the next number of the repository's counter, before the sync reads anything.
+        if (req.method === 'POST' && url.pathname === '/v1/sync/observation') return json(this.observations.observe(this.syncRepository(req, 'sync').id));
         if (req.method === 'POST' && url.pathname === '/v1/sync/board') {
           const repo = this.syncRepository(req, 'sync');
-          return json(await this.board(repo, checkPayload(await readJson(req))));
+          const body = await readJson(req);
+          let p: BoardPayload;
+          try {
+            p = checkPayload(body);
+          } catch (e) {
+            // A refused post uses its number too (R-BTN-62), malformed or not, so the sync's
+            // next run is not held off as busy for ten minutes.
+            const n = (body as { observation?: unknown } | null)?.observation;
+            if (Number.isSafeInteger(n)) this.observations.release(repo.id, n as number);
+            throw e;
+          }
+          return json(await this.board(repo, p));
         }
         if (req.method === 'GET' && url.pathname === '/v1/sync/events') {
           const repo = this.syncRepository(req, 'mirror');
@@ -328,6 +344,10 @@ export class BatonCore {
    */
   async board(repo: Repository, p: BoardPayload) {
     const r = repo.id;
+    // R-BTN-62: the post's number is used first, whatever becomes of the post; an older reading
+    // than the last accepted one, or a void or used number, is refused whole here.
+    const n = p.observation;
+    this.observations.use(r, n);
     const head = this.headOf(r);
     const at = this.now();
     // A sync confirms only its own repository's completions (R-BTN-47).
@@ -337,7 +357,14 @@ export class BatonCore {
     if (p.force && !accepted) {
       // A held post still carries the sync's confirmations: git carries those completions
       // whichever history the owner keeps, and dropping them would leave their items blocked.
-      this.store.transaction(() => this.claims.confirm(confirmations));
+      // R-BTN-62: what it saw is a refresh against the current head, its number being newer.
+      this.store.transaction(() => {
+        this.observations.accept(r, n);
+        this.claims.confirm(confirmations, n);
+        // …and judges claims as a refresh would, so staleness does not stall for the hold's 24 hours.
+        this.claims.staleBoard(r, n);
+        this.store.exec('UPDATE held_snapshots SET observation = ? WHERE repository_id = ? AND sha = ?', n, r, p.sha);
+      });
       // Held once per sha: a repeat (the sync re-posts every 15 minutes) changes nothing, so
       // the first deadline stands and the dashboard lists it once. Every row is a hold against
       // the current head (rows held against a head are deleted when it moves, below), so a row
@@ -347,8 +374,8 @@ export class BatonCore {
       const deadline = known?.auto_accept_at ?? at + HELD_AUTO_ACCEPT_MS;
       if (!known) {
         this.store.transaction(() => {
-          this.store.exec('INSERT INTO held_snapshots (repository_id, sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            r, p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
+          this.store.exec('INSERT INTO held_snapshots (repository_id, sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at, observation) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            r, p.sha, p.parent_sha, head, p.state.items.length, at, deadline, n);
           this.event(r, 'snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, ticket_count: p.state.items.length, auto_accept_at: deadline }, at);
         });
       }
@@ -360,8 +387,13 @@ export class BatonCore {
       // ancestor of the head, and an older registry would roll a course back. A head that
       // predates the registry (migration 0007) gets its courses with the next new head; until
       // then its tickets fit no worker (rule 9), failing closed.
-      const confirmed = this.store.transaction(() => this.claims.confirm(confirmations));
-      return { ok: true, unchanged: true, confirmed };
+      // A refresh is a reading like any other: it confirms ends and judges claims made before its
+      // number (R-BTN-62, R-BTN-35), not only the post that moved the head.
+      return this.store.transaction(() => {
+        this.observations.accept(r, n);
+        const confirmed = this.claims.confirm(confirmations, n);
+        return { ok: true, unchanged: true, confirmed, stale_released: this.claims.staleBoard(r, n) };
+      });
     }
     if (!accepted && p.parent_sha !== head) throw new BatonError('head-moved', `the head is ${head ?? 'unset'}; re-read it and retry`);
 
@@ -373,6 +405,10 @@ export class BatonCore {
     }));
     const changed: { upserted: number; deleted: number; confirmed?: number; stale_released?: number; courses_refused?: string[]; fleet_ignored?: boolean } = { upserted: 0, deleted: 0 };
     this.store.transaction(() => {
+      // The row hashes were awaited after the number was used, so another run may have posted
+      // meanwhile: this reading must still be the newest, over the head it was judged against.
+      if (!this.observations.newest(r, n)) throw new BatonError('stale-observation', `a newer reading than ${n} was accepted while this post was judged; take a new number and retry (R-BTN-62)`);
+      if (this.headOf(r) !== head) throw new BatonError('head-moved', `the head moved to ${this.headOf(r) ?? 'unset'} while this post was judged; re-read it and retry`);
       // The course registry first (R-BTN-48, R-BTN-69): every ticket must name a course in
       // force, and a refused file with none to keep refuses the whole post.
       const refused = this.applyRegistry(r, p, rows.map(({ row }) => row.course_id), at);
@@ -418,9 +454,10 @@ export class BatonCore {
       // history stays in the events.
       this.store.exec('DELETE FROM held_snapshots WHERE repository_id = ? AND head_sha IS ?', r, head);
       this.event(r, 'snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, ticket_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
-      changed.confirmed = this.claims.confirm(confirmations);
+      this.observations.accept(r, n);
+      changed.confirmed = this.claims.confirm(confirmations, n);
       // R-BTN-35: git wins over a claim it has overtaken.
-      changed.stale_released = this.claims.staleBoard(r);
+      changed.stale_released = this.claims.staleBoard(r, n);
     });
     return { ok: true, ...changed };
   }

@@ -156,3 +156,42 @@ describe('migration 0007: courses (R3-1231)', () => {
     });
   });
 });
+
+// R3-1231 part 3 — migration 0008 adds the observation counter (R-BTN-62): a board at 0007 starts
+// at 0 with nothing outstanding, and claims made before it are judged by any reading.
+describe('migration 0008: observations (R3-1231)', () => {
+  it('adds the counter to each board head and the numbers to claims and holds', async () => {
+    const id = env.BATON.idFromName('migrations-0008');
+    await runInDurableObject(env.BATON.get(id), (_o: unknown, state: DurableObjectState) => {
+      const sql = state.storage.sql;
+      sql.exec('PRAGMA foreign_keys = OFF');
+      const objects = sql.exec("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND type = 'table'").toArray() as { name: string }[];
+      for (const o of objects) sql.exec(`DROP TABLE IF EXISTS "${o.name}"`);
+      for (const m of MIGRATIONS.filter((x) => x.id <= 7)) sql.exec(m.sql);
+      sql.exec(`INSERT INTO repositories (id, github, default_branch, sync_workflow) VALUES ('docs', 'immediately-run/docs', 'main', '.github/workflows/baton-sync.yml')`);
+      sql.exec(`INSERT INTO board_head (repository_id, sha) VALUES ('docs', 'aaa')`);
+      sql.exec(`INSERT INTO claims (id, ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status) VALUES (7, 'docs:R3-9001', 1, 'r', 'abc123', 'aaa', 1, 'active')`);
+      sql.exec(MIGRATIONS.find((x) => x.id === 8)!.sql);
+      const all = (q: string) => sql.exec(q).toArray() as Record<string, unknown>[];
+      expect(all('SELECT sha, observation, last_handed_out, handed_out_at FROM board_head')).toEqual([{ sha: 'aaa', observation: 0, last_handed_out: 0, handed_out_at: null }]);
+      expect(all('SELECT claim_observation, end_observation FROM claims')).toEqual([{ claim_observation: 0, end_observation: null }]);
+      expect(all(`SELECT name FROM pragma_table_info('held_snapshots') WHERE name = 'observation'`)).toEqual([{ name: 'observation' }]);
+    });
+  });
+
+  it('gives a board head to a repository 0006 created without one (round 1, 1-A-2)', async () => {
+    const id = env.BATON.idFromName('migrations-0008-headless');
+    await runInDurableObject(env.BATON.get(id), (_o: unknown, state: DurableObjectState) => {
+      const sql = state.storage.sql;
+      sql.exec('PRAGMA foreign_keys = OFF');
+      const objects = sql.exec("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND type = 'table'").toArray() as { name: string }[];
+      for (const o of objects) sql.exec(`DROP TABLE IF EXISTS "${o.name}"`);
+      for (const m of MIGRATIONS.filter((x) => x.id <= 5)) sql.exec(m.sql);
+      sql.exec(`INSERT INTO baton_settings (key, value) VALUES ('cutover_at', '900')`); // a cutover, no board yet
+      for (const m of MIGRATIONS.filter((x) => x.id >= 6 && x.id <= 8)) sql.exec(m.sql);
+      const all = (q: string) => sql.exec(q).toArray() as Record<string, unknown>[];
+      expect(all('SELECT id FROM repositories')).toEqual([{ id: 'docs' }]);
+      expect(all('SELECT repository_id, sha, observation, last_handed_out FROM board_head')).toEqual([{ repository_id: 'docs', sha: null, observation: 0, last_handed_out: 0 }]);
+    });
+  });
+});

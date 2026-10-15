@@ -4,7 +4,7 @@
 // (scripts/lib/batonSync.mjs, vendored) over the fixture repository's real ancestry.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
 import { syncOnce } from '../../src/shared/batonSync.mjs';
-import { claimItem, claimRow, cutover, endClaim, ownerCall, payload, register, setClock, syncCall , tick } from '../helpers';
+import { claimItem, claimRow, cutover, endClaim, observe, ownerCall, payload, register, setClock, syncCall , tick } from '../helpers';
 
 const board = inject('board');
 const sha = board.shas;
@@ -15,6 +15,11 @@ const items = (l: Label) => board.states[l].state.items as { id: string; status:
 
 /** The real sync, run for a push of `next`. */
 const sync = (next: Label) => syncOnce(sha[next], {
+  // R-BTN-62: the run's number first, from the real route.
+  observe: async () => {
+    const o = await observe();
+    return o.status === 200 ? o.json : { ok: false, code: o.json.code };
+  },
   readHead: async () => (await syncCall('/v1/sync/head')).json(),
   post: async (body: unknown) => {
     const res = await syncCall('/v1/sync/board', body);

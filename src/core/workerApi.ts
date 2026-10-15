@@ -536,8 +536,10 @@ export class WorkerApi {
       const mine = this.activeClaim(workerId);
       if (mine) return conflict(`worker-holds:${mine.ticket_id}`);
       const head = this.rows<{ sha: string | null }>('SELECT sha FROM board_head WHERE repository_id = ?', repo)[0]?.sha ?? '';
-      this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
-                 VALUES (?, ?, ?, ?, ?, ?, 'active')`, r.ticket_id, workerId, `shadow:${workerId}:${r.ticket_id}:${r.nonce}`, r.nonce!, head, r.at);
+      // R-BTN-62: as any claim, judged only by a reading numbered after it.
+      this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, claim_observation)
+                 VALUES (?, ?, ?, ?, ?, ?, 'active', COALESCE((SELECT last_handed_out FROM board_head WHERE repository_id = ?), 0))`,
+        r.ticket_id, workerId, `shadow:${workerId}:${r.ticket_id}:${r.nonce}`, r.nonce!, head, r.at, repo);
       const id = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
       this.event('claimed', actor, { shadow: true, nonce: r.nonce }, r.ticket_id, id);
       return { ok: true, claim_id: id };
@@ -548,7 +550,10 @@ export class WorkerApi {
     if (!holder) return keeps ? conflict('no-claim') : { ok: true };
     if (holder.worker_id !== workerId) return conflict(`held-by-worker:${holder.worker_id}`);
     if (keeps) return { ok: true, claim_id: holder.id };
-    this.exec(`UPDATE claims SET status = 'released', ended_at = ?, end_reason = ? WHERE id = ?`, r.at, `shadow:${r.status}`, holder.id);
+    // R-BTN-62: the counter when it ended, as every end records.
+    this.exec(`UPDATE claims SET status = 'released', ended_at = ?, end_reason = ?,
+                 end_observation = COALESCE((SELECT last_handed_out FROM board_head WHERE repository_id = ?), 0) WHERE id = ?`,
+      r.at, `shadow:${r.status}`, repo, holder.id);
     this.event('released', actor, { shadow: true, status: r.status }, r.ticket_id, holder.id);
     return { ok: true, claim_id: holder.id };
   }

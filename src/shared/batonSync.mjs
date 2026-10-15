@@ -39,11 +39,17 @@ export async function confirmations(unconfirmed, next, { isAncestor, statusOf })
 }
 
 /**
- * One sync run (§7.1): read the head, decide, post — and on `head-moved` re-read the head and
- * decide again, once; on `unavailable` (a key-set outage, §11) wait and post again, once.
- * Never a loop: a second failure fails the run.
+ * One sync run (§7.1): take an observation number first (R-BTN-62), read the head, decide,
+ * post — and on `head-moved` or `stale-observation` take a new number, re-read the head and
+ * decide again, once; on `unavailable` (a key-set outage, §11, which never reached Baton, so
+ * the number is still the run's) wait and post again, once. Never a loop: a second failure
+ * fails the run. `sync-busy` — another run's reading is in flight — ends this one as `busy`.
  *
  * deps:
+ *   observe()           → `{sha, observation, bars}` from `POST /v1/sync/observation`
+ *   fetchNext()         → optional: fetches main and returns the commit to post; called after
+ *                         each number, so the commit and the payload are read after it (§7.1
+ *                         steps 1–2). Absent, `next` as given is posted (a harness's fixed board).
  *   readHead()          → `{sha, unconfirmed}` from `GET /v1/sync/head`
  *   post(body)          → `{ok: true, …}` or `{ok: false, code}` from `POST /v1/sync/board`
  *   isAncestor(a, b)    → boolean
@@ -51,11 +57,12 @@ export async function confirmations(unconfirmed, next, { isAncestor, statusOf })
  *   statusOf(id)        → the item's status at `next`, or null
  *   sleep(ms)           → a promise; the backoff before retrying `unavailable`
  *
- * Returns `{outcome, steps}`: `outcome` is `advanced`, `confirmed`, `held` or `failed:<code>`,
+ * Returns `{outcome, steps, next}` (`next` the commit the run judged): `outcome` is `advanced`, `confirmed`, `held`, `busy` or `failed:<code>`,
  * and `steps` says what happened, for the run's log.
  */
 export async function syncOnce(next, deps, { backoffMs = 30_000 } = {}) {
   const steps = [];
+  const done = (r) => ({ ...r, next });
   let outages = 0;
   // A head that could not be read is never "no head": that would post a parent-less snapshot
   // and drop the unconfirmed list. `unavailable` waits and reads once more; anything else fails.
@@ -71,35 +78,61 @@ export async function syncOnce(next, deps, { backoffMs = 30_000 } = {}) {
       return h;
     }
   };
+  // The number first: everything the run reads after it is newer than it (R-BTN-62).
+  const take = async () => {
+    for (;;) {
+      const o = await deps.observe();
+      if (o.ok !== false) return o;
+      steps.push(`observation: ${o.code}`);
+      if (o.code === 'unavailable' && outages++ === 0) {
+        await deps.sleep(backoffMs);
+        continue;
+      }
+      return o;
+    }
+  };
+  const ended = (code) => done({ outcome: code === 'sync-busy' ? 'busy' : `failed:${code}`, steps });
+  let obs = await take();
+  if (obs.ok === false) return ended(obs.code);
+  if (deps.fetchNext) next = await deps.fetchNext();
   let head = await readHead();
-  if (head.ok === false) return { outcome: `failed:${head.code}`, steps };
+  if (head.ok === false) return done({ outcome: `failed:${head.code}`, steps });
   let payload = null;
-  for (let headMoves = 0; ;) {
+  for (let retries = 0; ;) {
     const d = await decide(head.sha, next, deps.isAncestor);
     steps.push(`${d} over ${head.sha ?? 'no head'}`);
     const confirmed = await confirmations(head.unconfirmed, next, deps);
-    if (d === 'confirm-only' && !confirmed.length) return { outcome: 'confirmed', steps };
+    // A checkout behind the head posts nothing (§7.1); one at the head posts a refresh even with
+    // nothing to confirm, which also uses its number, so the next run is not held off as busy.
+    if (d === 'confirm-only' && !confirmed.length && next !== head.sha) return done({ outcome: 'confirmed', steps });
     payload ??= await deps.buildPayload();
     // Confirm-only re-posts the head itself (a no-op for the board, R-BTN-11) carrying the
     // confirmations, so one endpoint and one payload shape serve both; Baton applies them
     // on that path (R3-1212).
     const body = d === 'confirm-only'
-      ? { ...payload, sha: head.sha, parent_sha: head.sha, confirmations: confirmed }
-      : { ...payload, sha: next, parent_sha: head.sha ?? null, confirmations: confirmed, ...(d === 'force' ? { force: true } : {}) };
+      ? { ...payload, sha: head.sha, parent_sha: head.sha, confirmations: confirmed, observation: obs.observation }
+      : { ...payload, sha: next, parent_sha: head.sha ?? null, confirmations: confirmed, observation: obs.observation, ...(d === 'force' ? { force: true } : {}) };
     const res = await deps.post(body);
     steps.push(res.ok ? 'accepted' : res.code);
-    if (res.ok) return { outcome: d === 'confirm-only' ? 'confirmed' : 'advanced', steps };
-    if (res.code === 'snapshot-rejected' && d === 'force') return { outcome: 'held', steps };
-    if (res.code === 'head-moved' && headMoves++ === 0) {
+    if (res.ok) return done({ outcome: d === 'confirm-only' ? 'confirmed' : 'advanced', steps });
+    if (res.code === 'snapshot-rejected' && d === 'force') return done({ outcome: 'held', steps });
+    // Baton used the number refusing it: a new one, then the head again (R-BTN-62).
+    if ((res.code === 'head-moved' || res.code === 'stale-observation') && retries++ === 0) {
+      obs = await take();
+      if (obs.ok === false) return ended(obs.code);
+      // Everything posted under the new number is read after it (§7.1 step 2): the commit and
+      // the payload too.
+      if (deps.fetchNext) next = await deps.fetchNext();
+      payload = null;
       head = await readHead();
-      if (head.ok === false) return { outcome: `failed:${head.code}`, steps };
+      if (head.ok === false) return done({ outcome: `failed:${head.code}`, steps });
       continue;
     }
     if (res.code === 'unavailable' && outages++ === 0) {
       await deps.sleep(backoffMs);
       continue;
     }
-    return { outcome: `failed:${res.code}`, steps };
+    return done({ outcome: `failed:${res.code}`, steps });
   }
 }
 
