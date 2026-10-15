@@ -90,19 +90,23 @@ module properties {
     writingLegsBarred, noStuckTicket,
   }
 
-  // ---- liveness (Apalache, under fairness of Baton's alarm, the syncs and live workers) ----
-  // R-BTN-19: every fence clears — at fence-cleared, or at the dead worker's timeout.
-  temporal fencesClear = always(TICKETS.forall(t =>
-    fencedOf(t).size() > 0 implies eventually(fencedOf(t).size() == 0)))
-  // R-BTN-10, §6.7: every completed end is eventually confirmed (by a sync, or by the owner
-  // once it is flagged).
-  temporal endsResolve = always(st.claims.keys().forall(i =>
-    (st.claims.get(i).status == "completed") implies
-      eventually(st.claims.keys().contains(i) and st.claims.get(i).confirmed)))
+  // ---- liveness (Apalache --temporal, small instance): under weak fairness of the steps
+  // that resolve each — a live worker's fence-cleared or the alarm's timeout; the owner's
+  // resolution of a flagged end — nothing waits forever (R-BTN-19, R-BTN-10, §6.7).
+  action fenceProgress = { nondet w = WORKERS.oneOf()
+                           any { fenceCleared(w), reapDead(w) } }
+  action resolveProgress = { nondet i = 1.to(MAX_CLAIMS).oneOf()
+                             ownerResolve(i) }
+  temporal fencesClear = weakFair(fenceProgress, st) implies
+    always(TICKETS.forall(t => fencedOf(t).size() > 0 implies eventually(fencedOf(t).size() == 0)))
+  temporal endsResolve = weakFair(resolveProgress, st) implies
+    always(st.claims.keys().forall(i => st.claims.get(i).status == "completed" implies
+      eventually(st.claims.get(i).confirmed)))
 
   // ---- reachability witnesses: each is expected to be VIOLATED by simulation ----
   val noConfirmedSuspension = st.claims.keys().forall(i =>
     not(st.claims.get(i).confirmed and st.claims.get(i).kind == "suspended" and st.claims.get(i).confirmObs > 0))
+  // reached deterministically by regressions.qnt (regressedSuspensionIsConfirmedTest)
   val noRegressedClaim = st.claims.keys().forall(i => not(st.claims.get(i).regressed))
   val noResumedClaim = st.claims.keys().forall(i => st.claims.get(i).startPath.length() == 0)
   val noFence = TICKETS.forall(t => fencedOf(t).size() == 0)
