@@ -190,6 +190,6 @@ describe('G-BTN-31 through the server', () => {
     expect(await rows(`SELECT kind FROM events WHERE ticket_id = 'R3-9002' ORDER BY seq`)).toEqual([{ kind: 'override' }, { kind: 'override' }, { kind: 'held' }]);
     expect(await rows(`SELECT expedite, hold, hold_reason FROM ticket_overrides WHERE ticket_id = 'R3-9002'`)).toEqual([{ expedite: 1, hold: 1, hold_reason: 'owner' }]);
     const { secret } = await register('vm-a');
-    expect((await workerCall('/v1/worker/next', { secret })).status).toBe(200);
+    expect((await workerCall('/v1/runner/next', { secret })).status).toBe(200);
   });
 });

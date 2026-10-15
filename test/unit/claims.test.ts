@@ -41,7 +41,7 @@ describe('the claim and end contracts (§6.2, §6.5, §11)', () => {
 
   it('GET next answers what a claim would, without claiming; a named item that is not ready is refused with its rule', async () => {
     const { secret } = await register('vm-a');
-    expect(await (await workerCall('/v1/worker/next', { secret })).json()).toEqual({ ticket_id: 'R3-9001', rank_reason: 'autonomous queue · rank 0' });
+    expect(await (await workerCall('/v1/runner/next', { secret })).json()).toEqual({ ticket_id: 'R3-9001', rank_reason: 'autonomous queue · rank 0' });
     expect(await rows('SELECT count(*) AS n FROM claims')).toEqual([{ n: 0 }]);
     const blocked = await claimItem('vm-a', secret, { ticket_id: 'R3-9004' });
     expect([blocked.status, blocked.json.code, blocked.json.rule]).toEqual([409, 'not-eligible', 1]);
@@ -66,7 +66,7 @@ describe('the claim and end contracts (§6.2, §6.5, §11)', () => {
   it('§6.9: an end closes the claim’s open activities abandoned', async () => {
     const { secret } = await register('vm-a');
     const { json: c } = await claimItem('vm-a', secret);
-    await workerCall('/v1/worker/activities', { secret, body: { activities: [{ id: 'impl', claim_id: c.claim_id, kind: 'implement', source: 'skill', started_at: T0 }] } });
+    await workerCall('/v1/runner/activities', { secret, body: { activities: [{ id: 'impl', claim_id: c.claim_id, kind: 'implement', source: 'skill', started_at: T0 }] } });
     await endClaim('vm-a', secret, c.claim_id, { end_reason: 'released:cannot-finish:capability' });
     expect(await rows('SELECT outcome FROM activities')).toEqual([{ outcome: 'abandoned' }]);
   });
@@ -202,7 +202,7 @@ describe('G-BTN-14: a force-reaped live worker’s item waits for its fence', ()
     expect(await (await owner(`/v1/ui/claims/${c.claim_id}/reap`, { confirm: true })).json()).toEqual({ ok: true, fence_pending: true });
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'reaped', end_reason: 'reaped:owner', fence_pending: 1 });
     expect((await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })).json.rule).toBe(3);
-    const token = await (await workerCall('/v1/worker/tickets/R3-9001/holder', { cred: 'vm-b' })).json();
+    const token = await (await workerCall('/v1/runner/tickets/R3-9001/holder', { cred: 'vm-b' })).json();
     expect(token).toEqual({ held_by_other: false, fence_pending: true });
     // The live worker is told: its heartbeat no longer lists the claim.
     const told = await beat('vm-a', a.secret);
@@ -221,7 +221,7 @@ describe('G-BTN-14: a force-reaped live worker’s item waits for its fence', ()
     const b = await register('vm-b');
     const { json: c } = await claimItem('vm-a', a.secret);
     await owner(`/v1/ui/claims/${c.claim_id}/reap`, { confirm: true });
-    const rekeyed = await workerCall('/v1/worker/heartbeat', { body: { ...hbBody('vm-a'), rekey: true, secret_hash: await sha256('second') } });
+    const rekeyed = await workerCall('/v1/runner/heartbeat', { body: { ...hbBody('vm-a'), rekey: true, secret_hash: await sha256('second') } });
     expect(((await rekeyed.json()) as { incarnation: number }).incarnation).toBe(2);
     await beat('vm-a', 'second', { fenced: { claim_id: c.claim_id, terminated: true } });
     expect((await claimRow(c.claim_id)).fence_pending).toBe(1);

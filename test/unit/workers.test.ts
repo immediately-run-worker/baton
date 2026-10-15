@@ -32,20 +32,20 @@ describe('G-BTN-5: identity — the secret, the hostname and the capability allo
   });
 
   it('refuses another hostname, a capability outside the allow-list, an unknown token and a revoked credential', async () => {
-    const other = await workerCall('/v1/worker/heartbeat', { cred: 'vm-a', body: hbBody('vm-a', { hostname: 'vm-b', secret_hash: await sha256('x') }) });
+    const other = await workerCall('/v1/runner/heartbeat', { cred: 'vm-a', body: hbBody('vm-a', { hostname: 'vm-b', secret_hash: await sha256('x') }) });
     expect([other.status, await code(other)]).toEqual([403, 'forbidden']);
-    const op = await workerCall('/v1/worker/heartbeat', { cred: 'vm-a', body: hbBody('vm-a', { capabilities: ['human-operator'], secret_hash: await sha256('x') }) });
+    const op = await workerCall('/v1/runner/heartbeat', { cred: 'vm-a', body: hbBody('vm-a', { capabilities: ['human-operator'], secret_hash: await sha256('x') }) });
     expect([op.status, await code(op)]).toEqual([403, 'forbidden']);
     // The owner's Mac credential may declare human-operator.
-    expect((await workerCall('/v1/worker/heartbeat', { cred: 'mac', body: hbBody('mac', { capabilities: ['human-operator'], secret_hash: await sha256('y') }) })).status).toBe(200);
+    expect((await workerCall('/v1/runner/heartbeat', { cred: 'mac', body: hbBody('mac', { capabilities: ['human-operator'], secret_hash: await sha256('y') }) })).status).toBe(200);
     const unknown = await call401('tok-nobody');
     expect(unknown).toBe(401);
   });
 
   it('R-BTN-32: test_harness is refused from every credential but the test one', async () => {
-    const vm = await workerCall('/v1/worker/heartbeat', { cred: 'vm-a', body: hbBody('vm-a', { test_harness: true, secret_hash: await sha256('x') }) });
+    const vm = await workerCall('/v1/runner/heartbeat', { cred: 'vm-a', body: hbBody('vm-a', { test_harness: true, secret_hash: await sha256('x') }) });
     expect([vm.status, await code(vm)]).toEqual([403, 'forbidden']);
-    expect((await workerCall('/v1/worker/heartbeat', { cred: 'test', body: hbBody('test', { test_harness: true, secret_hash: await sha256('z') }) })).status).toBe(200);
+    expect((await workerCall('/v1/runner/heartbeat', { cred: 'test', body: hbBody('test', { test_harness: true, secret_hash: await sha256('z') }) })).status).toBe(200);
   });
 
   it('stores capabilities expanded with what was declared, clamps the lease, and fails closed on unknown accounts', async () => {
@@ -72,15 +72,15 @@ describe('G-BTN-5: identity — the secret, the hostname and the capability allo
 });
 
 async function call401(token: string) {
-  const res = await (await import('../helpers')).call('/v1/worker/heartbeat', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}' });
+  const res = await (await import('../helpers')).call('/v1/runner/heartbeat', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}' });
   return res.status;
 }
 
 describe('G-BTN-17: a retried first heartbeat, and re-keys', () => {
   it('a retried first heartbeat with the same hash is the same worker', async () => {
     const hash = await sha256('retry-secret');
-    const a = await (await workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { secret_hash: hash }) })).json() as { worker_id: number };
-    const b = await (await workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { secret_hash: hash }) })).json() as { worker_id: number };
+    const a = await (await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { secret_hash: hash }) })).json() as { worker_id: number };
+    const b = await (await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { secret_hash: hash }) })).json() as { worker_id: number };
     expect(b.worker_id).toBe(a.worker_id);
     expect(await rows('SELECT count(*) AS n FROM workers')).toEqual([{ n: 1 }]);
   });
@@ -88,17 +88,17 @@ describe('G-BTN-17: a retried first heartbeat, and re-keys', () => {
   it('re-keys without a claim; refuses while holding one; a reaped worker must re-key', async () => {
     const { id, secret } = await register('vm-a');
     await seedClaim(id, 'R3-9001');
-    const refused = await workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { rekey: true, secret_hash: await sha256('new') }) });
+    const refused = await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { rekey: true, secret_hash: await sha256('new') }) });
     expect([refused.status, await code(refused)]).toEqual([409, 'session-taken']);
     await rows(`UPDATE claims SET status = 'released', ended_at = 1, end_reason = 'released:requested'`);
-    const ok = await (await workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { rekey: true, secret_hash: await sha256('new') }) })).json() as { incarnation: number };
+    const ok = await (await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { rekey: true, secret_hash: await sha256('new') }) })).json() as { incarnation: number };
     expect(ok.incarnation).toBe(2);
-    expect((await workerCall('/v1/worker/activities', { secret, body: { activities: [] } })).status).toBe(401); // the old secret is gone
+    expect((await workerCall('/v1/runner/activities', { secret, body: { activities: [] } })).status).toBe(401); // the old secret is gone
     expect(await rows(`SELECT kind FROM events WHERE kind = 'rekeyed'`)).toHaveLength(1);
     // Reaped (R3-1212 sets this): every call is worker-reaped until a re-key.
     await rows('UPDATE workers SET reaped_at = 5 WHERE id = ?', id);
     expect((await beat('vm-a', 'new')).json.code).toBe('worker-reaped');
-    const back = await (await workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { rekey: true, secret_hash: await sha256('newer') }) })).json() as { incarnation: number };
+    const back = await (await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { rekey: true, secret_hash: await sha256('newer') }) })).json() as { incarnation: number };
     expect(back.incarnation).toBe(3);
     expect(await rows('SELECT reaped_at FROM workers WHERE id = ?', id)).toEqual([{ reaped_at: null }]);
   });
@@ -111,11 +111,11 @@ describe('G-BTN-13: free text and identifiers are validated before any write', (
   ])('refuses %s', async (what, over) => {
     if (what.startsWith('a label')) {
       const { secret } = await register('vm-a');
-      const res = await workerCall('/v1/worker/activities', { secret, body: { activities: [{ id: 'a1', kind: 'orient', source: 'skill', started_at: T0, label: '<script>' }] } });
+      const res = await workerCall('/v1/runner/activities', { secret, body: { activities: [{ id: 'a1', kind: 'orient', source: 'skill', started_at: T0, label: '<script>' }] } });
       expect(((await res.json()) as { refused: { code: string }[] }).refused[0].code).toBe('invalid-params');
       return;
     }
-    const res = await workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { secret_hash: await sha256('x'), ...over }) });
+    const res = await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { secret_hash: await sha256('x'), ...over }) });
     expect([res.status, await code(res)]).toEqual([400, 'invalid-params']);
     expect(await rows('SELECT count(*) AS n FROM workers')).toEqual([{ n: 0 }]);
   });
@@ -123,7 +123,7 @@ describe('G-BTN-13: free text and identifiers are validated before any write', (
   it('an activity detail takes only its kind’s keys, a PR URL from immediately-run, and 2 KB at most', async () => {
     const { id, secret } = await register('vm-a');
     const claim = await seedClaim(id, 'R3-9001');
-    const post = (detail: unknown) => workerCall('/v1/worker/activities', { secret, body: { activities: [{ id: `d${Math.random()}`, claim_id: claim, kind: 'open-pr', source: 'hook', started_at: T0, detail }] } });
+    const post = (detail: unknown) => workerCall('/v1/runner/activities', { secret, body: { activities: [{ id: `d${Math.random()}`, claim_id: claim, kind: 'open-pr', source: 'hook', started_at: T0, detail }] } });
     const refusedOf = async (res: Response) => ((await res.json()) as { refused: unknown[] }).refused.length;
     expect(await refusedOf(await post({ pr: 'https://github.com/immediately-run/baton/pull/4' }))).toBe(0);
     expect(await refusedOf(await post({ pr: 'https://evil.example/pull/4' }))).toBe(1);
@@ -151,7 +151,7 @@ describe('G-BTN-23: transcript pointers', () => {
     expect([early.json.transcripts_refused, early.json.transcripts_unlinked]).toEqual([undefined, [0]]);
     expect(await rows(`SELECT activity_id FROM pending_transcripts WHERE path = 'sub/r.jsonl'`)).toEqual([{ activity_id: null }]);
     // Once the activity arrives, the next report of the pointer links it.
-    const act = await workerCall('/v1/worker/activities', { secret, body: { activities: [{ id: 'not-yet', kind: 'orient', source: 'hook', started_at: T0 }] } });
+    const act = await workerCall('/v1/runner/activities', { secret, body: { activities: [{ id: 'not-yet', kind: 'orient', source: 'hook', started_at: T0 }] } });
     expect(((await act.json()) as { refused: unknown[] }).refused).toEqual([]);
     const later = await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'sub/r.jsonl', role: 'subagent', activity_id: 'not-yet' }] });
     expect(later.json.transcripts_unlinked).toBeUndefined();
@@ -169,7 +169,7 @@ describe('G-BTN-24: activities', () => {
     const a = await register('vm-a');
     const b = await register('vm-b');
     const claimA = await seedClaim(a.id, 'R3-9001');
-    const post = (secret: string, activities: unknown[]) => workerCall('/v1/worker/activities', { cred: secret === a.secret ? 'vm-a' : 'vm-b', secret, body: { activities } }).then((r) => r.json() as Promise<{ refused: { id: string; code: string }[] }>);
+    const post = (secret: string, activities: unknown[]) => workerCall('/v1/runner/activities', { cred: secret === a.secret ? 'vm-a' : 'vm-b', secret, body: { activities } }).then((r) => r.json() as Promise<{ refused: { id: string; code: string }[] }>);
     expect((await post(a.secret, [{ id: 'orient-1', claim_id: null, kind: 'orient', source: 'skill', started_at: T0 }])).refused).toEqual([]);
     expect((await post(a.secret, [{ id: 'x', claim_id: null, kind: 'implement', source: 'skill', started_at: T0 }])).refused[0].code).toBe('invalid-params');
     expect((await post(a.secret, [{ id: 'round', claim_id: claimA, kind: 'review-round', seq: 1, source: 'skill', started_at: T0 }])).refused).toEqual([]);
@@ -187,7 +187,7 @@ describe('G-BTN-24: activities', () => {
   it('after a claim ends, only closing updates are accepted, and only for 10 minutes', async () => {
     const { id, secret } = await register('vm-a');
     const claim = await seedClaim(id, 'R3-9001');
-    const post = (activities: unknown[]) => workerCall('/v1/worker/activities', { secret, body: { activities } }).then((r) => r.json() as Promise<{ refused: { code: string }[] }>);
+    const post = (activities: unknown[]) => workerCall('/v1/runner/activities', { secret, body: { activities } }).then((r) => r.json() as Promise<{ refused: { code: string }[] }>);
     await post([{ id: 'push-1', claim_id: claim, kind: 'push', source: 'hook', started_at: T0 }, { id: 'push-2', claim_id: claim, kind: 'push', source: 'hook', started_at: T0 }]);
     await rows(`UPDATE claims SET status = 'released', ended_at = ?, end_reason = 'released:requested'`, T0);
     await setClock(T0 + 5 * 60_000);
@@ -205,7 +205,7 @@ describe('messages (§9)', () => {
     const first = await beat('vm-a', secret);
     expect(first.json.messages).toEqual([{ id: sent.id, kind: 'status_request', payload: null, sent_at: T0 }]);
     expect((await beat('vm-a', secret)).json.messages).toHaveLength(1); // not acknowledged yet
-    expect((await workerCall(`/v1/worker/messages/${sent.id}/ack`, { secret, body: { reply: { text: 'implementing' } } })).status).toBe(200);
+    expect((await workerCall(`/v1/runner/messages/${sent.id}/ack`, { secret, body: { reply: { text: 'implementing' } } })).status).toBe(200);
     expect((await beat('vm-a', secret)).json.messages).toEqual([]);
     expect(await rows(`SELECT from_worker_id, json_extract(payload_json, '$.text') AS text FROM messages WHERE kind = 'status_report'`)).toEqual([{ from_worker_id: id, text: 'implementing' }]);
   });
@@ -229,15 +229,15 @@ describe('messages (§9)', () => {
 describe('mode and shadow reports (R-BTN-28, §13 step 2)', () => {
   it('reports shadow until cutover, then cut-over', async () => {
     const { secret } = await register('vm-a');
-    expect(await (await workerCall('/v1/worker/mode', { secret })).json()).toEqual({ mode: 'shadow' });
+    expect(await (await workerCall('/v1/runner/mode', { secret })).json()).toEqual({ mode: 'shadow' });
     await rows(`INSERT INTO baton_settings (key, value) VALUES ('cutover_at', '123')`);
-    expect(await (await workerCall('/v1/worker/mode', { secret })).json()).toEqual({ mode: 'cut-over', cutover_at: 123 });
+    expect(await (await workerCall('/v1/runner/mode', { secret })).json()).toEqual({ mode: 'cut-over', cutover_at: 123 });
   });
 
   it('records git claims as claim rows; a second holder is a shadow-conflict, never a second claim', async () => {
     const a = await register('vm-a');
     const b = await register('vm-b');
-    const report = (cred: 'vm-a' | 'vm-b', secret: string, body: unknown) => workerCall('/v1/worker/shadow-report', { cred, secret, body }).then((r) => r.json() as Promise<Record<string, unknown>>);
+    const report = (cred: 'vm-a' | 'vm-b', secret: string, body: unknown) => workerCall('/v1/runner/shadow-report', { cred, secret, body }).then((r) => r.json() as Promise<Record<string, unknown>>);
     expect(await report('vm-a', a.secret, { transition: 'claim', ticket_id: 'R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 })).toMatchObject({ ok: true });
     expect(await report('vm-b', b.secret, { transition: 'claim', ticket_id: 'R3-9001', status: 'in-progress', nonce: 'bbbbbb', at: T0 })).toMatchObject({ ok: true, conflict: `held-by-worker:${a.id}` });
     expect(await rows(`SELECT count(*) AS n FROM claims WHERE status = 'active'`)).toEqual([{ n: 1 }]);
@@ -250,7 +250,7 @@ describe('mode and shadow reports (R-BTN-28, §13 step 2)', () => {
     expect(await rows(`SELECT status FROM claims`)).toEqual([{ status: 'active' }]);
     const claimId = (await rows<{ id: number }>('SELECT id FROM claims'))[0].id;
     await setClock(T0 + 11 * 60_000);
-    const round = await workerCall('/v1/worker/activities', { cred: 'vm-a', secret: a.secret, body: { activities: [{ id: 'r1', claim_id: claimId, kind: 'review-round', source: 'skill', started_at: T0 + 10 }] } });
+    const round = await workerCall('/v1/runner/activities', { cred: 'vm-a', secret: a.secret, body: { activities: [{ id: 'r1', claim_id: claimId, kind: 'review-round', source: 'skill', started_at: T0 + 10 }] } });
     expect(((await round.json()) as { refused: unknown[] }).refused).toEqual([]);
     expect(await report('vm-a', a.secret, { transition: 'set', ticket_id: 'R3-9001', status: 'done', at: T0 + 9 })).toMatchObject({ ok: true });
     expect(await rows(`SELECT status, end_reason FROM claims`)).toEqual([{ status: 'released', end_reason: 'shadow:done' }]);
@@ -260,15 +260,15 @@ describe('mode and shadow reports (R-BTN-28, §13 step 2)', () => {
 describe('round-one review fixes (baton#4)', () => {
   it('R-BTN-14: once the secret has been presented, the body hash no longer authenticates', async () => {
     const hash = await sha256('s1');
-    expect((await workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { secret_hash: hash }) })).status).toBe(200);
+    expect((await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { secret_hash: hash }) })).status).toBe(200);
     expect((await beat('vm-a', 's1')).status).toBe(200);
-    const replay = await workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { secret_hash: hash }) });
+    const replay = await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { secret_hash: hash }) });
     expect([replay.status, await code(replay)]).toEqual([409, 'session-taken']);
   });
 
   it('R-BTN-14: a re-key with the same hash cannot bring a reaped worker back; a retried re-key is idempotent', async () => {
     const { id } = await register('vm-a');
-    const rekey = (s: string) => workerCall('/v1/worker/heartbeat', { body: hbBody('vm-a', { rekey: true, secret_hash: s }) });
+    const rekey = (s: string) => workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { rekey: true, secret_hash: s }) });
     const h2 = await sha256('two');
     expect((await rekey(h2)).status).toBe(200);
     expect((await rekey(h2)).status).toBe(200); // a lost response, retried
@@ -337,13 +337,13 @@ describe('round-one review fixes (baton#4)', () => {
     const send = async () => ((await (await owner('/v1/ui/messages', { to_worker_id: id, kind: 'status_request' })).json()) as { id: number }).id;
     const m1 = await send();
     for (const body of [{ reply: { text: '' } }, { reply: { text: '<b>' } }, { reply: { text: 'x'.repeat(501) } }]) {
-      const res = await workerCall(`/v1/worker/messages/${m1}/ack`, { secret, body });
+      const res = await workerCall(`/v1/runner/messages/${m1}/ack`, { secret, body });
       expect([res.status, await code(res)]).toEqual([400, 'invalid-params']);
     }
-    const raw = await call(`/v1/worker/messages/${m1}/ack`, { method: 'POST', headers: { Authorization: 'Bearer tok-vm-a', 'X-Worker-Secret': secret, 'Content-Type': 'application/json' }, body: '{not json' });
+    const raw = await call(`/v1/runner/messages/${m1}/ack`, { method: 'POST', headers: { Authorization: 'Bearer tok-vm-a', 'X-Worker-Secret': secret, 'Content-Type': 'application/json' }, body: '{not json' });
     expect(raw.status).toBe(400);
     expect(await rows('SELECT status FROM messages WHERE id = ?', m1)).toEqual([{ status: 'pending' }]);
-    expect((await workerCall(`/v1/worker/messages/${m1}/ack`, { secret, method: 'POST' })).status).toBe(200);
+    expect((await workerCall(`/v1/runner/messages/${m1}/ack`, { secret, method: 'POST' })).status).toBe(200);
     expect(await rows('SELECT status FROM messages WHERE id = ?', m1)).toEqual([{ status: 'acknowledged' }]);
   });
 

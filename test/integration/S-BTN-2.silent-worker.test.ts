@@ -48,8 +48,8 @@ describe('S-BTN-2 silent worker reaped (server half)', () => {
     // The dead session, resumed: its heartbeat is refused, and its pre-push hook's holder query
     // (token alone) finds another live holder.
     expect((await beat('vm-a', dead.secret)).json.code).toBe('worker-reaped');
-    expect(await (await workerCall('/v1/worker/tickets/R3-9001/holder', { cred: 'vm-a' })).json()).toEqual({ held_by_other: true, fence_pending: false });
+    expect(await (await workerCall('/v1/runner/tickets/R3-9001/holder', { cred: 'vm-a' })).json()).toEqual({ held_by_other: true, fence_pending: false });
     // The new holder asking about its own item is not "another".
-    expect(await (await workerCall('/v1/worker/tickets/R3-9001/holder', { cred: 'vm-b', secret: live.secret })).json()).toEqual({ held_by_other: false, fence_pending: false });
+    expect(await (await workerCall('/v1/runner/tickets/R3-9001/holder', { cred: 'vm-b', secret: live.secret })).json()).toEqual({ held_by_other: false, fence_pending: false });
   });
 });

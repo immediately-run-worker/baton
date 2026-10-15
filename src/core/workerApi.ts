@@ -132,7 +132,7 @@ export class WorkerApi {
        ORDER BY started_at DESC, received_at DESC LIMIT 1`, workerId)[0] ?? null;
   }
 
-  /** `POST /v1/worker/heartbeat` (§11): registration on first contact, the secret and re-key
+  /** `POST /v1/runner/heartbeat` (§11): registration on first contact, the secret and re-key
    *  rules (R-BTN-14), the credential's hostname and capability allow-list (R-BTN-13), settings
    *  rewritten only when their hash changes (§3), transcripts, usage and rate limits; the answer
    *  carries the claim, the messages, the suspensions, `min_skills_version` and the mode. */
@@ -327,7 +327,7 @@ export class WorkerApi {
     return { id: this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id };
   }
 
-  /** `POST /v1/worker/messages/{id}/ack`: the worker acknowledges; a status request's reply is
+  /** `POST /v1/runner/messages/{id}/ack`: the worker acknowledges; a status request's reply is
    *  stored as a `status_report` carrying the current activity (the server attaches it). */
   ack(workerId: number, messageId: number, body: unknown) {
     const reply = checkAck(body); // §10.4: before any write
@@ -348,7 +348,7 @@ export class WorkerApi {
 
   // ── activities (§6.9) ───────────────────────────────────────────────────────────────────
 
-  /** `POST /v1/worker/activities`: each one upserted under `(worker_id, id)`, so a retry is
+  /** `POST /v1/runner/activities`: each one upserted under `(worker_id, id)`, so a retry is
    *  idempotent and one worker never touches another's rows. Refusals are per activity. */
   activities(workerId: number, body: unknown) {
     const list = (body as { activities?: unknown })?.activities;
@@ -488,7 +488,7 @@ export class WorkerApi {
     return at ? { mode: 'cut-over' as const, cutover_at: Number(at) } : { mode: 'shadow' as const };
   }
 
-  /** `POST /v1/worker/shadow-report`: in shadow, `claim.sh` reports each git transition and
+  /** `POST /v1/runner/shadow-report`: in shadow, `claim.sh` reports each git transition and
    *  Baton records it as a claim row, deciding nothing; a report the claim constraints refuse —
    *  a second active claim on the item or for the worker — is a `shadow-conflict` event. */
   shadowReport(workerId: number, body: unknown) {

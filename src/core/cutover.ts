@@ -99,7 +99,7 @@ export class Cutover {
     return out;
   }
 
-  /** `POST /v1/worker/adopt` (§13 step 3): the session that was working a legacy item asks for
+  /** `POST /v1/runner/adopt` (§13 step 3): the session that was working a legacy item asks for
    *  it — a worker whose session name is the legacy worker's (the claim note's holder). When the
    *  note named no holder (`item-<id>`), any session may ask; the owner's confirmation is the
    *  gate either way. The claim does not move here. */
