@@ -9,6 +9,7 @@ import { familyOf, isEligible, RULE_CODES, suspended } from '../shared/baton.mjs
 import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
 import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord, reviewCapacityRun, REVIEW_CAPACITY_LOOPS, type ResumeActivity } from './attempts';
 import { checkAccept, checkClaim, checkConfirm, checkEnd, checkOverride, checkResolve } from './validate';
+import { repositoryOf } from './registry';
 
 import type { Row, SqlValue, Store } from './ports';
 const EXPEDITE_BOUND = 2; // §7.2 rule 2
@@ -21,8 +22,9 @@ const GIT_ENDS = new Set(['done', 'superseded', 'deferred', 'deprioritized']);
 export interface Ctx {
   store: Store;
   now: () => number;
-  /** §12: ask for a workflow dispatch once this request's transaction has committed. */
-  dispatch?: (workflow: 'baton-mirror.yml' | 'baton-sync.yml') => void;
+  /** §12: ask for the ticket's repository's sync or mirror to be dispatched once this
+   *  request's transaction has committed. */
+  dispatch?: (kind: 'mirror' | 'sync', ticketId: string) => void;
 }
 
 interface WorkerFacts {
@@ -63,17 +65,21 @@ export class Claims {
   private exec(q: string, ...p: unknown[]) {
     return this.c.store.exec(q, ...p);
   }
-  private event(kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null) {
-    logEvent(this.c.store, this.c.now(), kind, actor, detail, ticketId, claimId);
+  private event(kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null, repo?: string) {
+    logEvent(this.c.store, this.c.now(), kind, actor, detail, ticketId, claimId, repo ?? (ticketId ? repositoryOf(ticketId) : null));
   }
   private setting(key: string): string | null {
     return this.rows<{ value: string }>('SELECT value FROM baton_settings WHERE key = ?', key)[0]?.value ?? null;
   }
-  private cutOver() {
-    return this.setting('cutover_at') != null;
+  /** Whether the ticket's repository has cut over (R-BTN-28, per repository). */
+  private cutOver(ticketId: string) {
+    return this.rows('SELECT 1 FROM repositories WHERE id = ? AND cutover_at IS NOT NULL', repositoryOf(ticketId)).length > 0;
   }
-  private head() {
-    return this.rows<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? null;
+  private anyCutOver() {
+    return this.rows('SELECT 1 FROM repositories WHERE cutover_at IS NOT NULL AND retired_at IS NULL').length > 0;
+  }
+  private headOf(repo: string) {
+    return this.rows<{ sha: string | null }>('SELECT sha FROM board_head WHERE repository_id = ?', repo)[0]?.sha ?? null;
   }
 
   // ── what matching reads ─────────────────────────────────────────────────────────────────
@@ -161,11 +167,13 @@ export class Claims {
     };
   }
 
-  /** The §7.2 candidate query: rules 1, 3, 4, 5 (as a tier rank), 6 and 10, in rank order. */
+  /** The §7.2 candidate query: rules 1, 3, 4, 5 (as a tier rank), 6 and 10, across every
+   *  cut-over repository: expedited first, then the repositories by weight, each in its own rank
+   *  order (an interim of R-BTN-61's merge, which R3-1232 builds). */
   candidates(w: WorkerFacts, now: number, limit = 20): string[] {
     return this.rows<{ id: string }>(
-      `SELECT w.id FROM tickets w
-       WHERE w.node LIKE 'ready-%'
+      `SELECT w.id FROM tickets w JOIN repositories p ON p.id = w.repository_id
+       WHERE w.node LIKE 'ready-%' AND p.cutover_at IS NOT NULL AND p.retired_at IS NULL
          AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.ticket_id = w.id
                          AND (c.status = 'active'
                               OR (c.status = 'completed' AND c.confirmed_at IS NULL)
@@ -176,7 +184,7 @@ export class Claims {
                          AND r.name NOT IN (SELECT capability FROM worker_capabilities WHERE worker_id = ?))
          AND ? >= CASE COALESCE(w.tier, 'critical') WHEN 'routine' THEN 0 WHEN 'judgement' THEN 1 ELSE 2 END
          AND (? OR w.operator_only = 0)
-       ORDER BY COALESCE((SELECT expedite FROM ticket_overrides o WHERE o.ticket_id = w.id), 0) DESC, w.rank
+       ORDER BY COALESCE((SELECT expedite FROM ticket_overrides o WHERE o.ticket_id = w.id), 0) DESC, p.weight DESC, w.repository_id, w.rank
        LIMIT ?`,
       now, w.id, (TIERS as string[]).indexOf(w.tier_ceiling), w.declared.includes('human-operator') ? 1 : 0, limit).map((r) => r.id);
   }
@@ -210,6 +218,7 @@ export class Claims {
     const shared = this.shared(now);
     this.workerRules(w, now, shared);
     if (wanted) {
+      if (!this.cutOver(wanted)) throw new BatonError('not-cut-over', `${repositoryOf(wanted)}'s claims go through git until its cutover (R-BTN-28)`);
       const item = this.item(wanted);
       if (!item || !item.node.startsWith('ready-')) throw new BatonError('not-eligible', `${wanted} is not in the claim order`, { rule: 1, rule_code: 'not-ready' });
       const v = this.eligible(w, item, now, shared);
@@ -236,7 +245,7 @@ export class Claims {
   /** `POST /v1/runner/claim` (§6.2): idempotent by `request_id`; the lock is the index. */
   claim(workerId: number, body: unknown) {
     const b = checkClaim(body);
-    if (!this.cutOver()) throw new BatonError('not-cut-over', 'claims go through git until cutover (R-BTN-28)');
+    if (!this.anyCutOver()) throw new BatonError('not-cut-over', 'claims go through git until cutover (R-BTN-28)');
     const prior = this.rows<{ id: number; worker_id: number }>('SELECT id, worker_id FROM claims WHERE request_id = ?', b.request_id)[0];
     if (prior) {
       // A lost response retried: the same claim, never a second item (G-BTN-2).
@@ -250,7 +259,7 @@ export class Claims {
     const { item } = this.decide(w, b.ticket_id, now);
     try {
       this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
-                 VALUES (?, ?, ?, ?, ?, ?, 'active')`, item.id, workerId, b.request_id, randomHex(3), this.head() ?? '', now);
+                 VALUES (?, ?, ?, ?, ?, ?, 'active')`, item.id, workerId, b.request_id, randomHex(3), this.headOf(repositoryOf(item.id)) ?? '', now);
     } catch (e) {
       // R-BTN-4: the partial unique indexes refuse a second holder of the item or the worker.
       if (isUniqueViolation(e)) throw new BatonError('not-eligible', `${item.id} is already held`, { rule: 3, rule_code: RULE_CODES[3] });
@@ -258,7 +267,7 @@ export class Claims {
     }
     const id = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
     this.event('claimed', `worker:${workerId}`, { request_id: b.request_id }, item.id, id);
-    this.c.dispatch?.('baton-mirror.yml');
+    this.c.dispatch?.('mirror', item.id);
     // §6.8: transcripts reported while the worker held nothing are linked to this claim.
     this.exec(`INSERT INTO transcripts (worker_id, claim_id, repo, path, role, activity_id, first_seen_at, last_pushed_at)
                SELECT worker_id, ?, repo, path, role, activity_id, first_seen_at, last_pushed_at FROM pending_transcripts WHERE worker_id = ?
@@ -271,7 +280,7 @@ export class Claims {
    *  never the item's content — and the earlier attempts, newest first, each with its resume record (§6.11, R-BTN-24). */
   private claimResponse(id: number) {
     const c = this.rows<{ id: number; ticket_id: string; nonce: string; snapshot_sha: string }>('SELECT id, ticket_id, nonce, snapshot_sha FROM claims WHERE id = ?', id)[0];
-    const path = this.rows<{ path: string }>('SELECT path FROM tickets WHERE id = ?', c.ticket_id)[0]?.path ?? `content/roadmap/${c.ticket_id}.mdx`;
+    const path = this.rows<{ path: string }>('SELECT path FROM tickets WHERE id = ?', c.ticket_id)[0]?.path ?? null;
     const previous = this.rows<{ id: number; status: string; end_reason: string | null; ended_at: number | null; resume_json: string | null }>(
       `SELECT id, status, end_reason, ended_at, resume_json FROM claims WHERE ticket_id = ? AND id < ? AND status != 'active' ORDER BY id DESC`, c.ticket_id, id);
     return {
@@ -283,9 +292,10 @@ export class Claims {
   /** `POST /v1/runner/claims/{id}/end` (§6.5, R-BTN-8). A retried identical end is a no-op. */
   end(workerId: number, claimId: number, body: unknown) {
     const e = checkEnd(body);
-    if (!this.cutOver()) throw new BatonError('not-cut-over', 'claims end through git until cutover (R-BTN-28)');
     const c = this.rows<{ id: number; worker_id: number; ticket_id: string; status: string; end_reason: string | null }>(
       'SELECT id, worker_id, ticket_id, status, end_reason FROM claims WHERE id = ?', claimId)[0];
+    if (!c && !this.anyCutOver()) throw new BatonError('not-cut-over', 'claims end through git until cutover (R-BTN-28)');
+    if (c && !this.cutOver(c.ticket_id)) throw new BatonError('not-cut-over', `${repositoryOf(c.ticket_id)}'s claims end through git until its cutover (R-BTN-28)`);
     if (!c || c.worker_id !== workerId) throw new BatonError('not-holder', 'this worker does not hold that claim');
     if (c.status !== 'active') {
       if (c.end_reason === e.end_reason) return { ok: true };
@@ -297,7 +307,7 @@ export class Claims {
         this.exec(`UPDATE messages SET status = 'expired' WHERE to_worker_id = ? AND kind = 'release' AND status IN ('pending','delivered')
                    AND json_extract(payload_json, '$.ticket_id') = ? AND json_extract(payload_json, '$.reason') = 'stale-board'`, workerId, c.ticket_id);
         this.event('completed', `worker:${workerId}`, { end_reason: e.end_reason, ended_at_sha: e.ended_at_sha, after: 'released:stale-board' }, c.ticket_id, c.id);
-        this.c.dispatch?.('baton-sync.yml');
+        this.c.dispatch?.('sync', c.ticket_id);
         return { ok: true };
       }
       throw new BatonError('claim-ended', `the claim already ended (${c.status}: ${c.end_reason})`);
@@ -316,8 +326,8 @@ export class Claims {
     this.event(status, actor, { end_reason: reason, ...(opts.ended_at_sha ? { ended_at_sha: opts.ended_at_sha } : {}), ...(opts.fence ? { fence_pending: true } : {}) }, item, claimId);
     // §12: the mirror writes the end; a completion also wants a board sync, which confirms it
     // (R-BTN-10) without waiting for an unrelated push.
-    this.c.dispatch?.('baton-mirror.yml');
-    if (status === 'completed') this.c.dispatch?.('baton-sync.yml');
+    this.c.dispatch?.('mirror', item);
+    if (status === 'completed') this.c.dispatch?.('sync', item);
     // §13 step 3: a legacy claim that ends takes its adoption request with it.
     this.exec('DELETE FROM adoptions WHERE claim_id = ?', claimId);
     if (status !== 'completed') {
@@ -398,7 +408,7 @@ export class Claims {
 
   /** §8: every hold, whoever sets it, is an `override` event and a `held` event with its reason. */
   private hold(item: string, reason: string, actor: string, detail: Record<string, unknown> = {}) {
-    this.c.dispatch?.('baton-mirror.yml'); // §6.10: the mirror writes the hold's note
+    this.c.dispatch?.('mirror', item); // §6.10: the mirror writes the hold's note
     this.upsertOverride(item, actor, { hold: 1, hold_reason: reason });
     this.event('override', actor, { hold: 1, hold_reason: reason }, item, (detail.claim_id as number) ?? null);
     this.event('held', actor, { hold_reason: reason, ...detail }, item, (detail.claim_id as number) ?? null);
@@ -410,7 +420,7 @@ export class Claims {
     const o = checkOverride(body);
     const actor = `owner:${owner}`;
     if (o.expedite !== undefined) {
-      if (o.expedite) this.c.dispatch?.('baton-mirror.yml'); // §8: the mirror writes the EXPEDITE tag
+      if (o.expedite) this.c.dispatch?.('mirror', item); // §8: the mirror writes the EXPEDITE tag
       this.upsertOverride(item, actor, { expedite: o.expedite ? 1 : 0 });
       this.event('override', actor, { expedite: o.expedite ? 1 : 0 }, item);
     }
@@ -484,7 +494,7 @@ export class Claims {
       this.event('confirmed', `owner:${owner}`, { by: 'owner', sha: c.ended_at_sha }, c.ticket_id, claimId);
     } else {
       this.exec(`UPDATE claims SET status = 'released', end_reason = 'released:requested', ended_at_sha = NULL WHERE id = ?`, claimId);
-      this.c.dispatch?.('baton-mirror.yml');
+      this.c.dispatch?.('mirror', c.ticket_id);
       this.event('released', `owner:${owner}`, { by: 'owner', unconfirmed: { end_reason: c.end_reason, ended_at_sha: c.ended_at_sha } }, c.ticket_id, claimId);
     }
     return { ok: true };
@@ -493,12 +503,12 @@ export class Claims {
   /** `POST /v1/ui/board/accept`: the owner accepts a held history; the sync's next force post
    *  of it then becomes the head (§7.1). */
   acceptHeld(owner: string, body: unknown) {
-    const { sha } = checkAccept(body);
-    const held = this.rows<{ accepted_at: number | null }>('SELECT accepted_at FROM held_snapshots WHERE sha = ?', sha)[0];
+    const { repository, sha } = checkAccept(body);
+    const held = this.rows<{ accepted_at: number | null }>('SELECT accepted_at FROM held_snapshots WHERE repository_id = ? AND sha = ?', repository, sha)[0];
     if (!held) throw new BatonError('not-found', 'no such held history');
     if (held.accepted_at == null) {
-      this.exec('UPDATE held_snapshots SET accepted_at = ? WHERE sha = ?', this.c.now(), sha);
-      this.event('snapshot-accepted', `owner:${owner}`, { sha, held: true, by: 'owner' });
+      this.exec('UPDATE held_snapshots SET accepted_at = ? WHERE repository_id = ? AND sha = ?', this.c.now(), repository, sha);
+      this.event('snapshot-accepted', `owner:${owner}`, { sha, held: true, by: 'owner' }, null, null, repository);
     }
     return { ok: true };
   }
@@ -509,10 +519,17 @@ export class Claims {
    *  accepts the line, not one sha: main keeps moving while it is held, and the sync always
    *  posts the newest main (§7.1 step 2), so a force post against the head an accepted row
    *  was held against is accepted too. */
-  acceptedLine(head: string | null) {
+  acceptedLine(repo: string, head: string | null) {
     // Only against the head it was held against: an accepted sha re-posted later, once the head
     // has moved past it, is a rewind and is held like any other force post (R-BTN-11).
-    return this.rows('SELECT 1 FROM held_snapshots WHERE accepted_at IS NOT NULL AND head_sha IS ?', head).length > 0;
+    return this.rows('SELECT 1 FROM held_snapshots WHERE repository_id = ? AND accepted_at IS NOT NULL AND head_sha IS ?', repo, head).length > 0;
+  }
+
+  /** A sync's confirmations, only those of claims on its own repository's tickets (R-BTN-47):
+   *  one repository's sync never confirms another's completion. */
+  ownConfirmations(repo: string, confirmations: { claim_id: number; sha: string }[]) {
+    return confirmations.filter((k) => this.rows<{ ticket_id: string }>('SELECT ticket_id FROM claims WHERE id = ?', k.claim_id)
+      .some((c) => repositoryOf(c.ticket_id) === repo));
   }
 
   /** §6.7: the sync confirms a completion once git carries it (it checked the ancestry and the
@@ -534,10 +551,11 @@ export class Claims {
    *  git now shows done, archived, superseded, deferred, re-tiered above the holder's ceiling or
    *  gone ends `released:stale-board`, and the holder is told. Before cutover git decides alone
    *  and the shadow reports end claims. */
-  staleBoard() {
-    if (!this.cutOver()) return 0;
+  staleBoard(repo: string) {
+    if (!this.rows('SELECT 1 FROM repositories WHERE id = ? AND cutover_at IS NOT NULL', repo).length) return 0;
     const active = this.rows<{ id: number; ticket_id: string; worker_id: number; tier_ceiling: string; kind: string }>(
-      `SELECT c.id, c.ticket_id, c.worker_id, w.tier_ceiling, w.kind FROM claims c JOIN workers w ON w.id = c.worker_id WHERE c.status = 'active'`);
+      `SELECT c.id, c.ticket_id, c.worker_id, w.tier_ceiling, w.kind FROM claims c JOIN workers w ON w.id = c.worker_id
+       WHERE c.status = 'active' AND substr(c.ticket_id, 1, length(?) + 1) = ? || ':'`, repo, repo);
     let n = 0;
     for (const c of active) {
       const it = this.rows<{ status: string; tier: string | null }>('SELECT status, tier FROM tickets WHERE id = ?', c.ticket_id)[0];
@@ -591,9 +609,9 @@ export class Claims {
       this.event('fence-cleared', 'alarm', { by: 'timeout' }, c.ticket_id, c.id);
     }
     // §7.1: a held history is accepted automatically 24 h after its first post.
-    for (const h of this.rows<{ sha: string }>('SELECT sha FROM held_snapshots WHERE accepted_at IS NULL AND auto_accept_at <= ?', now)) {
-      this.exec('UPDATE held_snapshots SET accepted_at = ? WHERE sha = ?', now, h.sha);
-      this.event('snapshot-accepted', 'alarm', { sha: h.sha, held: true, by: 'auto-accept' });
+    for (const h of this.rows<{ repository_id: string; sha: string }>('SELECT repository_id, sha FROM held_snapshots WHERE accepted_at IS NULL AND auto_accept_at <= ?', now)) {
+      this.exec('UPDATE held_snapshots SET accepted_at = ? WHERE repository_id = ? AND sha = ?', now, h.repository_id, h.sha);
+      this.event('snapshot-accepted', 'alarm', { sha: h.sha, held: true, by: 'auto-accept' }, null, null, h.repository_id);
     }
   }
 

@@ -79,7 +79,7 @@ export interface TicketRow {
 }
 
 const SHA = /^[0-9a-f]{40}$/;
-const ID = /^R3-[A-Za-z0-9.-]{1,32}$/;
+const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/; // a local id (R-BTN-47)
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 // A title comes from git, not from a worker, and the dashboard renders it with textContent
 // (§10.4), so it is only bounded and free of control characters.

@@ -22,6 +22,7 @@ How Baton differs from a durable-execution engine such as Temporal, and where ea
 | `src/core/workerApi.ts` | The worker API (§11): heartbeat and registration, activities, messages, suspensions, mode and shadow reports, the Workers view |
 | `src/core/claims.ts` | The lease (§6, R3-1212): claim and end, matching (§7.2 rules 1–9 via `isEligible`), the alarm's reaps, the fence before re-issue, confirmations, git winning over a stale claim, the Running / Timeline / Needs you data |
 | `src/core/attempts.ts` | Pure: the retry policy (§6.10 R-BTN-23) — which ends count, backoff, holds, the review-capacity run, the resume record (R-BTN-24) |
+| `src/core/registry.ts` | The registered repositories (R-BTN-47): a checked, insert-only registration, the `BATON_REPOSITORIES` seed, the one repository a sync token binds to (R-BTN-15), qualified ticket ids (`docs:R3-1205`) |
 | `src/core/cutover.ts` | The one-way cutover (R-BTN-28): `POST /v1/ui/cutover`, the legacy import, adoption on the owner's confirmation |
 | `src/core/validate.ts` | Pure: every worker- and owner-supplied field checked before any write (§10.4) |
 | `src/core/course.ts` | Pure: `validateCourse`, every way a course file breaks R-BTN-69's rules (stations reachable, an end from everywhere, cycles bounded, `start_leg`, inputs) |
@@ -73,7 +74,7 @@ npm run start:local -- --db ./baton.db --port 8787 [--origin <url>] [--admin-key
 - One process holds a `--db` file at a time: a second start on it fails.
 - `--admin-keys` names a file of administrators' OpenSSH public keys, one per line (R-BTN-57).
 - `--config` names a JSON object holding the Worker's other variables and secrets — `OIDC_*`,
-  `*_WORKFLOW_REF`, `ACCESS_*`, `OWNER_EMAILS`, `TOKEN_HASHES`, `CREDENTIALS`,
+  `BATON_REPOSITORIES`, `ACCESS_*`, `OWNER_EMAILS`, `TOKEN_HASHES`, `CREDENTIALS`,
   `GITHUB_DISPATCH_TOKEN` — as strings. Without it every principal is unconfigured: the sync
   and the owner are refused and no worker token is known, so the example above serves only
   refusals. Nothing is read from `.dev.vars`, and the test bindings are refused.

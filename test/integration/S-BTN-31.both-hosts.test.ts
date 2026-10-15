@@ -26,9 +26,9 @@ describe(`S-BTN-31 both hosts (${HOST})`, () => {
 
   it('a posted board is served back in the order the sync ranked it', async () => {
     expect((await syncCall('/v1/sync/board', payload(board.shas.A, null, board.states.A))).status).toBe(200);
-    const state = (await (await ownerCall('/v1/ui/state')).json()) as { head: { sha: string }; ready: { id: string }[] };
-    expect(state.head.sha).toBe(board.shas.A);
-    expect(state.ready.map((r) => r.id)).toEqual(board.states.A.ready);
+    const state = (await (await ownerCall('/v1/ui/state')).json()) as { repositories: { head: { sha: string } }[]; ready: { id: string }[] };
+    expect(state.repositories[0].head.sha).toBe(board.shas.A);
+    expect(state.ready.map((r) => r.id)).toEqual(board.states.A.ready.map((id: string) => `docs:${id}`));
   });
 
   it('an integer past 2^53 that validation accepts reads back alike: a claim and the dashboard still answer', async () => {
@@ -36,7 +36,7 @@ describe(`S-BTN-31 both hosts (${HOST})`, () => {
     await syncCall('/v1/sync/board', payload(board.shas.A, null, board.states.A));
     await cutover();
     const a = await register('vm-a', { skills_version: 2 ** 60 });
-    expect((await claimItem('vm-a', a.secret, { ticket_id: 'R3-9002' })).status).toBe(200);
+    expect((await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9002' })).status).toBe(200);
     expect((await ownerCall('/v1/ui/state')).status).toBe(200);
   });
 
@@ -45,7 +45,7 @@ describe(`S-BTN-31 both hosts (${HOST})`, () => {
       const res = await call(path, { method, headers: { Authorization: `Bearer ${TOKENS['vm-a']}`, 'Content-Type': 'application/json' }, body: method === 'POST' ? '{}' : undefined });
       expect([path, res.status, ((await res.json()) as { code: string }).code]).toEqual([path, 404, 'not-found']);
     }
-    expect((await call('/v1/runner/mode', { headers: { Authorization: `Bearer ${TOKENS['vm-a']}` } })).status).not.toBe(404);
+    expect((await call('/v1/runner/mode?repository=docs', { headers: { Authorization: `Bearer ${TOKENS['vm-a']}` } })).status).not.toBe(404);
   });
 
   it.todo('a repository\'s hooks give the same results on both hosts, locally in workerd with no outbound network (R3-1236)');

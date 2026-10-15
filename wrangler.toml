@@ -21,13 +21,12 @@ fallthrough = false
 
 [vars]
 BATON_ORIGIN = "https://baton.immediately.run"
-# R-BTN-15: the sync principal — GitHub Actions OIDC, from named workflows on docs main.
+# R-BTN-15: the sync principal — GitHub Actions OIDC. Which repository a token acts for, and
+# that its workflow is that repository's sync or mirror on its default branch, Baton reads from
+# its registry (R-BTN-47), seeded here at start, insert-only, until R3-1240's admin route.
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 OIDC_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks"
-OIDC_REPOSITORY = "immediately-run/docs"
-OIDC_REF = "refs/heads/main"
-SYNC_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-sync.yml@refs/heads/main"
-MIRROR_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-mirror.yml@refs/heads/main"
+BATON_REPOSITORIES = '[{"id":"docs","github":"immediately-run/docs","default_branch":"main","sync_workflow":".github/workflows/baton-sync.yml","mirror_workflow":".github/workflows/baton-mirror.yml","transcript_repos":["immediately-run/claude-sessions","immediately-run-worker/session-transcripts"]}]'
 # R-BTN-16: the owner principal — Cloudflare Access. Set by the owner in R3-1208.
 ACCESS_TEAM_DOMAIN = "mute-dew-600d.cloudflareaccess.com"
 ACCESS_AUD = "326d8bf228bb8472d48a681888ae117f378e1182618c1d5e3f9e7d00e3b6e94d"
@@ -49,10 +48,7 @@ class_name = "Baton"
 BATON_ORIGIN = "https://baton-staging.immediately.run"
 OIDC_ISSUER = "https://token.actions.githubusercontent.com"
 OIDC_JWKS_URL = "https://token.actions.githubusercontent.com/.well-known/jwks"
-OIDC_REPOSITORY = "immediately-run/docs"
-OIDC_REF = "refs/heads/main"
-SYNC_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-sync.yml@refs/heads/main"
-MIRROR_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-mirror.yml@refs/heads/main"
+BATON_REPOSITORIES = '[{"id":"docs","github":"immediately-run/docs","default_branch":"main","sync_workflow":".github/workflows/baton-sync.yml","mirror_workflow":".github/workflows/baton-mirror.yml","transcript_repos":["immediately-run/claude-sessions","immediately-run-worker/session-transcripts"]}]'
 ACCESS_TEAM_DOMAIN = "mute-dew-600d.cloudflareaccess.com"
 ACCESS_AUD = "d572b8ea4e7600d0bef9116fa481d5e70505a2844c1f32b44535b45ba8875959"
 OWNER_EMAILS = "neumark.peter@gmail.com"

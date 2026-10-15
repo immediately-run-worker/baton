@@ -1,7 +1,8 @@
 // main.ts — `npm run start:local -- --db <path> --port <n>` (BATON_SPEC §3a R-BTN-55, R-BTN-57).
 // Options, never a `.dev.vars` file: `--origin` (default `http://127.0.0.1:<port>`), `--admin-keys
 // <file>` (one OpenSSH public key per line) and `--config <file>`, a JSON object of the
-// Worker's other variables and secrets (OIDC_*, ACCESS_*, OWNER_EMAILS, TOKEN_HASHES,
+// Worker's other variables and secrets (OIDC_ISSUER, OIDC_JWKS_URL, BATON_REPOSITORIES — the
+// repositories to register, as a JSON string —, ACCESS_*, OWNER_EMAILS, TOKEN_HASHES,
 // CREDENTIALS, GITHUB_DISPATCH_TOKEN). The test bindings are refused: only the test harness,
 // in-process, may set them.
 import { readFileSync } from 'node:fs';
@@ -43,10 +44,7 @@ export function localConfig(file: Record<string, unknown>, origin: string): Conf
     BATON_ORIGIN: origin,
     OIDC_ISSUER: s('OIDC_ISSUER', 'https://token.actions.githubusercontent.com'),
     OIDC_JWKS_URL: s('OIDC_JWKS_URL', 'https://token.actions.githubusercontent.com/.well-known/jwks'),
-    OIDC_REPOSITORY: s('OIDC_REPOSITORY'),
-    OIDC_REF: s('OIDC_REF', 'refs/heads/main'),
-    SYNC_WORKFLOW_REF: s('SYNC_WORKFLOW_REF'),
-    MIRROR_WORKFLOW_REF: s('MIRROR_WORKFLOW_REF'),
+    BATON_REPOSITORIES: opt('BATON_REPOSITORIES'),
     ACCESS_TEAM_DOMAIN: s('ACCESS_TEAM_DOMAIN'),
     ACCESS_AUD: s('ACCESS_AUD'),
     OWNER_EMAILS: s('OWNER_EMAILS'),

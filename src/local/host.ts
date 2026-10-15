@@ -59,7 +59,7 @@ export class LocalHost {
       scheduler: this.scheduler,
       config: opts.config,
       dispatch: {
-        send: (wf) => dispatchWorkflow(opts.config, wf),
+        send: (target) => dispatchWorkflow(opts.config.GITHUB_DISPATCH_TOKEN, target),
         defer: (work) => {
           const p = work.catch(() => {}).finally(() => this.deferred.delete(p));
           this.deferred.add(p);

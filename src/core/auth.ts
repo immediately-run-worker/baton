@@ -4,6 +4,7 @@
 import { createLocalJWKSet, createRemoteJWKSet, errors, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { BatonError } from './http';
 import type { Config } from './ports';
+import type { SyncClaims } from './registry';
 import { SHA256_HEX } from './validate';
 
 const remoteSets = new Map<string, JWTVerifyGetKey>();
@@ -48,12 +49,13 @@ const bearer = (req: Request) => {
 };
 
 /**
- * The sync principal (R-BTN-15): a GitHub Actions OIDC token from `baton-sync.yml` (or, for the
- * mirror's routes, `baton-mirror.yml`) on `immediately-run/docs` `main`. Issuer, audience,
- * repository, ref and the workflow ref must all match; a token minted by a workflow on a
- * branch, another workflow or another repository is refused.
+ * The sync principal (R-BTN-15): a GitHub Actions OIDC token for this Baton — issuer and
+ * audience (its own origin, R-BTN-56) checked here, before the core. Which repository it acts
+ * for, and whether its workflow and branch are that repository's sync or mirror, the core
+ * decides from its registry (`Registry.forSync`), so a token reaches only its own board.
+ * Returns the claims that bind it.
  */
-export async function verifySync(req: Request, env: Config, workflowRef: string = env.SYNC_WORKFLOW_REF): Promise<void> {
+export async function verifySyncToken(req: Request, env: Config): Promise<SyncClaims> {
   const token = bearer(req);
   if (!token) throw new BatonError('unauthenticated', 'an OIDC bearer token is required');
   const keys = testKeys(env, env.TEST_OIDC_JWKS) ?? remote(env.OIDC_JWKS_URL);
@@ -63,9 +65,11 @@ export async function verifySync(req: Request, env: Config, workflowRef: string 
   } catch (e) {
     throw verifyFailure(e, 'OIDC');
   }
-  if (!workflowRef || claims.repository !== env.OIDC_REPOSITORY || claims.ref !== env.OIDC_REF || claims.job_workflow_ref !== workflowRef) {
-    throw new BatonError('forbidden', 'the OIDC token is not from this route’s workflow on docs main');
+  const { repository, ref, job_workflow_ref } = claims;
+  if (typeof repository !== 'string' || typeof ref !== 'string' || typeof job_workflow_ref !== 'string') {
+    throw new BatonError('forbidden', 'the OIDC token names no repository, ref and workflow');
   }
+  return { repository, ref, job_workflow_ref };
 }
 
 /**

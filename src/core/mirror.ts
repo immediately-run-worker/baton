@@ -2,11 +2,11 @@
 // event feed `GET /v1/sync/events`, the foreign-claim report, and which workflows Baton
 // dispatches after a transition (§10.3). The mirror workflow itself lives in docs.
 import { BatonError } from './http';
-import { ITEM_ID } from './validate';
+import { TICKET_ID } from './validate';
 import { logEvent } from './db';
 import { importLegacyClaim } from './cutover';
 
-import type { Config, Row, SqlValue, Store, Workflow } from './ports';
+import type { DispatchTarget, Row, SqlValue, Store, Workflow } from './ports';
 const MAX_PAGE = 200;
 const NONCE = /^[0-9a-f]{6}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
@@ -34,12 +34,13 @@ export class Mirror {
    * at most 200 per page. Each event carries its claim's nonce and, once ended, its end and
    * whether work started; an ended claim also carries its activities and transcript pointers
    * for the export. Workers are named only by claim id (R-BTN-36). `cutover_at` lets the
-   * mirror leave pre-cutover claims to git, which wrote them itself.
+   * mirror leave pre-cutover claims to git, which wrote them itself. A mirror reads its own
+   * repository's events only (R-BTN-47); ticket ids are qualified, `<repository>:<local>`.
    */
-  events(after: number, limit: number) {
+  events(repo: string, after: number, limit: number) {
     const n = Math.min(Math.max(1, limit || MAX_PAGE), MAX_PAGE);
     const rows = this.rows<{ seq: number; at: number; kind: string; ticket_id: string | null; claim_id: number | null; actor: string; detail_json: string | null }>(
-      'SELECT seq, at, kind, ticket_id, claim_id, actor, detail_json FROM events WHERE seq > ? ORDER BY seq LIMIT ?', after, n);
+      'SELECT seq, at, kind, ticket_id, claim_id, actor, detail_json FROM events WHERE repository_id = ? AND seq > ? ORDER BY seq LIMIT ?', repo, after, n);
     const events = rows.map((e) => {
       let detail: Record<string, unknown> = {};
       try {
@@ -50,8 +51,8 @@ export class Mirror {
       const kept = Object.fromEntries(Object.entries(detail).filter(([k]) => DETAIL_KEYS.has(k)));
       return { seq: e.seq, at: e.at, kind: e.kind, ticket_id: e.ticket_id, claim_id: e.claim_id, actor: actorKind(e.actor), detail: kept, claim: e.claim_id ? this.claim(e.claim_id) : null };
     });
-    const at = this.rows<{ value: string }>(`SELECT value FROM baton_settings WHERE key = 'cutover_at'`)[0]?.value;
-    return { events, next: events.at(-1)?.seq ?? after, cutover_at: at == null ? null : Number(at) };
+    const at = this.rows<{ cutover_at: number | null }>('SELECT cutover_at FROM repositories WHERE id = ?', repo)[0]?.cutover_at ?? null;
+    return { events, next: events.at(-1)?.seq ?? after, cutover_at: at };
   }
 
   private claim(id: number) {
@@ -78,17 +79,20 @@ export class Mirror {
    * answer carries its nonce so the mirror can write the holder's note back — and the report is
    * a `foreign-claim` event. If nobody holds it, it is imported as a legacy claim under the
    * commit's own nonce, so it is visible and reaped on the witness's 7-day rule. Before cutover
-   * git decides alone, and the report is ignored. A repeat is idempotent.
+   * git decides alone, and the report is ignored. A repeat is idempotent. A mirror reports
+   * only its own repository's tickets (R-BTN-47).
    */
-  foreignClaim(body: unknown) {
+  foreignClaim(repo: string, body: unknown) {
     const b = (body ?? {}) as Record<string, unknown>;
-    if (typeof b.ticket_id !== 'string' || !ITEM_ID.test(b.ticket_id)) throw new BatonError('invalid-params', 'ticket_id: must be a ticket id');
+    const m = typeof b.ticket_id === 'string' ? TICKET_ID.exec(b.ticket_id) : null;
+    if (!m) throw new BatonError('invalid-params', 'ticket_id: must be a ticket id, <repository>:<id>');
+    if (m[1] !== repo) throw new BatonError('forbidden', `ticket_id: ${b.ticket_id} is not ${repo}'s`);
     if (typeof b.nonce !== 'string' || !NONCE.test(b.nonce)) throw new BatonError('invalid-params', 'nonce: must be the claim note’s 6 hex');
     if (typeof b.sha !== 'string' || !GIT_SHA.test(b.sha)) throw new BatonError('invalid-params', 'sha: must be the claim commit');
     if (!Number.isInteger(b.at) || (b.at as number) < 0) throw new BatonError('invalid-params', 'at: must be the commit’s epoch ms');
-    const item = b.ticket_id;
+    const item = b.ticket_id as string;
     const nonce = b.nonce;
-    const cut = this.rows(`SELECT 1 FROM baton_settings WHERE key = 'cutover_at'`).length > 0;
+    const cut = this.rows('SELECT 1 FROM repositories WHERE id = ? AND cutover_at IS NOT NULL', repo).length > 0;
     if (!cut) return { ignored: 'shadow' };
     const now = this.c.now();
     const holder = this.rows<{ id: number; nonce: string; claimed_at: number }>(
@@ -102,7 +106,7 @@ export class Mirror {
       return { held: true, claim_id: holder.id, nonce: holder.nonce, claimed_at: holder.claimed_at };
     }
     // Nobody holds it: a legacy claim of its own legacy worker, the shape the cutover import makes.
-    const head = this.rows<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? '';
+    const head = this.rows<{ sha: string | null }>('SELECT sha FROM board_head WHERE repository_id = ?', repo)[0]?.sha ?? '';
     const { claimId } = importLegacyClaim(this.c.store, now, {
       item, preferred: null, nonce, claimedAt: b.at as number, sha: head, requestId: `foreign:${item}:${nonce}`, detail: { foreign: true },
     });
@@ -115,16 +119,17 @@ export class Mirror {
 export type { Workflow };
 
 /**
- * Dispatch `workflow` on docs main with the Actions-write token (§10.3). Fire and forget: a
- * missing or revoked token, or a failed call, leaves the workflow to its 15-minute schedule.
+ * Dispatch a repository's workflow on its default branch with the Actions-write token (§10.3).
+ * Fire and forget: a missing or revoked token, or a failed call, leaves the workflow to its
+ * 15-minute schedule. (R3-1247 moves this to the GitHub App's installation tokens.)
  */
-export async function dispatchWorkflow(env: Config, workflow: Workflow): Promise<boolean> {
-  if (!env.GITHUB_DISPATCH_TOKEN) return false;
+export async function dispatchWorkflow(token: string | undefined, target: DispatchTarget): Promise<boolean> {
+  if (!token) return false;
   try {
-    const res = await fetch(`https://api.github.com/repos/${env.OIDC_REPOSITORY}/actions/workflows/${workflow}/dispatches`, {
+    const res = await fetch(`https://api.github.com/repos/${target.github}/actions/workflows/${target.workflow}/dispatches`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${env.GITHUB_DISPATCH_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'baton', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ref: 'main' }),
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'baton', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ref: target.ref }),
     });
     return res.ok;
   } catch {

@@ -24,7 +24,7 @@ describe('S-BTN-5 retried item (server)', () => {
     const attempt = async (i: number, at: number) => {
       await setClock(at);
       await workerCall('/v1/runner/heartbeat', { cred: creds[i], secret: workers[i].secret, body: hbBody(creds[i]) });
-      const c = await claimItem(creds[i], workers[i].secret, { ticket_id: 'R3-9001' });
+      const c = await claimItem(creds[i], workers[i].secret, { ticket_id: 'docs:R3-9001' });
       expect([i, c.status]).toEqual([i, 200]);
       return c.json;
     };
@@ -39,17 +39,17 @@ describe('S-BTN-5 retried item (server)', () => {
     const first = await attempt(0, T0);
     await work(0, first.claim_id, T0, 1);
     await endClaim('vm-a', workers[0].secret, first.claim_id, { end_reason: 'released:cannot-finish:transient' });
-    expect(await rows(`SELECT retry_after FROM ticket_overrides WHERE ticket_id = 'R3-9001'`)).toEqual([{ retry_after: T0 + H }]);
+    expect(await rows(`SELECT retry_after FROM ticket_overrides WHERE ticket_id = 'docs:R3-9001'`)).toEqual([{ retry_after: T0 + H }]);
 
     const second = await attempt(1, T0 + H);
     expect(second.previous_attempts.map((p: { claim_id: number }) => p.claim_id)).toEqual([first.claim_id]);
     await work(1, second.claim_id, T0 + H, 2);
     await endClaim('vm-b', workers[1].secret, second.claim_id, { end_reason: 'released:cannot-finish:transient' });
-    expect(await rows(`SELECT retry_after FROM ticket_overrides WHERE ticket_id = 'R3-9001'`)).toEqual([{ retry_after: T0 + 5 * H }]);
+    expect(await rows(`SELECT retry_after FROM ticket_overrides WHERE ticket_id = 'docs:R3-9001'`)).toEqual([{ retry_after: T0 + 5 * H }]);
 
     // Still backing off one millisecond before; claimable at 4 h.
     await setClock(T0 + 5 * H - 1);
-    expect((await claimItem('test', workers[2].secret, { ticket_id: 'R3-9001' })).json).toMatchObject({ code: 'backing-off', rule: 10 });
+    expect((await claimItem('test', workers[2].secret, { ticket_id: 'docs:R3-9001' })).json).toMatchObject({ code: 'backing-off', rule: 10 });
     const third = await attempt(2, T0 + 5 * H);
     expect(third.previous_attempts).toEqual([second.claim_id, first.claim_id].map((id, k) => ({
       claim_id: id, status: 'released', end_reason: 'released:cannot-finish:transient', ended_at: [T0 + H, T0][k],

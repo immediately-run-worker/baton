@@ -2,7 +2,8 @@
 // cutover, the legacy import that runs in the same transaction, and adoption of a legacy claim
 // by the session that was working it, which moves only on the owner's confirmation.
 import { BatonError } from './http';
-import { checkConfirm, ITEM_ID, SESSION_NAME } from './validate';
+import { checkConfirm, SESSION_NAME, TICKET_ID } from './validate';
+import { localOf, repositoryOf } from './registry';
 import { isUniqueViolation, logEvent, randomHex } from './db';
 
 import type { Row, SqlValue, Store } from './ports';
@@ -14,8 +15,8 @@ export const LEGACY_REAP_MS = 7 * 24 * 3_600_000;
 /**
  * §13 step 3: one legacy claim of its own legacy worker — the shape the cutover import and the
  * mirror's foreign-claim report (§12) both make. The worker is named for `preferred` (the claim
- * note's holder) unless a legacy worker already has that name, else `item-<id>`, else
- * `item-<id>-<nonce>`; the claim is reaped at `claimedAt` plus 7 days. Logs the `claimed`
+ * note's holder) unless a legacy worker already has that name, else `item-<id>` (the
+ * ticket's local id, as its claim note writes it), else `item-<id>-<nonce>`; the claim is reaped at `claimedAt` plus 7 days. Logs the `claimed`
  * (legacy) event the export reads as the claim's record.
  */
 export function importLegacyClaim(sql: Store, now: number,
@@ -23,7 +24,7 @@ export function importLegacyClaim(sql: Store, now: number,
   const taken = (name: string) => sql.exec(`SELECT 1 FROM workers WHERE hostname = 'legacy' AND session_name = ?`, name).toArray().length > 0;
   sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities) VALUES ('legacy', 'legacy', '[]') ON CONFLICT (id) DO NOTHING`);
   const session = o.preferred && SESSION_NAME.test(o.preferred) && !taken(o.preferred) ? o.preferred
-    : !taken(`item-${o.item}`) ? `item-${o.item}` : `item-${o.item}-${o.nonce}`;
+    : !taken(`item-${localOf(o.item)}`) ? `item-${localOf(o.item)}` : `item-${localOf(o.item)}-${o.nonce}`;
   sql.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at)
             VALUES ('legacy', ?, ?, 'legacy', 'claude-code', 'legacy', 'critical', 0, '', ?, ?)`, session, randomHex(32), now, now);
   const workerId = sql.exec('SELECT last_insert_rowid() AS id').one().id as number;
@@ -52,40 +53,46 @@ export class Cutover {
     logEvent(this.c.store, this.c.now(), kind, actor, detail, ticketId, claimId);
   }
 
-  cutoverAt(): number | null {
-    const v = this.rows<{ value: string }>(`SELECT value FROM baton_settings WHERE key = 'cutover_at'`)[0]?.value;
-    return v == null ? null : Number(v);
+  /** When `repo` cut over (R-BTN-28, per repository), or null: it has not, or is unknown. */
+  cutoverAt(repo: string): number | null {
+    return this.rows<{ cutover_at: number | null }>('SELECT cutover_at FROM repositories WHERE id = ?', repo)[0]?.cutover_at ?? null;
   }
 
   /**
-   * `POST /v1/ui/cutover` (R-BTN-28): records `cutover_at` — the only write of it anywhere, and
-   * no call clears it — and imports every in-progress item without a Baton claim as a claim of
-   * its own legacy worker, in the same transaction. Refused unless the newest snapshot is under
-   * 15 minutes old. A repeat is a no-op that keeps the first `cutover_at`.
+   * `POST /v1/ui/cutover {repository, confirm}` (R-BTN-28): records the repository's
+   * `cutover_at` — the only write of it anywhere, and no call clears it — and imports each of its
+   * in-progress tickets without a Baton claim as a claim of its own legacy worker, in the same
+   * transaction. Refused unless its newest snapshot is under 15 minutes old. A repeat is a no-op
+   * that keeps the first `cutover_at`.
    */
   cutover(owner: string, body: unknown) {
     checkConfirm(body);
-    const already = this.cutoverAt();
-    if (already != null) return { ok: true, cutover_at: already, imported: [] as string[] };
+    const repo = (body as { repository?: unknown }).repository;
+    if (typeof repo !== 'string' || !this.rows('SELECT 1 FROM repositories WHERE id = ? AND retired_at IS NULL', repo).length) {
+      throw new BatonError('invalid-params', 'repository: must be a registered repository id');
+    }
+    const already = this.cutoverAt(repo);
+    if (already != null) return { ok: true, repository: repo, cutover_at: already, imported: [] as string[] };
     const now = this.c.now();
     const head = this.rows<{ sha: string; received_at: number }>(
-      'SELECT s.sha, s.received_at FROM board_head h JOIN board_snapshots s ON s.sha = h.sha WHERE h.id = 1')[0];
+      `SELECT s.sha, s.received_at FROM board_head h JOIN board_snapshots s ON s.repository_id = h.repository_id AND s.sha = h.sha
+       WHERE h.repository_id = ?`, repo)[0];
     if (!head || now - head.received_at >= FRESH_BOARD_MS) {
-      throw new BatonError('forbidden', 'the newest board snapshot must be under 15 minutes old; let the sync post, then cut over');
+      throw new BatonError('forbidden', `${repo}'s newest board snapshot must be under 15 minutes old; let its sync post, then cut over`);
     }
-    const imported = this.importLegacy(head.sha, now);
-    this.exec(`INSERT INTO baton_settings (key, value) VALUES ('cutover_at', ?)`, String(now));
-    this.event('cutover', `owner:${owner}`, { snapshot: head.sha, imported });
-    return { ok: true, cutover_at: now, imported };
+    const imported = this.importLegacy(repo, head.sha, now);
+    this.exec('UPDATE repositories SET cutover_at = ? WHERE id = ?', now, repo);
+    logEvent(this.c.store, now, 'cutover', `owner:${owner}`, { snapshot: head.sha, imported }, null, null, repo);
+    return { ok: true, repository: repo, cutover_at: now, imported };
   }
 
   /** §13 step 3: one legacy worker per in-progress item with no Baton claim — named for the
    *  claim note's holder session when the board carries it, else `item-<id>` — holding an
    *  active claim reaped at the note's date plus 7 days. */
-  private importLegacy(sha: string, now: number): string[] {
+  private importLegacy(repo: string, sha: string, now: number): string[] {
     const items = this.rows<{ id: string; since: string | null; holder: string | null }>(
-      `SELECT id, since, holder FROM tickets w WHERE status = 'in-progress'
-       AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.ticket_id = w.id AND c.status = 'active') ORDER BY id`);
+      `SELECT id, since, holder FROM tickets w WHERE repository_id = ? AND status = 'in-progress'
+       AND NOT EXISTS (SELECT 1 FROM claims c WHERE c.ticket_id = w.id AND c.status = 'active') ORDER BY id`, repo);
     const out: string[] = [];
     for (const it of items) {
       // A holder session that two notes share falls back to the item's own name rather than
@@ -105,14 +112,14 @@ export class Cutover {
    *  gate either way. The claim does not move here. */
   adopt(workerId: number, body: unknown) {
     const item = (body as { ticket_id?: unknown } | null)?.ticket_id;
-    if (typeof item !== 'string' || !ITEM_ID.test(item)) throw new BatonError('invalid-params', 'ticket_id: must be a ticket id');
-    if (this.cutoverAt() == null) throw new BatonError('not-cut-over', 'adoption follows the cutover import');
+    if (typeof item !== 'string' || !TICKET_ID.test(item)) throw new BatonError('invalid-params', 'ticket_id: must be a ticket id, <repository>:<id>');
+    if (this.cutoverAt(repositoryOf(item)) == null) throw new BatonError('not-cut-over', 'adoption follows the cutover import');
     const c = this.rows<{ id: number; nonce: string; session_name: string }>(
       `SELECT c.id, c.nonce, w.session_name FROM claims c JOIN workers w ON w.id = c.worker_id
        WHERE c.ticket_id = ? AND c.status = 'active' AND w.kind = 'legacy'`, item)[0];
     if (!c) throw new BatonError('not-found', `${item} has no legacy claim to adopt`);
     const me = this.rows<{ session_name: string }>('SELECT session_name FROM workers WHERE id = ?', workerId)[0];
-    if (c.session_name !== `item-${item}` && c.session_name !== me.session_name) {
+    if (c.session_name !== `item-${localOf(item)}` && c.session_name !== me.session_name) {
       throw new BatonError('forbidden', 'only the session the claim note names may ask to adopt it');
     }
     this.exec(`INSERT INTO adoptions (ticket_id, claim_id, worker_id, requested_at) VALUES (?, ?, ?, ?)
