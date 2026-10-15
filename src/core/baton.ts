@@ -75,15 +75,17 @@ export class BatonCore {
    *  and stops nothing — the keys in force stay, and the sync, the dashboard and every other
    *  principal serve on — but goes to Needs you, as does a revoked key the list names again. */
   private async seedKeys(): Promise<void> {
-    let notice: { refused?: string; revoked_listed?: string[] } | null = null;
+    const before = this.keysNotice();
+    // What the list in force last reported stands until another list seeds.
+    let notice: { refused?: string; revoked_listed?: string[] } | null = before?.revoked_listed ? { revoked_listed: before.revoked_listed } : null;
     try {
       const r = await this.workers.seedKeys();
       if (r.unchanged) {
         // The list that last seeded is back (a refused one never seeds): its refusal is over.
-        if (!this.keysNotice()?.refused) return;
-      } else if (r.revoked.length) notice = { revoked_listed: r.revoked };
+        if (!before?.refused) return;
+      } else notice = r.revoked.length ? { revoked_listed: r.revoked } : null;
     } catch (e) {
-      notice = { refused: (e instanceof Error ? e.message : String(e)).slice(0, 500) };
+      notice = { ...notice, refused: (e instanceof Error ? e.message : String(e)).slice(0, 500) };
     }
     this.store.exec(`INSERT INTO baton_settings (key, value) VALUES ('keys_notice', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(notice));
   }

@@ -75,12 +75,27 @@ describe('BATON_KEYS (R3-1239)', () => {
     await reseed([entry(SSH_KEYS['vm-ed'], 'vm-ed'), entry(SSH_KEYS['vm-p256'], 'vm-p256')]);
     expect(await state()).toEqual({ revoked_listed: [SSH_KEYS['vm-ed'].fingerprint] });
     await reseed('{not json');
-    expect(await state()).toEqual({ refused: 'BATON_KEYS is not JSON' });
+    expect(await state()).toEqual({ revoked_listed: [SSH_KEYS['vm-ed'].fingerprint], refused: 'BATON_KEYS is not JSON' });
     // The keys in force stayed.
     await withCore((c) => expect(c.workers.publicKey(SSH_KEYS['vm-p256'].fingerprint)).not.toBeNull());
     // The list that last seeded, back: the refusal is over (round 2, 2-A-1).
     await reseed([entry(SSH_KEYS['vm-ed'], 'vm-ed'), entry(SSH_KEYS['vm-p256'], 'vm-p256')]);
+    // …and what that list reported still stands (round 3, 3-A-1).
+    expect(await state()).toEqual({ revoked_listed: [SSH_KEYS['vm-ed'].fingerprint] });
+    await reseed([entry(SSH_KEYS['vm-p256'], 'vm-p256')]);
     expect(await state()).toBeNull();
+  });
+
+  it('an unset BATON_KEYS changes nothing; an empty list revokes every seeded key (round 3, 3-A-0)', async () => {
+    await withCore(async (c) => {
+      const unset = new WorkerApi({ store: c.store, config: { ...env, BATON_KEYS: undefined }, now: () => 1 });
+      expect(await unset.seedKeys()).toEqual({ unchanged: true, seeded: 0, revoked: [] });
+    });
+    expect(await rows(`SELECT count(*) AS n FROM credentials WHERE kind = 'worker' AND revoked_at IS NULL`)).toEqual([{ n: 4 }]);
+    await withCore(async (c) => {
+      expect(await api(c as never, []).seedKeys()).toEqual({ unchanged: false, seeded: 0, revoked: [] });
+    });
+    expect(await rows(`SELECT count(*) AS n FROM credentials WHERE kind = 'worker' AND revoked_at IS NULL`)).toEqual([{ n: 0 }]);
   });
 
   it('the bearer mirror leaves the keys alone', async () => {

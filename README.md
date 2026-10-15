@@ -66,8 +66,10 @@ object; the object checks the clock, the key, the signature and the nonce.
 
 Until R3-1240's owner grants, the secret `BATON_KEYS` seeds the worker keys at start:
 `[{"key": "ssh-ed25519 AAAA… comment", "name": "<the one hostname it registers>",
-"allowed_capabilities": ["capability", …]}]`. A key the list no longer names is revoked, for
-good; a machine whose key is lost gets a new one.
+"allowed_capabilities": ["capability", …]}]`. A seeded key the list no longer names is revoked,
+for good; a machine whose key is lost gets a new one. An unset `BATON_KEYS` changes nothing (`[]`
+revokes every seeded key), and a list that cannot be seeded changes nothing and shows under
+Needs you.
 
 **The transition.** A request with no signature headers may still use a bearer token: the
 secrets `TOKEN_HASHES` (`{"<credential>": "<sha256 of its token>"}`) and `CREDENTIALS`

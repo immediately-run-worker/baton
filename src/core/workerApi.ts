@@ -112,11 +112,14 @@ export class WorkerApi {
    *  malformed entry, a key twice, or two keys for one name throws and changes nothing. */
   async seedKeys(): Promise<{ unchanged: boolean; seeded: number; revoked: string[] }> {
     const raw = this.c.config.BATON_KEYS;
-    const marker = fnv1a(raw ?? '');
+    // An unset secret is no list at all, not an empty one: a start without it (a missed
+    // secret on a new environment) changes nothing. `[]` revokes every seeded key.
+    if (raw === undefined || raw === '') return { unchanged: true, seeded: 0, revoked: [] };
+    const marker = fnv1a(raw);
     if (this.setting('keys_marker') === marker) return { unchanged: true, seeded: 0, revoked: [] };
-    let list: unknown = [];
+    let list: unknown;
     try {
-      if (raw) list = JSON.parse(raw);
+      list = JSON.parse(raw);
     } catch {
       throw new Error('BATON_KEYS is not JSON');
     }
