@@ -47,12 +47,22 @@ export interface HookRunner {
   run(hook: { module: string; entry: string }, input: unknown, limits: { timeout_ms: number }): Promise<unknown>;
 }
 
-/** §10.3: the workflows Baton dispatches after a committed transition. */
-export type Workflow = 'baton-mirror.yml' | 'baton-sync.yml';
+/** §10.3: a workflow Baton dispatches after a committed transition: one repository's sync or
+ *  mirror, resolved by the core to the GitHub repository and the workflow file. */
+export interface Workflow {
+  repository: string;
+  kind: 'sync' | 'mirror';
+}
+export interface DispatchTarget {
+  github: string;
+  /** The workflow file's name, as `actions/workflows/{workflow}/dispatches` takes it. */
+  workflow: string;
+  ref: string;
+}
 
 /** Outbound dispatch (§10.3), and the host's way to finish work after a response. */
 export interface Dispatch {
-  send(workflow: Workflow): Promise<unknown>;
+  send(target: DispatchTarget): Promise<unknown>;
   /** Let `work` finish after the response: `waitUntil` on Cloudflare. Never awaited. */
   defer(work: Promise<unknown>): void;
 }
@@ -63,11 +73,10 @@ export interface Config {
   BATON_ORIGIN: string;
   OIDC_ISSUER: string;
   OIDC_JWKS_URL: string;
-  OIDC_REPOSITORY: string;
-  OIDC_REF: string;
-  SYNC_WORKFLOW_REF: string;
-  /** §10.3: the mirror's OIDC principal, for `/v1/sync/events` and `/v1/sync/foreign-claim`. */
-  MIRROR_WORKFLOW_REF: string;
+  /** The repositories registered at start, insert-only (R-BTN-47; src/core/registry.ts): a JSON
+   *  array of `POST /v1/admin/repositories` bodies less their owner keys. Each binds its own
+   *  sync and mirror workflow to its board (R-BTN-15). */
+  BATON_REPOSITORIES?: string;
   ACCESS_TEAM_DOMAIN: string;
   ACCESS_AUD: string;
   OWNER_EMAILS: string;

@@ -122,9 +122,10 @@ export async function seedClaim(workerId: number, item: string, at = 0) {
 
 // ── claims (R3-1212) ──────────────────────────────────────────────────────────────────────
 
-/** The one-way cutover, set directly as the harness does (R-BTN-28; R3-1217 adds the call). */
-export function cutover(at = 1) {
-  return rows(`INSERT INTO baton_settings (key, value) VALUES ('cutover_at', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, String(at));
+/** The one-way cutover of a repository (docs by default), set directly as the harness does
+ *  (R-BTN-28; R3-1217 adds the call). */
+export function cutover(at = 1, repository = 'docs') {
+  return rows('UPDATE repositories SET cutover_at = ? WHERE id = ?', at, repository);
 }
 
 let requests = 0;
@@ -156,19 +157,26 @@ export function tick() {
 
 // ── the mirror (R3-1218) ──────────────────────────────────────────────────────────────────
 
+/** docs' mirror workflow, as its OIDC token names it (wrangler.toml's BATON_REPOSITORIES). */
+export const MIRROR_WORKFLOW_REF = 'immediately-run/docs/.github/workflows/baton-mirror.yml@refs/heads/main';
+
 /** A call as the mirror workflow: an OIDC token from baton-mirror.yml on docs main. */
 export async function mirrorCall(path: string, body?: unknown) {
-  return syncCall(path, body, await syncToken({ job_workflow_ref: env.MIRROR_WORKFLOW_REF }));
+  return syncCall(path, body, await syncToken({ job_workflow_ref: MIRROR_WORKFLOW_REF }));
 }
 
-/** Record the core's workflow dispatches instead of sending them; returns the live list. */
+/** Record the core's workflow dispatches instead of sending them, as `<repository>:<kind>`;
+ *  returns the live list. */
 export async function captureDispatches() {
   const sent: string[] = [];
   await withCore((c) => {
     c.dispatcher = async (wf) => {
-      sent.push(wf);
+      sent.push(`${wf.repository}:${wf.kind}`);
       return true;
     };
   });
   return sent;
 }
+
+/** A qualified ticket id in docs, the repository the fixtures post (R-BTN-47). */
+export const q = (local: string) => `docs:${local}`;

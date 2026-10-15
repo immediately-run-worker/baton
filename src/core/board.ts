@@ -4,7 +4,7 @@
 // item to its file on GitHub instead.
 import { capabilitiesOf } from '../shared/vocabulary.mjs';
 import { BatonError } from './http';
-import { SESSION_NAME } from './validate';
+import { LOCAL_ID, SESSION_NAME } from './validate';
 
 /** One factory-state item, as the sync posts it (`docs/scripts/factory-state.mjs`). Only the
  *  keys named here are read; anything else in the item is ignored. */
@@ -79,7 +79,7 @@ export interface TicketRow {
 }
 
 const SHA = /^[0-9a-f]{40}$/;
-const ID = /^R3-[A-Za-z0-9.-]{1,32}$/;
+const ID = LOCAL_ID; // a local id (R-BTN-47)
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 // A title comes from git, not from a worker, and the dashboard renders it with textContent
 // (§10.4), so it is only bounded and free of control characters.

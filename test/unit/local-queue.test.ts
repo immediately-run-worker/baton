@@ -110,9 +110,9 @@ describe('the local host', () => {
   it('two concurrent claims for one ticket: one succeeds (S-BTN-1, through the queue)', async () => {
     const a = await register('vm-a');
     const b = await register('vm-b');
-    const both = await Promise.all([claimItem('vm-a', a.secret, { ticket_id: 'R3-9002' }), claimItem('vm-b', b.secret, { ticket_id: 'R3-9002' })]);
+    const both = await Promise.all([claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9002' }), claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9002' })]);
     expect(both.map((r) => r.status).sort()).toEqual([200, 409]);
-    expect(await rows(`SELECT count(*) AS n FROM claims WHERE ticket_id = 'R3-9002'`)).toEqual([{ n: 1 }]);
+    expect(await rows(`SELECT count(*) AS n FROM claims WHERE ticket_id = 'docs:R3-9002'`)).toEqual([{ n: 1 }]);
   });
 
   it('an alarm tick waits for the request in progress', async () => {
@@ -157,7 +157,7 @@ describe('the local host', () => {
         expect(await big.json()).toMatchObject({ ok: false, code: 'invalid-params' });
         for (const [k, v] of Object.entries(SECURITY_HEADERS)) expect(big.headers.get(k)).toBe(v);
       }
-      expect(await ok.json()).toMatchObject({ worker_id: 1, mode: 'cut-over' });
+      expect(await ok.json()).toMatchObject({ worker_id: 1, mode: { docs: 'cut-over' } });
     } finally {
       await new Promise((r) => server.close(r));
     }

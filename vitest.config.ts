@@ -38,7 +38,8 @@ async function testKeys() {
 function wranglerVars(): Record<string, string> {
   const toml = readFileSync(resolve(import.meta.dirname, 'wrangler.toml'), 'utf8');
   const block = /^\[vars\]\n([\s\S]*?)(?=^\[)/m.exec(toml)?.[1] ?? '';
-  return Object.fromEntries([...block.matchAll(/^([A-Z_]+) = "([^"]*)"$/gm)].map((m) => [m[1], m[2]]));
+  // Basic strings ("…") and TOML literal strings ('…', for JSON values).
+  return Object.fromEntries([...block.matchAll(/^([A-Z_]+) = (?:"([^"]*)"|'([^']*)')$/gm)].map((m) => [m[1], m[2] ?? m[3]]));
 }
 
 /** Schema migrations and the dashboard load as text, as wrangler's Text rule bundles them. */

@@ -20,27 +20,37 @@ function el(tag, { text, cls, attrs } = {}, ...children) {
 const fmtTime = (ms) => (ms == null ? '—' : new Date(ms).toISOString().replace('T', ' ').slice(0, 16) + ' UTC');
 const short = (sha) => (sha ? sha.slice(0, 8) : '—');
 
+// Each repository cuts over on its own (R-BTN-28, R-BTN-47).
 function renderMode() {
   const box = document.getElementById('mode');
   box.replaceChildren();
-  const m = state.mode;
-  if (m?.mode === 'cut-over') {
-    box.append(el('span', { text: `Cut over ${fmtTime(m.cutover_at)}: Baton holds the claims.`, cls: 'muted' }));
-    return;
+  for (const r of state.repositories ?? []) {
+    const line = el('div');
+    if (r.mode?.mode === 'cut-over') {
+      line.append(el('span', { text: `${r.id}: cut over ${fmtTime(r.mode.cutover_at)}; Baton holds its claims.`, cls: 'muted' }));
+    } else {
+      line.append(el('span', { text: `${r.id}: shadow; git holds its claims, Baton records them. `, cls: 'muted' }));
+      line.append(button(`Cut ${r.id} over`, () => {
+        // R-BTN-28: one-way. §13 step 3's drain comes first.
+        if (confirm(`Cut ${r.id} over to Baton? This is one-way: nothing clears it.\nDrain its fleet first; in-progress tickets are imported as legacy claims.`) &&
+          confirm('Confirm again: cut over now?')) act('/v1/ui/cutover', { repository: r.id, confirm: true });
+      }));
+    }
+    box.append(line);
   }
-  box.append(el('span', { text: 'Shadow: git holds the claims; Baton records them. ', cls: 'muted' }));
-  box.append(button('Cut over', () => {
-    // R-BTN-28: one-way. §13 step 3's drain comes first.
-    if (confirm('Cut over to Baton? This is one-way: nothing clears it.\nDrain the fleet first; in-progress items are imported as legacy claims.') &&
-      confirm('Confirm again: cut over now?')) act('/v1/ui/cutover', { confirm: true });
-  }));
 }
 
 function renderHead() {
-  const h = state.head;
-  document.getElementById('head').textContent = h
-    ? `Board at docs@${short(h.sha)} · ${h.ticket_count} live tickets · received ${fmtTime(h.received_at)}`
-    : 'No board snapshot yet: the sync has not posted.';
+  const box = document.getElementById('head');
+  box.replaceChildren();
+  const repos = state.repositories ?? [];
+  if (!repos.length) box.textContent = 'No repository is registered.';
+  for (const r of repos) {
+    const h = r.head;
+    box.append(el('div', { text: h
+      ? `${r.id}: board at ${r.github}@${short(h.sha)} · ${h.ticket_count} live tickets · received ${fmtTime(h.received_at)}`
+      : `${r.id}: no board snapshot yet; its sync has not posted.` }));
+  }
 }
 
 function renderReady() {
@@ -284,7 +294,7 @@ function renderNeeds() {
     // §6.7: never confirmed automatically; the owner confirms it or releases it.
     const li = el('li', { text: `${c.ticket_id}: completed ${fmtTime(c.ended_at)} (${c.end_reason}) at ${short(c.ended_at_sha)}, not confirmed by git after 6 h` });
     li.append(button('Confirm', () => {
-      if (confirm(`Confirm ${c.ticket_id}: git carries docs@${short(c.ended_at_sha)}?`)) act(`/v1/ui/claims/${c.id}/resolve`, { action: 'confirm', confirm: true });
+      if (confirm(`Confirm ${c.ticket_id}: git carries ${c.ticket_id.split(':')[0]}@${short(c.ended_at_sha)}?`)) act(`/v1/ui/claims/${c.id}/resolve`, { action: 'confirm', confirm: true });
     }));
     li.append(button('Release', () => {
       if (confirm(`Release ${c.ticket_id}: its push never landed, and the item becomes claimable again?`)) act(`/v1/ui/claims/${c.id}/resolve`, { action: 'release', confirm: true });
@@ -325,7 +335,7 @@ function renderNeeds() {
       li.append(line);
     }
     li.append(button('Lift hold', () => {
-      if (confirm(`Lift the hold on ${h.ticket_id}? Its failed-attempt count starts again.`)) act(`/v1/ui/overrides/${h.ticket_id}`, { hold: false });
+      if (confirm(`Lift the hold on ${h.ticket_id}? Its failed-attempt count starts again.`)) act(`/v1/ui/overrides/${encodeURIComponent(h.ticket_id)}`, { hold: false });
     }));
     list.append(li);
   }
@@ -333,15 +343,15 @@ function renderNeeds() {
     const li = el('li', { text: `${a.ticket_id}: ${a.hostname} · ${a.session_name} asks to adopt the legacy claim (note's session: ${a.legacy_session})` });
     li.append(button('Confirm adoption', () => {
       if (confirm(`Move ${a.ticket_id} to ${a.hostname} · ${a.session_name}? Claim notes are public: confirm only a session you know worked it.`)) {
-        act(`/v1/ui/adoptions/${a.ticket_id}/confirm`, { confirm: true });
+        act(`/v1/ui/adoptions/${encodeURIComponent(a.ticket_id)}/confirm`, { confirm: true });
       }
     }));
     list.append(li);
   }
   for (const h of state.held) {
-    const li = el('li', { text: `Rewritten history docs@${short(h.sha)} held; accepted automatically ${fmtTime(h.auto_accept_at)}` });
+    const li = el('li', { text: `Rewritten history ${h.repository_id}@${short(h.sha)} held; accepted automatically ${fmtTime(h.auto_accept_at)}` });
     li.append(button('Accept now', () => {
-      if (confirm(`Accept docs@${short(h.sha)} as the board?`)) act('/v1/ui/board/accept', { sha: h.sha });
+      if (confirm(`Accept ${h.repository_id}@${short(h.sha)} as its board?`)) act('/v1/ui/board/accept', { repository: h.repository_id, sha: h.sha });
     }));
     list.append(li);
   }

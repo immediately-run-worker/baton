@@ -44,7 +44,7 @@ describe('§12: the event feed', () => {
     expect(all.cutover_at).toBe(T0);
     expect(all.next).toBe(all.events.at(-1).seq);
     const claimed = all.events[1];
-    expect(claimed).toMatchObject({ kind: 'claimed', ticket_id: 'R3-9001', claim_id: c.claim_id, actor: 'worker', detail: {} });
+    expect(claimed).toMatchObject({ kind: 'claimed', ticket_id: 'docs:R3-9001', claim_id: c.claim_id, actor: 'worker', detail: {} });
     expect(claimed.claim).toMatchObject({ nonce: c.nonce, status: 'released', started: true, legacy: false });
     expect(claimed.claim.request_id).toBeUndefined();
     const released = all.events[2];
@@ -61,7 +61,7 @@ describe('§12: the event feed', () => {
     await cutover(T0);
     const a = await register('vm-a', { session_name: 'sess-secret-name' });
     const { json: c } = await claimItem('vm-a', a.secret);
-    await owner('/v1/ui/overrides/R3-9002', { hold: true });
+    await owner('/v1/ui/overrides/docs:R3-9002', { hold: true });
     await owner(`/v1/ui/claims/${c.claim_id}/reap`, { confirm: true });
     const text = JSON.stringify(await feed());
     for (const leak of ['sess-secret-name', 'vm-a', 'owner@example.com', 'request_id', `worker:${a.id}`, 'worker_id']) {
@@ -71,7 +71,7 @@ describe('§12: the event feed', () => {
 });
 
 describe('§12: foreign claims', () => {
-  const report = (body: Record<string, unknown>) => mirrorCall('/v1/sync/foreign-claim', { ticket_id: 'R3-9001', nonce: 'f0f0f0', sha: sha.B, at: T0, ...body });
+  const report = (body: Record<string, unknown>) => mirrorCall('/v1/sync/foreign-claim', { ticket_id: 'docs:R3-9001', nonce: 'f0f0f0', sha: sha.B, at: T0, ...body });
 
   it('before cutover git decides alone: ignored', async () => {
     expect(await (await report({})).json()).toEqual({ ignored: 'shadow' });
@@ -81,7 +81,7 @@ describe('§12: foreign claims', () => {
   it('a held item keeps its holder: the answer names the holder’s nonce and the report is logged', async () => {
     await cutover(T0);
     const { secret } = await register('vm-a');
-    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'R3-9001' });
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' });
     expect(await (await report({})).json()).toEqual({ held: true, claim_id: c.claim_id, nonce: c.nonce, claimed_at: T0 });
     expect((await beat('vm-a', secret)).json.claim).toMatchObject({ id: c.claim_id, nonce: c.nonce });
     expect(await rows(`SELECT kind, json_extract(detail_json, '$.nonce') AS nonce FROM events WHERE kind = 'foreign-claim'`)).toEqual([{ kind: 'foreign-claim', nonce: 'f0f0f0' }]);
@@ -97,7 +97,7 @@ describe('§12: foreign claims', () => {
     expect(await rows(`SELECT c.nonce, c.reap_after, w.kind FROM claims c JOIN workers w ON w.id = c.worker_id`)).toEqual([
       { nonce: 'f0f0f0', reap_after: T0 + 7 * 24 * 3_600_000, kind: 'legacy' }]);
     // The cutover import's shape, its claimed (legacy) event included: the export's claim record.
-    const feedKinds = (await feed()).events.filter((e) => e.ticket_id === 'R3-9001').map((e) => [e.kind, e.detail]);
+    const feedKinds = (await feed()).events.filter((e) => e.ticket_id === 'docs:R3-9001').map((e) => [e.kind, e.detail]);
     expect(feedKinds).toEqual([['claimed', { legacy: true, foreign: true }], ['foreign-claim', { nonce: 'f0f0f0', sha: sha.B, imported: true }]]);
     expect((await feed()).events.find((e) => e.kind === 'claimed').claim).toMatchObject({ nonce: 'f0f0f0', legacy: true });
   });
@@ -114,31 +114,31 @@ describe('§10.3: Baton dispatches the workflows after a transition', () => {
   it('nothing before cutover; after it, a claim and an end dispatch the mirror, a completion the sync too', async () => {
     const sent = await captureDispatches();
     const { secret } = await register('vm-a');
-    await workerCall('/v1/runner/shadow-report', { secret, body: { transition: 'claim', ticket_id: 'R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 } });
+    await workerCall('/v1/runner/shadow-report', { secret, body: { transition: 'claim', ticket_id: 'docs:R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 } });
     expect(sent).toEqual([]);
-    await workerCall('/v1/runner/shadow-report', { secret, body: { transition: 'set', ticket_id: 'R3-9001', status: 'available', at: T0 } });
+    await workerCall('/v1/runner/shadow-report', { secret, body: { transition: 'set', ticket_id: 'docs:R3-9001', status: 'available', at: T0 } });
     expect(sent).toEqual([]);
     await cutover(T0);
     const { json: c } = await claimItem('vm-a', secret);
-    expect(sent).toEqual(['baton-mirror.yml']);
+    expect(sent).toEqual(['docs:mirror']);
     await endClaim('vm-a', secret, c.claim_id, { end_reason: 'done', ended_at_sha: sha.A });
-    expect(sent).toEqual(['baton-mirror.yml', 'baton-mirror.yml', 'baton-sync.yml']);
+    expect(sent).toEqual(['docs:mirror', 'docs:mirror', 'docs:sync']);
   });
 
   it('a refused call dispatches nothing; the alarm’s reap and the owner’s hold and expedite do', async () => {
     await cutover(T0);
     const sent = await captureDispatches();
     const { secret } = await register('vm-a');
-    expect((await claimItem('vm-a', secret, { ticket_id: 'R3-9004' })).status).toBe(409);
+    expect((await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9004' })).status).toBe(409);
     expect(sent).toEqual([]);
     await claimItem('vm-a', secret);
     sent.length = 0;
     await setClock(T0 + 900_000);
     await tick();
-    expect(sent).toEqual(['baton-mirror.yml']);
+    expect(sent).toEqual(['docs:mirror']);
     sent.length = 0;
-    await owner('/v1/ui/overrides/R3-9002', { expedite: true });
-    await owner('/v1/ui/overrides/R3-9003', { hold: true });
-    expect(sent).toEqual(['baton-mirror.yml', 'baton-mirror.yml']);
+    await owner('/v1/ui/overrides/docs:R3-9002', { expedite: true });
+    await owner('/v1/ui/overrides/docs:R3-9003', { hold: true });
+    expect(sent).toEqual(['docs:mirror', 'docs:mirror']);
   });
 });

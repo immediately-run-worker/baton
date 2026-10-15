@@ -2,7 +2,7 @@
 // principal for the path, applies the R-BTN-16 rules, serves the dashboard's static files, and
 // forwards the API to the core — through the Durable Object on Cloudflare, through the request
 // queue locally (R-BTN-55). Every response leaves with the security headers.
-import { verifyOwner, verifySync, verifyWorker, checkStateChanging } from './auth';
+import { verifyOwner, verifySyncToken, verifyWorker, checkStateChanging } from './auth';
 import { BatonError, errorResponse, withSecurityHeaders } from './http';
 import type { Config } from './ports';
 import page from '../ui/index.html';
@@ -20,15 +20,15 @@ const STATIC: Record<string, [string, string]> = {
 };
 
 /** The headers that carry a verified principal to the object. A request never brings its own. */
-const PRINCIPAL_HEADERS = ['X-Baton-Credential', 'X-Baton-Owner'];
+const PRINCIPAL_HEADERS = ['X-Baton-Credential', 'X-Baton-Owner', 'X-Baton-Sync'];
 
 async function route(req: Request, env: Config, to: Forward): Promise<Response> {
   const { pathname } = new URL(req.url);
   if (pathname.startsWith('/v1/sync/')) {
-    // §10.3: the mirror's routes take only baton-mirror.yml's token; the board's only baton-sync.yml's.
-    const mirror = pathname === '/v1/sync/events' || pathname === '/v1/sync/foreign-claim';
-    await verifySync(req, env, mirror ? env.MIRROR_WORKFLOW_REF : env.SYNC_WORKFLOW_REF);
-    return forward(req, to, {});
+    // R-BTN-15: the token is verified here; the core binds its claims to one repository's
+    // sync or mirror workflow (Registry.forSync), so the front names no repository.
+    const claims = await verifySyncToken(req, env);
+    return forward(req, to, { 'X-Baton-Sync': JSON.stringify(claims) });
   }
   if (pathname.startsWith('/v1/runner/')) {
     const credential = await verifyWorker(req, env);

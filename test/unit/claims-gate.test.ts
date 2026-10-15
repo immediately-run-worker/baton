@@ -42,7 +42,7 @@ describe('§7.1: accepting a held history accepts the line', () => {
   it('a rewind to a once-accepted sha is held, never a backwards move', async () => {
     await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B));
     await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }));
-    await owner('/v1/ui/board/accept', { sha: sha.D });
+    await owner('/v1/ui/board/accept', { repository: 'docs', sha: sha.D });
     expect((await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }))).status).toBe(200);
     await syncCall('/v1/sync/board', payload(fake('7'), sha.D, board.states.D));
     expect((await syncCall('/v1/sync/board', payload(sha.D, fake('7'), board.states.D, { force: true }))).status).toBe(409);
@@ -54,7 +54,7 @@ describe('§7.1: accepting a held history accepts the line', () => {
   const rewound = async () => {
     await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B));
     await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }));
-    await owner('/v1/ui/board/accept', { sha: sha.D });
+    await owner('/v1/ui/board/accept', { repository: 'docs', sha: sha.D });
     await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }));
     await setClock(T0 + H);
     await syncCall('/v1/sync/board', payload(fake('7'), sha.D, board.states.D));
@@ -95,12 +95,12 @@ describe('§7.1: accepting a held history accepts the line', () => {
   it('an accepted line is consumed: a new rewrite against a head it was held against is held, never accepted', async () => {
     await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B));
     await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }));
-    await owner('/v1/ui/board/accept', { sha: sha.D });
+    await owner('/v1/ui/board/accept', { repository: 'docs', sha: sha.D });
     expect((await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }))).status).toBe(200);
     expect(await rows(`SELECT sha FROM held_snapshots`)).toEqual([]);
     // Back to B by an accepted rewind; then a brand-new rewrite of B.
     await syncCall('/v1/sync/board', payload(sha.B, sha.D, board.states.B, { force: true }));
-    await owner('/v1/ui/board/accept', { sha: sha.B });
+    await owner('/v1/ui/board/accept', { repository: 'docs', sha: sha.B });
     expect((await syncCall('/v1/sync/board', payload(sha.B, sha.D, board.states.B, { force: true }))).status).toBe(200);
     expect((await syncCall('/v1/sync/board', payload(fake('9'), sha.B, board.states.D, { force: true }))).status).toBe(409);
     expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(sha.B);
@@ -115,7 +115,7 @@ describe('§7.1: accepting a held history accepts the line', () => {
     await alarmAt(T0 + 24 * H);
     // Back to B through an accepted rewind; a brand-new rewrite of B is then held.
     expect((await syncCall('/v1/sync/board', payload(sha.B, fake('8'), board.states.B, { force: true }))).status).toBe(409);
-    await owner('/v1/ui/board/accept', { sha: sha.B });
+    await owner('/v1/ui/board/accept', { repository: 'docs', sha: sha.B });
     expect((await syncCall('/v1/sync/board', payload(sha.B, fake('8'), board.states.B, { force: true }))).status).toBe(200);
     expect((await syncCall('/v1/sync/board', payload(fake('9'), sha.B, board.states.D, { force: true }))).status).toBe(409);
     expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(sha.B);
@@ -123,7 +123,7 @@ describe('§7.1: accepting a held history accepts the line', () => {
 
   it('the owner’s Accept makes the next force post of the rewind the head', async () => {
     await rewound();
-    expect((await owner('/v1/ui/board/accept', { sha: sha.D })).status).toBe(200);
+    expect((await owner('/v1/ui/board/accept', { repository: 'docs', sha: sha.D })).status).toBe(200);
     expect((await syncCall('/v1/sync/board', payload(sha.D, fake('7'), board.states.D, { force: true }))).status).toBe(200);
     expect(((await (await syncCall('/v1/sync/head')).json()) as { sha: string }).sha).toBe(sha.D);
     expect((await uiState()).held).toEqual([]);
@@ -159,7 +159,7 @@ describe('§6.5 ends', () => {
 
   it('R-BTN-8 vs R-BTN-35: a sync that releases the claim stale-board before the worker’s own done keeps the completion', async () => {
     const { secret } = await register('vm-a');
-    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'R3-9002' });
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9002' });
     // The worker pushed git first; the sync sees the item gone before its end call arrives.
     const gone = items().filter((i) => i.id !== 'R3-9002');
     await syncCall('/v1/sync/board', payload(fake('b'), sha.A, { ...board.states.A, state: { items: gone }, ready: ['R3-9001', 'R3-9003'] }));
@@ -174,13 +174,13 @@ describe('§6.5 ends', () => {
   it('…but not after a re-tier, nor once someone else has claimed the item', async () => {
     const a = await register('vm-a', { tier_ceiling: 'judgement' });
     const b = await register('vm-b');
-    const { json: c } = await claimItem('vm-a', a.secret, { ticket_id: 'R3-9001' });
+    const { json: c } = await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9001' });
     const retiered = items().map((i) => (i.id === 'R3-9001' ? { ...i, tier: 'critical' } : i));
     await syncCall('/v1/sync/board', payload(fake('b'), sha.A, { ...board.states.A, state: { items: retiered }, ready: board.states.A.ready }));
     expect((await claimRow(c.claim_id)).end_reason).toBe('released:stale-board');
     expect((await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'done', ended_at_sha: fake('b') })).json.code).toBe('claim-ended');
     // Gone from git, but another worker claimed it in between: still claim-ended.
-    const { json: c2 } = await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' });
+    const { json: c2 } = await claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9001' });
     expect(c2.claim_id).toBeGreaterThan(c.claim_id);
     const gone = retiered.filter((i) => i.id !== 'R3-9001');
     await syncCall('/v1/sync/board', payload(fake('c'), fake('b'), { ...board.states.A, state: { items: gone }, ready: ['R3-9002'] }));
@@ -192,7 +192,7 @@ describe('§6.5 ends', () => {
 describe('§6.7: the owner resolves an unconfirmed completion', () => {
   const unconfirmed = async () => {
     const { secret } = await register('vm-a');
-    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'R3-9001' });
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' });
     await endClaim('vm-a', secret, c.claim_id, { end_reason: 'done', ended_at_sha: sha.C });
     return c.claim_id as number;
   };
@@ -211,7 +211,7 @@ describe('§6.7: the owner resolves an unconfirmed completion', () => {
     expect((await owner(`/v1/ui/claims/${id}/resolve`, { action: 'release', confirm: true })).status).toBe(200);
     expect(await claimRow(id)).toMatchObject({ status: 'released', end_reason: 'released:requested' });
     expect(await rows(`SELECT json_extract(detail_json, '$.unconfirmed.ended_at_sha') AS s FROM events WHERE kind = 'released'`)).toEqual([{ s: sha.C }]);
-    expect((await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })).status).toBe(200);
+    expect((await claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9001' })).status).toBe(200);
     expect((await owner(`/v1/ui/claims/${id}/resolve`, { action: 'confirm', confirm: true })).status).toBe(404);
   });
 });
@@ -221,7 +221,7 @@ describe('§9: two stale releases reap a claim once', () => {
     const a = await register('vm-a', { lease_timeout_s: 43_200 });
     const { json: c } = await claimItem('vm-a', a.secret);
     for (const reason of ['requested', 'owner-cancel']) {
-      await owner('/v1/ui/messages', { to_worker_id: a.id, kind: 'release', payload: { ticket_id: 'R3-9001', reason } });
+      await owner('/v1/ui/messages', { to_worker_id: a.id, kind: 'release', payload: { ticket_id: 'docs:R3-9001', reason } });
     }
     await beat('vm-a', a.secret, { lease_timeout_s: 43_200 });
     await alarmAt(T0 + 2 * H);
@@ -243,17 +243,17 @@ describe('§7.2 rules 2 and 8 through the server', () => {
   it('rule 2: two active claims on expedited items (lane or override) hold a third back', async () => {
     await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B));
     await syncCall('/v1/sync/board', payload(sha.C, sha.B, board.states.C)); // R3-9005 is in the expedite lane
-    await rows(`INSERT INTO ticket_overrides (ticket_id, expedite, set_by, set_at) VALUES ('R3-9002', 1, 'owner:test', 0)`);
+    await rows(`INSERT INTO ticket_overrides (ticket_id, expedite, set_by, set_at) VALUES ('docs:R3-9002', 1, 'owner:test', 0)`);
     const a = await register('vm-a');
     const b = await register('vm-b');
     const t = await register('test');
-    expect((await claimItem('vm-a', a.secret, { ticket_id: 'R3-9002' })).status).toBe(200); // expedited by override
+    expect((await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9002' })).status).toBe(200); // expedited by override
     // One active expedited claim: the lane still has room.
-    expect((await claimItem('vm-b', b.secret)).json.ticket_id).toBe('R3-9005');
-    await rows(`INSERT INTO ticket_overrides (ticket_id, expedite, set_by, set_at) VALUES ('R3-9003', 1, 'owner:test', 0)`);
+    expect((await claimItem('vm-b', b.secret)).json.ticket_id).toBe('docs:R3-9005');
+    await rows(`INSERT INTO ticket_overrides (ticket_id, expedite, set_by, set_at) VALUES ('docs:R3-9003', 1, 'owner:test', 0)`);
     // Two active expedited claims: a third expedited item waits (R3-9003 is also held back by
     // rule 4, so rule 2 is asked of it first, as isEligible orders them).
-    expect(await claimItem('test', t.secret, { ticket_id: 'R3-9003' })).toMatchObject({ status: 409, json: { code: 'not-eligible', rule: 2 } });
+    expect(await claimItem('test', t.secret, { ticket_id: 'docs:R3-9003' })).toMatchObject({ status: 409, json: { code: 'not-eligible', rule: 2 } });
   });
 
   it('rule 8: an item released awaiting-review-capacity goes only to a worker with a qualifying pair; a matrix without a usable row fails closed', async () => {
@@ -268,48 +268,48 @@ describe('§7.2 rules 2 and 8 through the server', () => {
     };
     await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B, { matrix, reviewers: matrix.agents }));
     await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true }));
-    await owner('/v1/ui/board/accept', { sha: sha.D });
+    await owner('/v1/ui/board/accept', { repository: 'docs', sha: sha.D });
     await syncCall('/v1/sync/board', payload(sha.D, sha.B, board.states.D, { force: true, matrix, reviewers: matrix.agents }));
     expect(await rows(`SELECT key FROM baton_settings WHERE key IN ('reviewer_matrix', 'reviewer_catalog') ORDER BY key`)).toEqual([{ key: 'reviewer_catalog' }, { key: 'reviewer_matrix' }]);
     const first = await register('vm-a', { session_name: 'author' });
-    const { json: c } = await claimItem('vm-a', first.secret, { ticket_id: 'R3-9001' });
+    const { json: c } = await claimItem('vm-a', first.secret, { ticket_id: 'docs:R3-9001' });
     await endClaim('vm-a', first.secret, c.claim_id, { end_reason: 'released:awaiting-review-capacity' });
     // Billing only zai-coding-plan: neither seat's opencode-go reviewer is billable for it.
     const narrow = await register('vm-b', { billing: { 'zai-coding-plan': 'zai' } });
-    expect((await claimItem('vm-b', narrow.secret, { ticket_id: 'R3-9001' })).json).toMatchObject({ code: 'not-eligible', rule: 8 });
+    expect((await claimItem('vm-b', narrow.secret, { ticket_id: 'docs:R3-9001' })).json).toMatchObject({ code: 'not-eligible', rule: 8 });
     const wide = await register('test');
-    expect((await claimItem('test', wide.secret, { ticket_id: 'R3-9001' })).status).toBe(200);
+    expect((await claimItem('test', wide.secret, { ticket_id: 'docs:R3-9001' })).status).toBe(200);
   });
 
   it('rule 8 with a matrix that has no usable row refuses as rule 8, not a 500', async () => {
     const { secret } = await register('vm-a');
-    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'R3-9001' });
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' });
     await endClaim('vm-a', secret, c.claim_id, { end_reason: 'released:awaiting-review-capacity' });
     const b = await register('vm-b');
-    expect(await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })).toMatchObject({ status: 409, json: { rule: 8 } });
+    expect(await claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9001' })).toMatchObject({ status: 409, json: { rule: 8 } });
   });
 });
 
 describe('the hold override and legacy claims', () => {
   it('a hold override takes an item out of the candidates and isEligible agrees', async () => {
     const { id, secret } = await register('vm-a');
-    await rows(`INSERT INTO ticket_overrides (ticket_id, hold, hold_reason, set_by, set_at) VALUES ('R3-9001', 1, 'owner', 'owner:test', 0)`);
+    await rows(`INSERT INTO ticket_overrides (ticket_id, hold, hold_reason, set_by, set_at) VALUES ('docs:R3-9001', 1, 'owner', 'owner:test', 0)`);
     const got = await withCore((o) => {
       const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
       return c.candidates(c.worker(id), T0, 100);
     });
-    expect(got).toEqual(['R3-9002']);
-    expect((await claimItem('vm-a', secret, { ticket_id: 'R3-9001' })).json).toMatchObject({ code: 'not-eligible', rule: 3 });
+    expect(got).toEqual(['docs:R3-9002']);
+    expect((await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' })).json).toMatchObject({ code: 'not-eligible', rule: 3 });
   });
 
   it('a legacy claim is reaped at its reap_after, never by silence, and is not "another live holder"', async () => {
     await rows(`INSERT INTO credentials (id, hostname, allowed_capabilities) VALUES ('legacy', 'legacy', '[]') ON CONFLICT (id) DO NOTHING`);
     await rows(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at)
-                VALUES ('legacy', 'R3-9001', '', 'legacy', 'claude-code', 'legacy', 'critical', 0, '', 0, 0)`);
+                VALUES ('legacy', 'docs:R3-9001', '', 'legacy', 'claude-code', 'legacy', 'critical', 0, '', 0, 0)`);
     const lw = (await rows<{ id: number }>(`SELECT id FROM workers WHERE kind = 'legacy'`))[0].id;
     await rows(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, reap_after)
-                VALUES ('R3-9001', ?, 'legacy:R3-9001', 'abc123', '', 0, 'active', ?)`, lw, T0 + 7 * 24 * H);
-    expect(await (await workerCall('/v1/runner/tickets/R3-9001/holder', { cred: 'vm-b' })).json()).toEqual({ held_by_other: false, fence_pending: false });
+                VALUES ('docs:R3-9001', ?, 'legacy:R3-9001', 'abc123', '', 0, 'active', ?)`, lw, T0 + 7 * 24 * H);
+    expect(await (await workerCall('/v1/runner/tickets/docs:R3-9001/holder', { cred: 'vm-b' })).json()).toEqual({ held_by_other: false, fence_pending: false });
     await alarmAt(T0 + 7 * 24 * H - 1);
     expect(await rows(`SELECT status FROM claims WHERE worker_id = ?`, lw)).toEqual([{ status: 'active' }]);
     await alarmAt(T0 + 7 * 24 * H);
@@ -351,7 +351,7 @@ describe('§14: Running, Timeline and Needs you', () => {
   it('Needs you: unacknowledged releases and fence-pending claims appear and clear', async () => {
     const a = await register('vm-a');
     const { json: c } = await claimItem('vm-a', a.secret);
-    await owner('/v1/ui/messages', { to_worker_id: a.id, kind: 'release', payload: { ticket_id: 'R3-9001', reason: 'requested' } });
+    await owner('/v1/ui/messages', { to_worker_id: a.id, kind: 'release', payload: { ticket_id: 'docs:R3-9001', reason: 'requested' } });
     expect((await uiState()).needs_you.unacknowledged_releases).toHaveLength(1);
     const msg = (await beat('vm-a', a.secret)).json.messages[0];
     await workerCall(`/v1/runner/messages/${msg.id}/ack`, { secret: a.secret, method: 'POST' });

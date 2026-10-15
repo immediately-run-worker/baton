@@ -3,7 +3,7 @@
 import { describe, it, expect, inject } from 'vitest';
 import { env } from 'cloudflare:test';
 import { errors, generateKeyPair, SignJWT } from 'jose';
-import { parseAdminKeys, verifyFailure, verifySync } from '../../src/core/auth';
+import { parseAdminKeys, verifyFailure, verifySyncToken } from '../../src/core/auth';
 import { accessToken, call, ORIGIN, ownerCall, syncCall, syncToken } from '../helpers';
 
 const code = async (res: Response) => ((await res.json()) as { code: string }).code;
@@ -32,7 +32,7 @@ describe('the sync principal (R-BTN-15, G-BTN-11)', () => {
     expect((await syncCall('/v1/sync/head', undefined, await syncToken({}, { issuer: 'https://evil.example' }))).status).toBe(401);
     expect((await call('/v1/sync/head')).status).toBe(401);
     const { privateKey } = await generateKeyPair('ES256');
-    const forged = await new SignJWT({ repository: 'immediately-run/docs', ref: 'refs/heads/main', job_workflow_ref: env.SYNC_WORKFLOW_REF })
+    const forged = await new SignJWT({ repository: 'immediately-run/docs', ref: 'refs/heads/main', job_workflow_ref: 'immediately-run/docs/.github/workflows/baton-sync.yml@refs/heads/main' })
       .setProtectedHeader({ alg: 'ES256', kid: 'baton-test' }).setIssuer(env.OIDC_ISSUER).setAudience(env.BATON_ORIGIN).setExpirationTime('5m').sign(privateKey);
     expect((await syncCall('/v1/sync/head', undefined, forged)).status).toBe(401);
   });
@@ -76,7 +76,7 @@ describe('the owner principal (R-BTN-16)', () => {
   });
 
   it('G-BTN-12: a state-changing /v1/ui call needs JSON and the dashboard Origin', async () => {
-    const post = (headers: Record<string, string>) => ownerCall('/v1/ui/overrides/R3-9001', { method: 'POST', headers, body: '{}' });
+    const post = (headers: Record<string, string>) => ownerCall('/v1/ui/overrides/docs:R3-9001', { method: 'POST', headers, body: '{}' });
     expect(await code(await post({ 'Content-Type': 'application/json' }))).toBe('forbidden');
     expect(await code(await post({ 'Content-Type': 'application/json', Origin: 'https://evil.immediately.run' }))).toBe('forbidden');
     expect(await code(await post({ 'Content-Type': 'text/plain', Origin: ORIGIN }))).toBe('forbidden');
@@ -110,11 +110,11 @@ describe('the test key exists only in the test bindings (§13a)', () => {
   it('without BATON_TEST_BINDINGS the test key set is ignored: verification goes to the remote key set', async () => {
     const req = () => new Request(`${ORIGIN}/v1/sync/head`, { headers: { Authorization: `Bearer ${tokenNow}` } });
     const tokenNow = await syncToken();
-    await expect(verifySync(req(), env)).resolves.toBeUndefined();
+    await expect(verifySyncToken(req(), env)).resolves.toMatchObject({ repository: 'immediately-run/docs', ref: 'refs/heads/main' });
     // The production path fetches GitHub's key set; here that fetch fails, so the test-key
     // token cannot verify — and the failure is an outage (retry), not a bad credential.
     const prod = { ...env, BATON_TEST_BINDINGS: undefined, OIDC_JWKS_URL: 'https://jwks.invalid/keys' } as Env;
-    await expect(verifySync(req(), prod)).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(verifySyncToken(req(), prod)).rejects.toMatchObject({ code: 'unavailable' });
   });
 });
 
@@ -122,9 +122,9 @@ describe('a key-set outage is not a credential failure', () => {
   it('a token that fails verification is 401 unauthenticated; an unreachable key set is 503 unavailable', async () => {
     const prod = { ...env, BATON_TEST_BINDINGS: undefined, OIDC_JWKS_URL: 'https://jwks.invalid/keys' } as Env;
     const req = new Request(`${ORIGIN}/v1/sync/head`, { headers: { Authorization: `Bearer ${await syncToken()}` } });
-    await expect(verifySync(req, prod)).rejects.toMatchObject({ code: 'unavailable' });
+    await expect(verifySyncToken(req, prod)).rejects.toMatchObject({ code: 'unavailable' });
     const garbage = new Request(`${ORIGIN}/v1/sync/head`, { headers: { Authorization: 'Bearer not-a-jwt' } });
-    await expect(verifySync(garbage, env)).rejects.toMatchObject({ code: 'unauthenticated' });
+    await expect(verifySyncToken(garbage, env)).rejects.toMatchObject({ code: 'unauthenticated' });
   });
 
   it('classifies what jose throws: a key endpoint answering 503 or non-JSON is unavailable', () => {

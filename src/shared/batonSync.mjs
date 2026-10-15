@@ -22,14 +22,18 @@ export async function decide(head, next, isAncestor) {
  * §6.7: which unconfirmed completions `next` confirms — the claim's `ended_at_sha` is an
  * ancestor of `next` (or is `next`), and its item is no longer `in-progress` in git (an
  * archived or vanished item counts as moved on). `statusOf(id)` is the item's `status:` at
- * `next`, or `null` when it is not live.
+ * `next`, or `null` when it is not live. A ticket id is qualified (`<repository>:<local id>`,
+ * §5.1); this repository's own board knows its items by the local id, so the prefix is dropped.
  */
+/** The local id of a qualified ticket id; an unqualified one is already local. */
+export const localId = (ticketId) => String(ticketId).slice(String(ticketId).indexOf(':') + 1);
+
 export async function confirmations(unconfirmed, next, { isAncestor, statusOf }) {
   const out = [];
   for (const u of unconfirmed ?? []) {
     if (!u.ended_at_sha) continue;
     const landed = u.ended_at_sha === next || (await isAncestor(u.ended_at_sha, next));
-    if (landed && statusOf(u.ticket_id) !== 'in-progress') out.push({ claim_id: u.claim_id, sha: next });
+    if (landed && statusOf(localId(u.ticket_id)) !== 'in-progress') out.push({ claim_id: u.claim_id, sha: next });
   }
   return out;
 }

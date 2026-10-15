@@ -20,7 +20,7 @@ beforeEach(async () => {
 describe('G-BTN-5: identity — the secret, the hostname and the capability allow-list', () => {
   it('a first heartbeat registers; later calls need the secret; a wrong one is session-taken', async () => {
     const { id, secret, first } = await register('vm-a');
-    expect(first).toMatchObject({ worker_id: id, incarnation: 1, lease_timeout_s: 900, claim: null, messages: [], mode: 'shadow', min_skills_version: 3 });
+    expect(first).toMatchObject({ worker_id: id, incarnation: 1, lease_timeout_s: 900, claim: null, messages: [], mode: { docs: 'shadow' }, min_skills_version: 3 });
     expect((await beat('vm-a', secret)).status).toBe(200);
     const wrong = await beat('vm-a', 'not-the-secret');
     expect(wrong.status).toBe(409);
@@ -87,7 +87,7 @@ describe('G-BTN-17: a retried first heartbeat, and re-keys', () => {
 
   it('re-keys without a claim; refuses while holding one; a reaped worker must re-key', async () => {
     const { id, secret } = await register('vm-a');
-    await seedClaim(id, 'R3-9001');
+    await seedClaim(id, 'docs:R3-9001');
     const refused = await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { rekey: true, secret_hash: await sha256('new') }) });
     expect([refused.status, await code(refused)]).toEqual([409, 'session-taken']);
     await rows(`UPDATE claims SET status = 'released', ended_at = 1, end_reason = 'released:requested'`);
@@ -122,7 +122,7 @@ describe('G-BTN-13: free text and identifiers are validated before any write', (
 
   it('an activity detail takes only its kind’s keys, a PR URL from immediately-run, and 2 KB at most', async () => {
     const { id, secret } = await register('vm-a');
-    const claim = await seedClaim(id, 'R3-9001');
+    const claim = await seedClaim(id, 'docs:R3-9001');
     const post = (detail: unknown) => workerCall('/v1/runner/activities', { secret, body: { activities: [{ id: `d${Math.random()}`, claim_id: claim, kind: 'open-pr', source: 'hook', started_at: T0, detail }] } });
     const refusedOf = async (res: Response) => ((await res.json()) as { refused: unknown[] }).refused.length;
     expect(await refusedOf(await post({ pr: 'https://github.com/immediately-run/baton/pull/4' }))).toBe(0);
@@ -156,7 +156,7 @@ describe('G-BTN-23: transcript pointers', () => {
     const later = await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'sub/r.jsonl', role: 'subagent', activity_id: 'not-yet' }] });
     expect(later.json.transcripts_unlinked).toBeUndefined();
     expect(await rows(`SELECT activity_id FROM pending_transcripts WHERE path = 'sub/r.jsonl'`)).toEqual([{ activity_id: 'not-yet' }]);
-    const claim = await seedClaim(id, 'R3-9001');
+    const claim = await seedClaim(id, 'docs:R3-9001');
     await beat('vm-a', secret, t('immediately-run-worker/session-transcripts', 'vm-a/s.md'));
     expect(await rows('SELECT claim_id, path FROM transcripts WHERE worker_id = ?', id)).toEqual([{ claim_id: claim, path: 'vm-a/s.md' }]);
     const state = (await (await ownerCall('/v1/ui/state')).json()) as { workers: { id: number; transcript_url: string }[] };
@@ -168,14 +168,14 @@ describe('G-BTN-24: activities', () => {
   it('upserts by (worker, id), refuses another worker’s claim, parents a reviewer, and records a substitution', async () => {
     const a = await register('vm-a');
     const b = await register('vm-b');
-    const claimA = await seedClaim(a.id, 'R3-9001');
+    const claimA = await seedClaim(a.id, 'docs:R3-9001');
     const post = (secret: string, activities: unknown[]) => workerCall('/v1/runner/activities', { cred: secret === a.secret ? 'vm-a' : 'vm-b', secret, body: { activities } }).then((r) => r.json() as Promise<{ refused: { id: string; code: string }[] }>);
     expect((await post(a.secret, [{ id: 'orient-1', claim_id: null, kind: 'orient', source: 'skill', started_at: T0 }])).refused).toEqual([]);
     expect((await post(a.secret, [{ id: 'x', claim_id: null, kind: 'implement', source: 'skill', started_at: T0 }])).refused[0].code).toBe('invalid-params');
     expect((await post(a.secret, [{ id: 'round', claim_id: claimA, kind: 'review-round', seq: 1, source: 'skill', started_at: T0 }])).refused).toEqual([]);
     expect((await post(a.secret, [{ id: 'rev', claim_id: claimA, kind: 'reviewer', source: 'hook', started_at: T0 + 1, label: 'review-pr-glm', detail: { agent: 'review-pr-glm', substituted_for: 'review-pr-deepseek' } }])).refused).toEqual([]);
     expect(await rows(`SELECT parent_id FROM activities WHERE id = 'rev'`)).toEqual([{ parent_id: 'round' }]);
-    expect(await rows(`SELECT ticket_id, json_extract(detail_json, '$.substituted_for') AS f FROM events WHERE kind = 'reviewer-substituted'`)).toEqual([{ ticket_id: 'R3-9001', f: 'review-pr-deepseek' }]);
+    expect(await rows(`SELECT ticket_id, json_extract(detail_json, '$.substituted_for') AS f FROM events WHERE kind = 'reviewer-substituted'`)).toEqual([{ ticket_id: 'docs:R3-9001', f: 'review-pr-deepseek' }]);
     // A retry is an upsert; closing it sets the outcome.
     expect((await post(a.secret, [{ id: 'round', claim_id: claimA, kind: 'review-round', seq: 1, source: 'skill', started_at: T0, ended_at: T0 + 9, outcome: 'succeeded' }])).refused).toEqual([]);
     expect(await rows(`SELECT count(*) AS n, max(outcome) AS o FROM activities WHERE id = 'round'`)).toEqual([{ n: 1, o: 'succeeded' }]);
@@ -186,7 +186,7 @@ describe('G-BTN-24: activities', () => {
 
   it('after a claim ends, only closing updates are accepted, and only for 10 minutes', async () => {
     const { id, secret } = await register('vm-a');
-    const claim = await seedClaim(id, 'R3-9001');
+    const claim = await seedClaim(id, 'docs:R3-9001');
     const post = (activities: unknown[]) => workerCall('/v1/runner/activities', { secret, body: { activities } }).then((r) => r.json() as Promise<{ refused: { code: string }[] }>);
     await post([{ id: 'push-1', claim_id: claim, kind: 'push', source: 'hook', started_at: T0 }, { id: 'push-2', claim_id: claim, kind: 'push', source: 'hook', started_at: T0 }]);
     await rows(`UPDATE claims SET status = 'released', ended_at = ?, end_reason = 'released:requested'`, T0);
@@ -212,9 +212,9 @@ describe('messages (§9)', () => {
 
   it('a release names an item and a §6.5 reason; anything else is refused', async () => {
     const { id } = await register('vm-a');
-    const bad = await owner('/v1/ui/messages', { to_worker_id: id, kind: 'release', payload: { ticket_id: 'R3-9001', reason: 'because' } });
+    const bad = await owner('/v1/ui/messages', { to_worker_id: id, kind: 'release', payload: { ticket_id: 'docs:R3-9001', reason: 'because' } });
     expect([bad.status, await code(bad)]).toEqual([400, 'invalid-params']);
-    expect((await owner('/v1/ui/messages', { to_worker_id: id, kind: 'release', payload: { ticket_id: 'R3-9001', reason: 'owner-cancel' } })).status).toBe(200);
+    expect((await owner('/v1/ui/messages', { to_worker_id: id, kind: 'release', payload: { ticket_id: 'docs:R3-9001', reason: 'owner-cancel' } })).status).toBe(200);
   });
 
   it('the alarm expires a reaped worker’s open messages', async () => {
@@ -229,30 +229,30 @@ describe('messages (§9)', () => {
 describe('mode and shadow reports (R-BTN-28, §13 step 2)', () => {
   it('reports shadow until cutover, then cut-over', async () => {
     const { secret } = await register('vm-a');
-    expect(await (await workerCall('/v1/runner/mode', { secret })).json()).toEqual({ mode: 'shadow' });
-    await rows(`INSERT INTO baton_settings (key, value) VALUES ('cutover_at', '123')`);
-    expect(await (await workerCall('/v1/runner/mode', { secret })).json()).toEqual({ mode: 'cut-over', cutover_at: 123 });
+    expect(await (await workerCall('/v1/runner/mode?repository=docs', { secret })).json()).toEqual({ mode: 'shadow' });
+    await rows(`UPDATE repositories SET cutover_at = 123 WHERE id = 'docs'`);
+    expect(await (await workerCall('/v1/runner/mode?repository=docs', { secret })).json()).toEqual({ mode: 'cut-over', cutover_at: 123 });
   });
 
   it('records git claims as claim rows; a second holder is a shadow-conflict, never a second claim', async () => {
     const a = await register('vm-a');
     const b = await register('vm-b');
     const report = (cred: 'vm-a' | 'vm-b', secret: string, body: unknown) => workerCall('/v1/runner/shadow-report', { cred, secret, body }).then((r) => r.json() as Promise<Record<string, unknown>>);
-    expect(await report('vm-a', a.secret, { transition: 'claim', ticket_id: 'R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 })).toMatchObject({ ok: true });
-    expect(await report('vm-b', b.secret, { transition: 'claim', ticket_id: 'R3-9001', status: 'in-progress', nonce: 'bbbbbb', at: T0 })).toMatchObject({ ok: true, conflict: `held-by-worker:${a.id}` });
+    expect(await report('vm-a', a.secret, { transition: 'claim', ticket_id: 'docs:R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 })).toMatchObject({ ok: true });
+    expect(await report('vm-b', b.secret, { transition: 'claim', ticket_id: 'docs:R3-9001', status: 'in-progress', nonce: 'bbbbbb', at: T0 })).toMatchObject({ ok: true, conflict: `held-by-worker:${a.id}` });
     expect(await rows(`SELECT count(*) AS n FROM claims WHERE status = 'active'`)).toEqual([{ n: 1 }]);
     expect(await rows(`SELECT count(*) AS n FROM events WHERE kind = 'shadow-conflict'`)).toEqual([{ n: 1 }]);
     // A retried claim report (same nonce) is the same claim, not a conflict.
-    expect(await report('vm-a', a.secret, { transition: 'claim', ticket_id: 'R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 })).toEqual({ ok: true, claim_id: expect.any(Number) });
+    expect(await report('vm-a', a.secret, { transition: 'claim', ticket_id: 'docs:R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 })).toEqual({ ok: true, claim_id: expect.any(Number) });
     expect(await rows(`SELECT count(*) AS n FROM events WHERE kind = 'shadow-conflict'`)).toEqual([{ n: 1 }]);
     // §6.5: in-review is an activity of the active claim; the claim lasts through the gate.
-    expect(await report('vm-a', a.secret, { transition: 'set', ticket_id: 'R3-9001', status: 'in-review', at: T0 + 5 })).toMatchObject({ ok: true });
+    expect(await report('vm-a', a.secret, { transition: 'set', ticket_id: 'docs:R3-9001', status: 'in-review', at: T0 + 5 })).toMatchObject({ ok: true });
     expect(await rows(`SELECT status FROM claims`)).toEqual([{ status: 'active' }]);
     const claimId = (await rows<{ id: number }>('SELECT id FROM claims'))[0].id;
     await setClock(T0 + 11 * 60_000);
     const round = await workerCall('/v1/runner/activities', { cred: 'vm-a', secret: a.secret, body: { activities: [{ id: 'r1', claim_id: claimId, kind: 'review-round', source: 'skill', started_at: T0 + 10 }] } });
     expect(((await round.json()) as { refused: unknown[] }).refused).toEqual([]);
-    expect(await report('vm-a', a.secret, { transition: 'set', ticket_id: 'R3-9001', status: 'done', at: T0 + 9 })).toMatchObject({ ok: true });
+    expect(await report('vm-a', a.secret, { transition: 'set', ticket_id: 'docs:R3-9001', status: 'done', at: T0 + 9 })).toMatchObject({ ok: true });
     expect(await rows(`SELECT status, end_reason FROM claims`)).toEqual([{ status: 'released', end_reason: 'shadow:done' }]);
   });
 });

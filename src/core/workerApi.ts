@@ -5,6 +5,9 @@
 // by the shadow report, whose rows the unique indexes guard.
 import { BatonError } from './http';
 import { logEvent } from './db';
+import { DEFAULT_TRANSCRIPT_REPOS, repositoryOf, transcriptReposOf } from './registry';
+
+export { DEFAULT_TRANSCRIPT_REPOS };
 import { capabilitiesOf } from '../shared/vocabulary.mjs';
 import {
   checkAck, checkActivity, checkHeartbeat, checkMessage, checkShadowReport, checkSuspension, bad,
@@ -12,8 +15,6 @@ import {
 } from './validate';
 
 import type { Config, Row, SqlValue, Store } from './ports';
-/** §6.8: the transcript repositories, until the board sync posts `baton.json`'s list. */
-export const DEFAULT_TRANSCRIPT_REPOS = ['immediately-run/claude-sessions', 'immediately-run-worker/session-transcripts'];
 const CLOSE_GRACE_MS = 10 * 60_000; // §6.9: closing updates are accepted 10 minutes after a claim ends
 const SCHEDULED_WINDOW_MS = 24 * 3_600_000; // §7.4: the heartbeat carries suspensions starting within 24 h
 
@@ -116,9 +117,16 @@ export class WorkerApi {
     return w.id;
   }
 
+  /** §6.8: the repositories any transcript pointer may name — the union of what each registered
+   *  repository's claims accept (its `transcript_repos`, or the defaults while it names none;
+   *  the defaults when no repository is registered). The heartbeat's
+   *  shape check uses it; a pointer is then held to its claim's own repository's list. */
   transcriptRepos(): string[] {
-    const v = this.setting('transcript_repos');
-    return v ? JSON.parse(v) : DEFAULT_TRANSCRIPT_REPOS;
+    // Each repository's own list as its claims read it — the defaults for one that names none —
+    // so this check never refuses what a claim's own repository allows.
+    const repos = this.rows<{ id: string }>('SELECT id FROM repositories WHERE retired_at IS NULL');
+    if (!repos.length) return DEFAULT_TRANSCRIPT_REPOS;
+    return [...new Set(repos.flatMap((r) => transcriptReposOf(this.c.store, r.id)))].sort();
   }
 
   private activeClaim(workerId: number) {
@@ -225,7 +233,9 @@ export class WorkerApi {
       messages: this.deliver(w.id, now),
       suspensions: this.suspensionsFor(now),
       min_skills_version: Number(this.setting('min_skills_version') ?? 0),
-      mode: this.mode().mode,
+      // §11: each repository's mode (R-BTN-28, per repository).
+      mode: Object.fromEntries(this.rows<{ id: string; cutover_at: number | null }>('SELECT id, cutover_at FROM repositories WHERE retired_at IS NULL ORDER BY id')
+        .map((r) => [r.id, r.cutover_at == null ? 'shadow' : 'cut-over'])),
       server_time: now,
       ...(refused.length ? { transcripts_refused: refused } : {}),
       ...(unlinked.length ? { transcripts_unlinked: unlinked } : {}),
@@ -272,6 +282,12 @@ export class WorkerApi {
         t.activity_id = undefined;
       }
       if (claim) {
+        // A pointer under a claim names one of that claim's repository's transcript repositories
+        // (§6.8, R-BTN-66): another repository's list does not widen it.
+        if (!transcriptReposOf(this.c.store, repositoryOf(claim.ticket_id)).includes(t.repo)) {
+          hb.transcript_refusals.push({ index: t.index ?? -1, code: 'invalid-params', message: `transcripts[${t.index}].repo: ${t.repo} is not one of ${repositoryOf(claim.ticket_id)}'s transcript repositories` });
+          continue;
+        }
         this.exec(`INSERT INTO transcripts (worker_id, claim_id, repo, path, role, activity_id, first_seen_at, last_pushed_at)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT (worker_id, repo, path, claim_id) DO UPDATE SET last_pushed_at = COALESCE(excluded.last_pushed_at, transcripts.last_pushed_at),
@@ -483,17 +499,20 @@ export class WorkerApi {
 
   // ── mode and shadow reports (R-BTN-28, §13 step 2) ──────────────────────────────────────
 
-  mode() {
-    const at = this.setting('cutover_at');
-    return at ? { mode: 'cut-over' as const, cutover_at: Number(at) } : { mode: 'shadow' as const };
+  /** `GET /v1/runner/mode?repository=` (§11): whether that repository has cut over. */
+  mode(repo: string) {
+    const at = this.rows<{ cutover_at: number | null }>('SELECT cutover_at FROM repositories WHERE id = ?', repo)[0]?.cutover_at ?? null;
+    return at != null ? { mode: 'cut-over' as const, cutover_at: at } : { mode: 'shadow' as const };
   }
 
   /** `POST /v1/runner/shadow-report`: in shadow, `claim.sh` reports each git transition and
    *  Baton records it as a claim row, deciding nothing; a report the claim constraints refuse —
    *  a second active claim on the item or for the worker — is a `shadow-conflict` event. */
   shadowReport(workerId: number, body: unknown) {
-    if (this.mode().mode !== 'shadow') throw new BatonError('forbidden', 'shadow reports end at cutover');
     const r = checkShadowReport(body);
+    const repo = repositoryOf(r.ticket_id);
+    if (!this.rows('SELECT 1 FROM repositories WHERE id = ? AND retired_at IS NULL', repo).length) throw new BatonError('invalid-params', 'ticket_id: not a registered repository’s ticket');
+    if (this.mode(repo).mode !== 'shadow') throw new BatonError('forbidden', `${repo}'s shadow reports ended at its cutover`);
     const actor = `worker:${workerId}`;
     const conflict = (reason: string) => {
       this.event('shadow-conflict', actor, { ...r, reason }, r.ticket_id);
@@ -509,7 +528,7 @@ export class WorkerApi {
       if (holder) return conflict(`held-by-worker:${holder.worker_id}`);
       const mine = this.activeClaim(workerId);
       if (mine) return conflict(`worker-holds:${mine.ticket_id}`);
-      const head = this.rows<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? '';
+      const head = this.rows<{ sha: string | null }>('SELECT sha FROM board_head WHERE repository_id = ?', repo)[0]?.sha ?? '';
       this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status)
                  VALUES (?, ?, ?, ?, ?, ?, 'active')`, r.ticket_id, workerId, `shadow:${workerId}:${r.ticket_id}:${r.nonce}`, r.nonce!, head, r.at);
       const id = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;

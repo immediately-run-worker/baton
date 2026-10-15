@@ -5,7 +5,7 @@ import prices from '../fixtures/data/model-prices.json';
 import providers from '../fixtures/data/model-providers.json';
 import matrix from '../fixtures/data/reviewer-matrix.json';
 import batonData from '../fixtures/data/baton.json';
-import { ownerCall, payload, rows, setClock, syncCall } from '../helpers';
+import { ownerCall, payload, q, rows, setClock, syncCall } from '../helpers';
 
 const board = inject('board');
 // The reference data: the fixture repository's own scripts/data files (one source with S-BTN-13).
@@ -17,7 +17,7 @@ const stateA = { items: board.states.A.state.items as Record<string, unknown>[],
 const post = (sha: string, parent: string | null, state: { items: unknown[]; ready: string[] }, extra: Record<string, unknown> = {}) =>
   syncCall('/v1/sync/board', payload(sha, parent, state, extra));
 const requiresOf = async (id: string) =>
-  (await rows<{ name: string }>('SELECT name FROM ticket_requires WHERE ticket_id = ? ORDER BY name', id)).map((r) => r.name);
+  (await rows<{ name: string }>('SELECT name FROM ticket_requires WHERE ticket_id = ? ORDER BY name', q(id))).map((r) => r.name);
 
 describe('the tickets cache', () => {
   it('a snapshot changing one item rewrites one row', async () => {
@@ -25,7 +25,7 @@ describe('the tickets cache', () => {
     const retitled = { ...stateA, items: stateA.items.map((it) => (it.id === 'R3-9002' ? { ...it, title: 'Fixture: renamed' } : it)) };
     const res = await post(B, A, retitled);
     expect(await res.json()).toMatchObject({ ok: true, upserted: 1, deleted: 0 });
-    const written = await rows<{ id: string; snapshot_sha: string }>('SELECT id, snapshot_sha FROM tickets ORDER BY id');
+    const written = await rows<{ id: string; snapshot_sha: string }>('SELECT local_id AS id, snapshot_sha FROM tickets ORDER BY id');
     expect(written.filter((r) => r.snapshot_sha === B).map((r) => r.id)).toEqual(['R3-9002']);
   });
 
@@ -39,7 +39,7 @@ describe('the tickets cache', () => {
     expect(await requiresOf('R3-9011')).toEqual(['mcp-chrome']); // a legacy name stays itself
     expect(await requiresOf('R3-9003')).toEqual([...caps, 'github-admin'].sort()); // no human-operator row
     expect(await requiresOf('R3-9010')).toEqual(caps);
-    const flags = await rows<{ id: string; requires_clause: string; operator_only: number }>('SELECT id, requires_clause, operator_only FROM tickets ORDER BY id');
+    const flags = await rows<{ id: string; requires_clause: string; operator_only: number }>('SELECT local_id AS id, requires_clause, operator_only FROM tickets ORDER BY id');
     expect(flags).toEqual([
       { id: 'R3-9001', requires_clause: 'none', operator_only: 0 },
       { id: 'R3-9002', requires_clause: 'listed', operator_only: 0 },
@@ -55,8 +55,8 @@ describe('the tickets cache', () => {
     await post(A, null, stateA);
     const without = { items: stateA.items.filter((it) => it.id !== 'R3-9003'), ready: stateA.ready.filter((id) => id !== 'R3-9003') };
     expect(await (await post(B, A, without)).json()).toMatchObject({ deleted: 1 });
-    expect(await rows(`SELECT id FROM tickets WHERE id = 'R3-9003'`)).toHaveLength(0);
-    expect(await rows(`SELECT 1 FROM ticket_requires WHERE ticket_id = 'R3-9003'`)).toHaveLength(0);
+    expect(await rows(`SELECT id FROM tickets WHERE id = 'docs:R3-9003'`)).toHaveLength(0);
+    expect(await rows(`SELECT 1 FROM ticket_requires WHERE ticket_id = 'docs:R3-9003'`)).toHaveLength(0);
   });
 
   it('G-BTN-39 (server half): no column holds body text, even when the payload carries some', async () => {
@@ -68,7 +68,7 @@ describe('the tickets cache', () => {
       for (const row of await rows(`SELECT * FROM ${name}`)) expect(JSON.stringify(row)).not.toContain(leak);
     }
     const cols = (await rows<{ name: string }>(`SELECT name FROM pragma_table_info('tickets')`)).map((c) => c.name);
-    expect(cols).toEqual(['id', 'path', 'title', 'project', 'status', 'node', 'queue', 'tags', 'tier', 'requires_clause', 'operator_only',
+    expect(cols).toEqual(['id', 'repository_id', 'local_id', 'path', 'title', 'project', 'status', 'node', 'queue', 'tags', 'tier', 'requires_clause', 'operator_only',
       'depends_on', 'blocked_by', 'repos', 'ord', 'rank', 'snapshot_sha', 'row_hash', 'since', 'holder']);
   });
 });
@@ -101,16 +101,16 @@ describe('reference data and the dashboard state', () => {
     await setClock(Date.parse('2026-10-12T07:30:00Z'));
     await post(A, null, stateA, reference);
     const s = (await (await ownerCall('/v1/ui/state')).json()) as {
-      head: { sha: string; ticket_count: number };
+      repositories: { id: string; head: { sha: string; ticket_count: number } }[];
       ready: { id: string; title: string; url: string; rank_reason: string; requires: string[]; operator_only: boolean }[];
       ready_by_tier: Record<string, string[]>;
       providers: { id: string; peaks: { schedule: string; in_peak: boolean; next_change: number }[] }[];
     };
-    expect(s.head).toMatchObject({ sha: A, ticket_count: 4 });
-    expect(s.ready.map((r) => r.id)).toEqual(stateA.ready);
-    expect(s.ready_by_tier).toEqual({ routine: ['R3-9001'], judgement: ['R3-9001', 'R3-9002'], critical: ['R3-9001', 'R3-9002', 'R3-9003'] });
-    expect(s.ready[0]).toMatchObject({ url: 'https://github.com/immediately-run/docs/blob/main/content/roadmap/R3-9001.mdx', rank_reason: 'autonomous queue · order 10' });
-    expect(s.ready.find((r) => r.id === 'R3-9003')).toMatchObject({ operator_only: true });
+    expect(s.repositories[0].head).toMatchObject({ sha: A, ticket_count: 4 });
+    expect(s.ready.map((r) => r.id)).toEqual(stateA.ready.map(q));
+    expect(s.ready_by_tier).toEqual({ routine: [q('R3-9001')], judgement: [q('R3-9001'), q('R3-9002')], critical: [q('R3-9001'), q('R3-9002'), q('R3-9003')] });
+    expect(s.ready[0]).toMatchObject({ repository_id: 'docs', local_id: 'R3-9001', url: 'https://github.com/immediately-run/docs/blob/main/content/roadmap/R3-9001.mdx', rank_reason: 'autonomous queue · order 10' });
+    expect(s.ready.find((r) => r.id === q('R3-9003'))).toMatchObject({ operator_only: true });
     const zai = s.providers.find((p) => p.id === 'zai')!;
     expect(zai.peaks).toMatchObject([{ schedule: 'zai', in_peak: true, next_change: Date.parse('2026-10-12T10:00:00Z') }]);
   });

@@ -15,7 +15,8 @@ import { WorkerApi } from './workerApi';
 import { Claims } from './claims';
 import { Cutover } from './cutover';
 import { Mirror } from './mirror';
-import { checkConfirmations, ITEM_ID } from './validate';
+import { checkConfirmations, checkRepositoryId } from './validate';
+import { Registry, TICKET_ID, qualify, repositoryOf, type Repository, type SyncClaims } from './registry';
 import type { Ports, Row, SqlValue, Store, Workflow } from './ports';
 
 const HELD_AUTO_ACCEPT_MS = 24 * 3_600_000; // §7.1: a held history is accepted after 24 h (R3-1212)
@@ -29,9 +30,11 @@ export class BatonCore {
   readonly claims: Claims;
   readonly cutover: Cutover;
   readonly mirror: Mirror;
+  readonly registry: Registry;
   readonly store: Store;
-  /** §12: workflows to dispatch once the current request or alarm has committed. */
-  private pendingDispatch = new Set<Workflow>();
+  /** §12: workflows to dispatch once the current request or alarm has committed, one per
+   *  repository and kind. */
+  private pendingDispatch = new Map<string, Workflow>();
   /** The dispatch call; tests replace it (as they replace `now`) to see what would be sent. */
   dispatcher: (workflow: Workflow) => Promise<unknown>;
   /** §3: a signature check (R3-1239) or a hook call (R3-1236) is awaited through this, so
@@ -41,10 +44,12 @@ export class BatonCore {
   constructor(private readonly ports: Ports) {
     this.now = ports.clock ?? (() => Date.now());
     this.store = ports.store;
-    this.dispatcher = (wf) => ports.dispatch.send(wf);
+    this.dispatcher = (wf) => this.sendDispatch(wf);
     this.outside = ports.gate ? (work) => ports.gate!.outside(work) : (work) => work();
     const store = ports.store;
-    this.claims = new Claims({ store, now: () => this.now(), dispatch: (wf) => this.pendingDispatch.add(wf) });
+    this.registry = new Registry({ store, now: () => this.now() });
+    const want = (wf: Workflow) => this.pendingDispatch.set(`${wf.repository}:${wf.kind}`, wf);
+    this.claims = new Claims({ store, now: () => this.now(), dispatch: (kind, ticketId) => want({ repository: repositoryOf(ticketId), kind }) });
     this.cutover = new Cutover({ store, now: () => this.now() });
     this.mirror = new Mirror({ store, now: () => this.now() });
     this.workers = new WorkerApi({ store, config: ports.config, now: () => this.now(), fenced: (w, inc, id) => this.claims.fenced(w, inc, id) });
@@ -54,16 +59,34 @@ export class BatonCore {
    *  they are — and the one alarm armed. The host runs this before it lets a request in. */
   async start(): Promise<void> {
     this.migrate();
+    this.store.transaction(() => this.registry.seed(this.ports.config));
     if ((await this.ports.scheduler.get()) == null) await this.ports.scheduler.set(this.now() + ALARM_EVERY_MS);
   }
 
-  /** Send the dispatches a committed transaction asked for — only after cutover, when the
-   *  mirror writes git; before it, claim.sh does. Never awaited by the caller's response. */
+  /** Send the dispatches a committed transaction asked for — only for a repository after its
+   *  cutover, when the mirror writes git; before it, claim.sh does. Never awaited by the
+   *  caller's response. */
   private flushDispatch() {
-    const due = [...this.pendingDispatch];
+    const due = [...this.pendingDispatch.values()].filter((wf) => this.cutover.cutoverAt(wf.repository) != null);
     this.pendingDispatch.clear();
-    if (!due.length || !this.cutover.cutoverAt()) return;
+    if (!due.length) return;
     this.ports.dispatch.defer(Promise.all(due.map((wf) => this.dispatcher(wf).catch(() => false))));
+  }
+
+  /** §10.3: a repository's sync or mirror workflow, on its default branch. A repository with no
+   *  mirror has nothing to dispatch for it. */
+  private sendDispatch(wf: Workflow): Promise<unknown> {
+    const repo = this.registry.get(wf.repository);
+    const path = wf.kind === 'sync' ? repo?.sync_workflow : repo?.mirror_workflow;
+    if (!repo || !path) return Promise.resolve(false);
+    return this.ports.dispatch.send({ github: repo.github, workflow: path.slice(path.lastIndexOf('/') + 1), ref: repo.default_branch });
+  }
+
+  /** The repository a verified sync token acts for (R-BTN-15): the front passed its claims. */
+  private syncRepository(req: Request, role: 'sync' | 'mirror'): Repository {
+    const raw = req.headers.get('X-Baton-Sync');
+    if (!raw) throw new BatonError('unauthenticated', 'no sync principal');
+    return this.registry.forSync(JSON.parse(raw) as SyncClaims, role);
   }
 
   /** §3: the one alarm, every 60 seconds. */
@@ -117,18 +140,27 @@ export class BatonCore {
 
   private async route(req: Request, url: URL): Promise<Response> {
     try {
-      if (req.method === 'GET' && url.pathname === '/v1/sync/head') return json(this.head());
-      if (req.method === 'GET' && url.pathname === '/v1/sync/events') {
-        const after = Number(url.searchParams.get('after') ?? 0);
-        const limit = Number(url.searchParams.get('limit') ?? 200);
-        if (!Number.isInteger(after) || after < 0 || !Number.isInteger(limit)) throw new BatonError('invalid-params', 'after and limit must be integers');
-        return json(this.mirror.events(after, limit));
+      if (url.pathname.startsWith('/v1/sync/')) {
+        // R-BTN-15: the board's routes take only the repository's sync workflow, the feed's only
+        // its mirror workflow; each touches that repository alone.
+        if (req.method === 'GET' && url.pathname === '/v1/sync/head') return json(this.head(this.syncRepository(req, 'sync').id));
+        if (req.method === 'POST' && url.pathname === '/v1/sync/board') {
+          const repo = this.syncRepository(req, 'sync');
+          return json(await this.board(repo, checkPayload(await readJson(req))));
+        }
+        if (req.method === 'GET' && url.pathname === '/v1/sync/events') {
+          const repo = this.syncRepository(req, 'mirror');
+          const after = Number(url.searchParams.get('after') ?? 0);
+          const limit = Number(url.searchParams.get('limit') ?? 200);
+          if (!Number.isInteger(after) || after < 0 || !Number.isInteger(limit)) throw new BatonError('invalid-params', 'after and limit must be integers');
+          return json(this.mirror.events(repo.id, after, limit));
+        }
+        if (req.method === 'POST' && url.pathname === '/v1/sync/foreign-claim') {
+          const repo = this.syncRepository(req, 'mirror');
+          const body = await readJson(req);
+          return json(this.store.transaction(() => this.mirror.foreignClaim(repo.id, body)));
+        }
       }
-      if (req.method === 'POST' && url.pathname === '/v1/sync/foreign-claim') {
-        const body = await readJson(req);
-        return json(this.store.transaction(() => this.mirror.foreignClaim(body)));
-      }
-      if (req.method === 'POST' && url.pathname === '/v1/sync/board') return json(await this.board(checkPayload(await readJson(req))));
       if (req.method === 'GET' && url.pathname === '/v1/ui/state') return json(this.uiState());
       const routed = await this.workerRoute(req, url);
       if (routed) return routed;
@@ -160,19 +192,16 @@ export class BatonCore {
       }
       if (m === 'GET' && p === '/v1/runner/mode') {
         await this.workers.authWorker(cred, secret);
-        return json(this.workers.mode());
+        // §11: `?repository=` — each repository cuts over on its own (R-BTN-28).
+        const repo = checkRepositoryId(url.searchParams.get('repository'));
+        if (!this.registry.get(repo)) throw new BatonError('invalid-params', 'repository: must be a registered repository id');
+        return json(this.workers.mode(repo));
       }
       const holder = /^\/v1\/runner\/tickets\/([^/]+)\/holder$/.exec(p);
       if (m === 'GET' && holder) {
         // R-BTN-7: callable with the token alone (the witness has no sidecar); with a secret, the
         // caller's own claim is not "another".
-        let item = '';
-        try {
-          item = decodeURIComponent(holder[1]);
-        } catch {
-          // a malformed escape is the caller's error, never a 500
-        }
-        if (!ITEM_ID.test(item)) throw new BatonError('invalid-params', 'ticket: must be a ticket id');
+        const item = this.ticketParam(holder[1]);
         const caller = secret ? await this.workers.authWorker(cred, secret) : null;
         return json(this.claims.holder(caller, item));
       }
@@ -235,15 +264,15 @@ export class BatonCore {
       }
       const adoption = /^\/v1\/ui\/adoptions\/([^/]+)\/confirm$/.exec(p);
       if (adoption) {
-        if (!ITEM_ID.test(adoption[1])) throw new BatonError('invalid-params', 'ticket: must be a ticket id');
+        const ticket = this.ticketParam(adoption[1]);
         const body = await readJson(req);
-        return json(tx(() => this.cutover.confirmAdoption(owner, adoption[1], body)));
+        return json(tx(() => this.cutover.confirmAdoption(owner, ticket, body)));
       }
       const override = /^\/v1\/ui\/overrides\/([^/]+)$/.exec(p);
       if (override) {
-        if (!ITEM_ID.test(override[1])) throw new BatonError('invalid-params', 'ticket: must be a ticket id');
+        const ticket = this.ticketParam(override[1]);
         const body = await readJson(req);
-        return json(tx(() => this.claims.setOverride(owner, override[1], body)));
+        return json(tx(() => this.claims.setOverride(owner, ticket, body)));
       }
       if (p === '/v1/ui/board/accept') {
         const body = await readJson(req);
@@ -253,15 +282,34 @@ export class BatonCore {
     return null;
   }
 
+  /** A ticket in a path: a qualified id (R-BTN-47) of a registered repository. A malformed
+   *  escape is the caller's error, never a 500. */
+  private ticketParam(raw: string): string {
+    let id = '';
+    try {
+      id = decodeURIComponent(raw);
+    } catch {
+      // falls through to the refusal
+    }
+    const m = TICKET_ID.exec(id);
+    if (!m || !this.registry.get(m[1])) throw new BatonError('invalid-params', 'ticket: must be a ticket id, <repository>:<id>, of a registered repository');
+    return id;
+  }
+
   // ── sync (§7.1) ───────────────────────────────────────────────────────────────────────
 
-  /** `GET /v1/sync/head`: the head snapshot and the completions waiting for confirmation. */
-  head() {
-    const row = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0];
+  /** A repository's head snapshot (R-BTN-11, per repository), or null before its first. */
+  private headOf(repo: string): string | null {
+    return this.sql<{ sha: string | null }>('SELECT sha FROM board_head WHERE repository_id = ?', repo)[0]?.sha ?? null;
+  }
+
+  /** `GET /v1/sync/head`: the repository's head snapshot and its completions waiting for
+   *  confirmation. */
+  head(repo: string) {
     const unconfirmed = this.sql(
-      `SELECT id AS claim_id, ticket_id, end_reason, ended_at_sha FROM claims
-       WHERE status = 'completed' AND confirmed_at IS NULL ORDER BY id`);
-    return { sha: row?.sha ?? null, unconfirmed };
+      `SELECT c.id AS claim_id, c.ticket_id, c.end_reason, c.ended_at_sha FROM claims c
+       WHERE c.status = 'completed' AND c.confirmed_at IS NULL AND substr(c.ticket_id, 1, length(?) + 1) = ? || ':' ORDER BY c.id`, repo, repo);
+    return { sha: this.headOf(repo), unconfirmed };
   }
 
   /**
@@ -275,12 +323,14 @@ export class BatonCore {
    * a rewind to a once-accepted history included — is a fresh hold with a fresh row. The 0001
    * schema's "written once" and "the first force post" describe that one hold.
    */
-  async board(p: BoardPayload) {
-    const head = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? null;
+  async board(repo: Repository, p: BoardPayload) {
+    const r = repo.id;
+    const head = this.headOf(r);
     const at = this.now();
-    const confirmations = checkConfirmations(p.confirmations);
+    // A sync confirms only its own repository's completions (R-BTN-47).
+    const confirmations = this.claims.ownConfirmations(r, checkConfirmations(p.confirmations));
     // A held history the owner (or the 24-hour clock) accepted becomes the head on its next post.
-    const accepted = !!p.force && this.claims.acceptedLine(head);
+    const accepted = !!p.force && this.claims.acceptedLine(r, head);
     if (p.force && !accepted) {
       // A held post still carries the sync's confirmations: git carries those completions
       // whichever history the owner keeps, and dropping them would leave their items blocked.
@@ -290,13 +340,13 @@ export class BatonCore {
       // the current head (rows held against a head are deleted when it moves, below), so a row
       // for this sha is this hold; with none, this is a new one — including a rewind to a sha
       // the owner once accepted, whose old row went when its line became the head (R3-1223).
-      const known = this.sql<{ auto_accept_at: number }>('SELECT auto_accept_at FROM held_snapshots WHERE sha = ?', p.sha)[0];
+      const known = this.sql<{ auto_accept_at: number }>('SELECT auto_accept_at FROM held_snapshots WHERE repository_id = ? AND sha = ?', r, p.sha)[0];
       const deadline = known?.auto_accept_at ?? at + HELD_AUTO_ACCEPT_MS;
       if (!known) {
         this.store.transaction(() => {
-          this.store.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
-            p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
-          this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, ticket_count: p.state.items.length, auto_accept_at: deadline }, at);
+          this.store.exec('INSERT INTO held_snapshots (repository_id, sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+            r, p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
+          this.event(r, 'snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, ticket_count: p.state.items.length, auto_accept_at: deadline }, at);
         });
       }
       throw new BatonError('snapshot-rejected', `a rewritten history is held for the owner until ${new Date(deadline).toISOString()}; claims continue on the current head`);
@@ -316,47 +366,50 @@ export class BatonCore {
     }));
     const changed = { upserted: 0, deleted: 0 };
     this.store.transaction(() => {
-      const have = new Map(this.sql<{ id: string; row_hash: string }>('SELECT id, row_hash FROM tickets').map((r) => [r.id, r.row_hash]));
+      // The repository's own tickets only, keyed by their local ids (R-BTN-47).
+      const have = new Map(this.sql<{ local_id: string; row_hash: string }>('SELECT local_id, row_hash FROM tickets WHERE repository_id = ?', r).map((x) => [x.local_id, x.row_hash]));
       for (const { row, hash } of rows) {
         const before = have.get(row.id);
         have.delete(row.id);
         if (before === hash) continue;
+        const id = qualify(r, row.id);
         this.store.exec(
-          `INSERT INTO tickets (id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only,
+          `INSERT INTO tickets (id, repository_id, local_id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only,
              depends_on, blocked_by, repos, ord, rank, snapshot_sha, row_hash, since, holder)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (id) DO UPDATE SET path = excluded.path, title = excluded.title, project = excluded.project,
              status = excluded.status, node = excluded.node, queue = excluded.queue, tags = excluded.tags,
              tier = excluded.tier, requires_clause = excluded.requires_clause, operator_only = excluded.operator_only,
              depends_on = excluded.depends_on, blocked_by = excluded.blocked_by, repos = excluded.repos,
              ord = excluded.ord, rank = excluded.rank, snapshot_sha = excluded.snapshot_sha, row_hash = excluded.row_hash,
              since = excluded.since, holder = excluded.holder`,
-          row.id, row.path, row.title, row.project, row.status, row.node, row.queue, row.tags, row.tier,
+          id, r, row.id, row.path, row.title, row.project, row.status, row.node, row.queue, row.tags, row.tier,
           row.requires_clause, row.operator_only, row.depends_on, row.blocked_by, row.repos, row.ord, row.rank, p.sha, hash, row.since, row.holder);
-        this.store.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', row.id);
-        for (const name of row.requires) this.store.exec('INSERT INTO ticket_requires (ticket_id, name) VALUES (?, ?)', row.id, name);
+        this.store.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', id);
+        for (const name of row.requires) this.store.exec('INSERT INTO ticket_requires (ticket_id, name) VALUES (?, ?)', id, name);
         changed.upserted++;
       }
-      // Items no longer live leave the cache (R-BTN-35); their claims and events stay.
+      // Tickets no longer live leave the cache (R-BTN-35); their claims and events stay.
       for (const gone of have.keys()) {
-        this.store.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', gone);
-        this.store.exec('DELETE FROM tickets WHERE id = ?', gone);
+        this.store.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', qualify(r, gone));
+        this.store.exec('DELETE FROM tickets WHERE id = ?', qualify(r, gone));
         changed.deleted++;
       }
-      this.reference(p);
-      this.store.exec('INSERT INTO board_snapshots (sha, parent_sha, received_at, ticket_count) VALUES (?, ?, ?, ?) ON CONFLICT (sha) DO NOTHING', p.sha, p.parent_sha, at, p.state.items.length);
-      this.store.exec('INSERT INTO board_head (id, sha) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET sha = excluded.sha', p.sha);
+      // A non-fleet repository's fleet fields are ignored, and its answer says so.
+      if (this.reference(r, p)) (changed as Record<string, unknown>).fleet_ignored = true;
+      this.store.exec('INSERT INTO board_snapshots (repository_id, sha, parent_sha, received_at, ticket_count) VALUES (?, ?, ?, ?, ?) ON CONFLICT (repository_id, sha) DO NOTHING', r, p.sha, p.parent_sha, at, p.state.items.length);
+      this.store.exec('INSERT INTO board_head (repository_id, sha) VALUES (?, ?) ON CONFLICT (repository_id) DO UPDATE SET sha = excluded.sha', r, p.sha);
       // A hold is against one head (R3-1223): when the head moves — an accepted rewrite or a
       // plain fast-forward — every row held against the head it leaves is retired, answered or
       // not. Left in place, an accepted row would accept a NEW rewrite silently whenever the
       // head came back to that sha; an unanswered one is moot (main moved on), and a re-post of
       // its sha is held afresh. So every row left is a hold against the current head. Their
       // history stays in the events.
-      this.store.exec('DELETE FROM held_snapshots WHERE head_sha IS ?', head);
-      this.event('snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, ticket_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
+      this.store.exec('DELETE FROM held_snapshots WHERE repository_id = ? AND head_sha IS ?', r, head);
+      this.event(r, 'snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, ticket_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
       (changed as Record<string, number>).confirmed = this.claims.confirm(confirmations);
       // R-BTN-35: git wins over a claim it has overtaken.
-      (changed as Record<string, number>).stale_released = this.claims.staleBoard();
+      (changed as Record<string, number>).stale_released = this.claims.staleBoard(r);
     });
     return { ok: true, ...changed };
   }
@@ -365,9 +418,16 @@ export class BatonCore {
    *  schedules, per-model prices and limits, the reviewer catalog, `min_skills_version`. Each
    *  table is a copy of a docs file, never edited here, so it is rewritten whole: an account
    *  the file no longer lists is deleted. (Nothing references `model_providers` yet; when
-   *  workers and suspensions do, R3-1211 decides what retiring a referenced account means.) */
-  private reference(p: BoardPayload) {
+   *  workers and suspensions do, R3-1211 decides what retiring a referenced account means.)
+   *  Returns whether the payload carried fleet data this repository may not write. */
+  private reference(repo: string, p: BoardPayload): boolean {
     const exec = (q: string, ...a: unknown[]) => this.store.exec(q, ...a);
+    // §6.8: the repository's transcript repositories, from its baton.json until its owners set
+    // them (R-BTN-66, R3-1240).
+    if (p.transcript_repos) exec('UPDATE repositories SET transcript_repos = ? WHERE id = ?', JSON.stringify(p.transcript_repos), repo);
+    // The rest is the instance's: only the fleet repository writes it (interim, R3-1231 2b).
+    const carries = p.providers != null || p.matrix != null || p.reviewers != null || p.min_skills_version != null;
+    if (this.registry.fleetRepository() !== repo) return carries;
     if (p.providers) {
       exec('DELETE FROM provider_models');
       const ids = p.providers.accounts.map((a) => a.id);
@@ -397,35 +457,41 @@ export class BatonCore {
     // Rule 8 (R-BTN-27) reads the whole matrix (rows, seats, costs) and the posted catalog.
     if (p.matrix) exec(`INSERT INTO baton_settings (key, value) VALUES ('reviewer_matrix', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(p.matrix));
     if (p.reviewers) exec(`INSERT INTO baton_settings (key, value) VALUES ('reviewer_catalog', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(p.reviewers));
-    if (p.transcript_repos) {
-      exec(`INSERT INTO baton_settings (key, value) VALUES ('transcript_repos', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, JSON.stringify(p.transcript_repos));
-    }
     if (p.min_skills_version != null) {
       exec(`INSERT INTO baton_settings (key, value) VALUES ('min_skills_version', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, String(p.min_skills_version));
     }
+    return false;
   }
 
-  private event(kind: string, detail: unknown, at: number) {
-    this.store.exec('INSERT INTO events (at, kind, actor, detail_json) VALUES (?, ?, ?, ?)', at, kind, 'sync', JSON.stringify(detail));
+  private event(repo: string, kind: string, detail: unknown, at: number) {
+    this.store.exec('INSERT INTO events (at, kind, actor, detail_json, repository_id) VALUES (?, ?, ?, ?, ?)', at, kind, 'sync', JSON.stringify(detail), repo);
   }
 
   // ── the dashboard's state (§14: Ready and Providers in rollout step 1) ─────────────────
 
   uiState() {
     const now = this.now();
-    const headSha = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? null;
-    const snap = headSha ? this.sql('SELECT sha, parent_sha, received_at, ticket_count FROM board_snapshots WHERE sha = ?', headSha)[0] : null;
+    // Each registered repository: its own head and its own mode (R-BTN-47, R-BTN-28).
+    const repositories = this.registry.all().map((repo) => {
+      const sha = this.headOf(repo.id);
+      const head = sha ? this.sql('SELECT sha, parent_sha, received_at, ticket_count FROM board_snapshots WHERE repository_id = ? AND sha = ?', repo.id, sha)[0] ?? null : null;
+      return { id: repo.id, github: repo.github, default_branch: repo.default_branch, weight: repo.weight, head, mode: this.workers.mode(repo.id) };
+    });
+    const where = new Map(repositories.map((r) => [r.id, r]));
     const items = this.sql<Record<string, SqlValue>>(
-      `SELECT id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only, ord, rank
-       FROM tickets WHERE node LIKE 'ready-%' AND rank IS NOT NULL ORDER BY rank`);
+      `SELECT t.id, t.repository_id, t.local_id, t.path, t.title, t.project, t.status, t.node, t.queue, t.tags, t.tier, t.requires_clause, t.operator_only, t.ord, t.rank
+       FROM tickets t JOIN repositories p ON p.id = t.repository_id
+       WHERE t.node LIKE 'ready-%' AND t.rank IS NOT NULL AND p.retired_at IS NULL ORDER BY p.weight DESC, t.rank, t.repository_id`);
     const requires = new Map<string, string[]>();
     for (const r of this.sql<{ ticket_id: string; name: string }>('SELECT ticket_id, name FROM ticket_requires ORDER BY name')) {
       requires.set(r.ticket_id, [...(requires.get(r.ticket_id) ?? []), r.name]);
     }
     const ready = items.map((r) => ({
       id: r.id,
+      repository_id: r.repository_id,
+      local_id: r.local_id,
       title: r.title,
-      url: `https://github.com/immediately-run/docs/blob/main/${r.path}`,
+      url: `https://github.com/${where.get(r.repository_id as string)!.github}/blob/${where.get(r.repository_id as string)!.default_branch}/${r.path}`,
       project: r.project,
       tier: r.tier,
       queue: r.queue,
@@ -453,15 +519,14 @@ export class BatonCore {
     });
 
     const held = this.sql(
-      `SELECT sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at FROM held_snapshots
+      `SELECT repository_id, sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at FROM held_snapshots
        WHERE accepted_at IS NULL ORDER BY received_at`);
     const suspensions = this.sql(`SELECT id, provider_id, model_id, mode, starts_at, ends_at, reason, set_by, lifted_at FROM provider_suspensions
                                   WHERE lifted_at IS NULL AND (ends_at IS NULL OR ends_at > ?) ORDER BY starts_at`, now);
     return {
-      server_time: now, head: snap, ready, ready_by_tier: byTier, providers, held, workers: this.workers.workersView(now), suspensions,
+      server_time: now, repositories, ready, ready_by_tier: byTier, providers, held, workers: this.workers.workersView(now), suspensions,
       running: this.claims.running(now), timeline: this.claims.timeline(now),
       needs_you: { ...this.claims.needsYou(now), adoptions: this.cutover.adoptions() },
-      mode: this.workers.mode(),
     };
   }
 }

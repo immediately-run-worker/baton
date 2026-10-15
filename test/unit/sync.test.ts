@@ -54,7 +54,7 @@ describe('POST /v1/sync/board', () => {
     expect(held).toEqual([{ sha: D, parent_sha: B, head_sha: B, ticket_count: 3, received_at: Date.parse('2026-10-13T12:00:00Z'), auto_accept_at: Date.parse('2026-10-14T12:00:00Z'), accepted_at: null }]);
     expect(await rows(`SELECT 1 FROM events WHERE kind = 'snapshot-rejected'`)).toHaveLength(1);
     // Nothing of D reached the cache: R3-9003 (archived in D) is still there.
-    expect(await rows(`SELECT id FROM tickets WHERE id = 'R3-9003'`)).toHaveLength(1);
+    expect(await rows(`SELECT id FROM tickets WHERE id = 'docs:R3-9003'`)).toHaveLength(1);
   });
 
   it.each([

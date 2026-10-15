@@ -15,7 +15,7 @@ beforeEach(async () => {
 describe('S-BTN-15 stale skills', () => {
   it('a worker that falls below min_skills_version keeps its claim, finishes it, and gets no new one', async () => {
     const { id, secret } = await register('vm-a', { skills_version: 3 });
-    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'R3-9001' });
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' });
     // A protocol change: the next snapshot raises min_skills_version to 4.
     expect((await syncCall('/v1/sync/board', payload(sha.B, sha.A, board.states.B, { min_skills_version: 4 }))).status).toBe(200);
     const hb = await beat('vm-a', secret, { skills_version: 3 });

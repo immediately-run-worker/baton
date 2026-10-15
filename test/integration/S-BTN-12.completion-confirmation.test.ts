@@ -37,20 +37,20 @@ describe('S-BTN-12 completion confirmation', () => {
   it('completed before the sync: unclaimable until a sync sees it landed, then claimable', async () => {
     const a = await register('vm-a');
     const b = await register('vm-b');
-    const { json: c } = await claimItem('vm-a', a.secret, { ticket_id: 'R3-9001' });
+    const { json: c } = await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9001' });
     // The worker pushed A's history (git first, R-BTN-8) and ends before any sync has run.
     await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'done', ended_at_sha: sha.A });
-    expect((await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })).json.rule).toBe(3);
+    expect((await claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9001' })).json.rule).toBe(3);
     // The sync for D: A is an ancestor and the item is no longer in-progress there.
     expect(await sync('D')).toMatchObject({ outcome: 'advanced' });
     expect((await claimRow(c.claim_id)).confirmed_at).toBe(T0);
-    expect((await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })).status).toBe(200);
+    expect((await claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9001' })).status).toBe(200);
   });
 
   it('a push that never lands: flagged on the dashboard at 6 h, never re-issued', async () => {
     const a = await register('vm-a', { lease_timeout_s: 86_400 });
     const b = await register('vm-b', { lease_timeout_s: 86_400 });
-    const { json: c } = await claimItem('vm-a', a.secret, { ticket_id: 'R3-9001' });
+    const { json: c } = await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9001' });
     // It names C — a commit main will never carry once D rewrites it.
     await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'done', ended_at_sha: sha.C });
     // The sync runs with main still at A, where the item is ready: C is not an ancestor of A, so
@@ -61,11 +61,11 @@ describe('S-BTN-12 completion confirmation', () => {
     await setClock(T0 + 6 * 3_600_000 - 1);
     expect(await needs()).toEqual([]);
     await setClock(T0 + 6 * 3_600_000);
-    expect(await needs()).toEqual([expect.objectContaining({ id: c.claim_id, ticket_id: 'R3-9001', ended_at_sha: sha.C })]);
+    expect(await needs()).toEqual([expect.objectContaining({ id: c.claim_id, ticket_id: 'docs:R3-9001', ended_at_sha: sha.C })]);
     // Days later, the alarm has run and nothing confirmed or re-issued it.
     await setClock(T0 + 3 * 86_400_000);
     await tick();
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'completed', confirmed_at: null });
-    expect((await claimItem('vm-b', b.secret, { ticket_id: 'R3-9001' })).json).toMatchObject({ code: 'not-eligible', rule: 3 });
+    expect((await claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9001' })).json).toMatchObject({ code: 'not-eligible', rule: 3 });
   });
 });
