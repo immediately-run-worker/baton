@@ -161,7 +161,7 @@ export class Baton extends DurableObject<Env> {
         } catch {
           // a malformed escape is the caller's error, never a 500
         }
-        if (!ITEM_ID.test(item)) throw new BatonError('invalid-params', 'item: must be a work item id');
+        if (!ITEM_ID.test(item)) throw new BatonError('invalid-params', 'ticket: must be a ticket id');
         const caller = secret ? await this.workers.authWorker(cred, secret) : null;
         return json(this.claims.holder(caller, item));
       }
@@ -224,13 +224,13 @@ export class Baton extends DurableObject<Env> {
       }
       const adoption = /^\/v1\/ui\/adoptions\/([^/]+)\/confirm$/.exec(p);
       if (adoption) {
-        if (!ITEM_ID.test(adoption[1])) throw new BatonError('invalid-params', 'item: must be a work item id');
+        if (!ITEM_ID.test(adoption[1])) throw new BatonError('invalid-params', 'ticket: must be a ticket id');
         const body = await readJson(req);
         return json(tx(() => this.cutover.confirmAdoption(owner, adoption[1], body)));
       }
       const override = /^\/v1\/ui\/overrides\/([^/]+)$/.exec(p);
       if (override) {
-        if (!ITEM_ID.test(override[1])) throw new BatonError('invalid-params', 'item: must be a work item id');
+        if (!ITEM_ID.test(override[1])) throw new BatonError('invalid-params', 'ticket: must be a ticket id');
         const body = await readJson(req);
         return json(tx(() => this.claims.setOverride(owner, override[1], body)));
       }

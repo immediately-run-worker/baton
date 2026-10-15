@@ -39,7 +39,7 @@ function renderMode() {
 function renderHead() {
   const h = state.head;
   document.getElementById('head').textContent = h
-    ? `Board at docs@${short(h.sha)} · ${h.ticket_count} live items · received ${fmtTime(h.received_at)}`
+    ? `Board at docs@${short(h.sha)} · ${h.ticket_count} live tickets · received ${fmtTime(h.received_at)}`
     : 'No board snapshot yet: the sync has not posted.';
 }
 

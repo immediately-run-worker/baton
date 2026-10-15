@@ -23,3 +23,13 @@ DROP INDEX work_items_ready;
 CREATE INDEX tickets_ready ON tickets(rank) WHERE node LIKE 'ready-%';
 DROP INDEX events_by_item;
 CREATE INDEX events_by_ticket ON events(ticket_id, kind, seq);
+
+-- JSON already stored in rows names the old keys: a pending `release` message's payload
+-- (`work_item_id`, read back by the reap and the de-dup), and event details (`work_item_id`,
+-- the snapshot events' `item_count`). Rewritten here so every row reads under the new names.
+UPDATE messages SET payload_json = json_set(json_remove(payload_json, '$.work_item_id'), '$.ticket_id', json_extract(payload_json, '$.work_item_id'))
+  WHERE json_valid(payload_json) AND json_type(payload_json, '$.work_item_id') IS NOT NULL;
+UPDATE events SET detail_json = json_set(json_remove(detail_json, '$.work_item_id'), '$.ticket_id', json_extract(detail_json, '$.work_item_id'))
+  WHERE json_valid(detail_json) AND json_type(detail_json, '$.work_item_id') IS NOT NULL;
+UPDATE events SET detail_json = json_set(json_remove(detail_json, '$.item_count'), '$.ticket_count', json_extract(detail_json, '$.item_count'))
+  WHERE json_valid(detail_json) AND json_type(detail_json, '$.item_count') IS NOT NULL;

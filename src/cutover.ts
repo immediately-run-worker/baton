@@ -105,7 +105,7 @@ export class Cutover {
    *  gate either way. The claim does not move here. */
   adopt(workerId: number, body: unknown) {
     const item = (body as { ticket_id?: unknown } | null)?.ticket_id;
-    if (typeof item !== 'string' || !ITEM_ID.test(item)) throw new BatonError('invalid-params', 'ticket_id: must be a work item id');
+    if (typeof item !== 'string' || !ITEM_ID.test(item)) throw new BatonError('invalid-params', 'ticket_id: must be a ticket id');
     if (this.cutoverAt() == null) throw new BatonError('not-cut-over', 'adoption follows the cutover import');
     const c = this.rows<{ id: number; nonce: string; session_name: string }>(
       `SELECT c.id, c.nonce, w.session_name FROM claims c JOIN workers w ON w.id = c.worker_id

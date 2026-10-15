@@ -82,7 +82,7 @@ export class Mirror {
    */
   foreignClaim(body: unknown) {
     const b = (body ?? {}) as Record<string, unknown>;
-    if (typeof b.ticket_id !== 'string' || !ITEM_ID.test(b.ticket_id)) throw new BatonError('invalid-params', 'ticket_id: must be a work item id');
+    if (typeof b.ticket_id !== 'string' || !ITEM_ID.test(b.ticket_id)) throw new BatonError('invalid-params', 'ticket_id: must be a ticket id');
     if (typeof b.nonce !== 'string' || !NONCE.test(b.nonce)) throw new BatonError('invalid-params', 'nonce: must be the claim note’s 6 hex');
     if (typeof b.sha !== 'string' || !GIT_SHA.test(b.sha)) throw new BatonError('invalid-params', 'sha: must be the claim commit');
     if (!Number.isInteger(b.at) || (b.at as number) < 0) throw new BatonError('invalid-params', 'at: must be the commit’s epoch ms');
