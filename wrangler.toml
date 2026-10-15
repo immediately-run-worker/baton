@@ -29,9 +29,9 @@ OIDC_REF = "refs/heads/main"
 SYNC_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-sync.yml@refs/heads/main"
 MIRROR_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-mirror.yml@refs/heads/main"
 # R-BTN-16: the owner principal — Cloudflare Access. Set by the owner in R3-1208.
-ACCESS_TEAM_DOMAIN = ""
-ACCESS_AUD = ""
-OWNER_EMAILS = ""
+ACCESS_TEAM_DOMAIN = "mute-dew-600d.cloudflareaccess.com"
+ACCESS_AUD = "326d8bf228bb8472d48a681888ae117f378e1182618c1d5e3f9e7d00e3b6e94d"
+OWNER_EMAILS = "neumark.peter@gmail.com"
 
 # The staging Worker (BATON_SPEC §13a): its own Durable Object namespace, at its own hostname on
 # the same zone, deployed beside production by baton-deploy.yml. Bindings and vars are not
@@ -53,6 +53,6 @@ OIDC_REPOSITORY = "immediately-run/docs"
 OIDC_REF = "refs/heads/main"
 SYNC_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-sync.yml@refs/heads/main"
 MIRROR_WORKFLOW_REF = "immediately-run/docs/.github/workflows/baton-mirror.yml@refs/heads/main"
-ACCESS_TEAM_DOMAIN = ""
-ACCESS_AUD = ""
-OWNER_EMAILS = ""
+ACCESS_TEAM_DOMAIN = "mute-dew-600d.cloudflareaccess.com"
+ACCESS_AUD = "d572b8ea4e7600d0bef9116fa481d5e70505a2844c1f32b44535b45ba8875959"
+OWNER_EMAILS = "neumark.peter@gmail.com"
