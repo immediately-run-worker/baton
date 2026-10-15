@@ -555,12 +555,19 @@ export class WorkerApi {
 
   /** A worker's declared courses (R-BTN-48) with each one's `min_worker_version` — only those
    *  below it (rule 9), or all of them for the Workers view. A course no repository registered
-   *  has no minimum and is never stale. */
+   *  has no minimum and is never stale. A worker that declares no course at all (a sidecar from
+   *  before R-BTN-22's change) is stale on every registered course, its version `null`. */
   staleCourses(workerId: number, all = false) {
-    return this.rows<{ repository: string; course: string; version: number; min_worker_version: number | null }>(
+    type Stale = { repository: string; course: string; version: number | null; min_worker_version: number | null };
+    const declared = this.rows<Stale>(
       `SELECT f.repository_id AS repository, f.course_id AS course, f.version, c.min_worker_version
        FROM worker_courses f LEFT JOIN courses c ON c.repository_id = f.repository_id AND c.id = f.course_id
-       WHERE f.worker_id = ? AND (? OR f.version < c.min_worker_version) ORDER BY f.repository_id, f.course_id`, workerId, all ? 1 : 0);
+       WHERE f.worker_id = ? ORDER BY f.repository_id, f.course_id`, workerId);
+    if (all) return declared;
+    if (!declared.length) {
+      return this.rows<Stale>('SELECT repository_id AS repository, id AS course, NULL AS version, min_worker_version FROM courses ORDER BY repository_id, id');
+    }
+    return declared.filter((d) => d.min_worker_version != null && (d.version as number) < d.min_worker_version);
   }
 
   // ── the dashboard's Workers view (§14) ──────────────────────────────────────────────────

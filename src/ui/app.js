@@ -50,6 +50,9 @@ function renderHead() {
     box.append(el('div', { text: h
       ? `${r.id}: board at ${r.github}@${short(h.sha)} · ${h.ticket_count} live tickets · received ${fmtTime(h.received_at)}`
       : `${r.id}: no board snapshot yet; its sync has not posted.` }));
+    // R-BTN-48: its courses, each with the version a worker must declare (rule 9).
+    const courses = (r.courses ?? []).map((c) => `${c.id} v${c.version} (workers at ${c.min_worker_version})`).join(', ');
+    box.append(el('div', { text: courses ? `courses: ${courses}` : 'no course registered', cls: 'muted' }));
   }
 }
 
@@ -136,6 +139,9 @@ function renderWorkers() {
     who.append(el('div', { text: `ceiling ${w.tier_ceiling} · lease ${Math.round(w.lease_timeout_ms / 60_000)} min`, cls: 'muted' }));
     who.append(el('div', { text: caps, cls: 'muted' }));
     who.append(el('div', { text: provs, cls: 'muted' }));
+    // R-BTN-48: the courses its checkouts run, flagged where below the course's minimum.
+    const runs = (w.courses ?? []).map((c) => `${c.repository}:${c.course} v${c.version}${c.min_worker_version != null && c.version < c.min_worker_version ? ` (below ${c.min_worker_version})` : ''}`).join(', ') || 'declares no course';
+    who.append(el('div', { text: runs, cls: 'muted' }));
     if (w.transcript_url) who.append(el('div', {}, githubLink('transcript', w.transcript_url)));
     const st = w.reaped_at != null ? 'reaped' : w.alive ? 'alive' : 'lease lapsed';
     const stateCell = el('td', {}, el('div', { text: st, cls: w.alive ? 'alive' : 'dead' }), el('div', { text: `seen ${fmtTime(w.last_seen_at)}`, cls: 'muted' }), el('div', { text: `active ${fmtTime(w.last_activity_at)}`, cls: 'muted' }));
@@ -311,7 +317,10 @@ function renderNeeds() {
     list.append(el('li', { text: `Release of ${item} to worker #${m.to_worker_id}: ${m.delivered_at ? `delivered ${fmtTime(m.delivered_at)}` : 'not yet delivered'}, unacknowledged` }));
   }
   for (const c of n.fence_pending) list.append(el('li', { text: `${c.ticket_id}: reaped ${fmtTime(c.ended_at)}, waiting for worker #${c.worker_id} to confirm its fence` }));
-  for (const w of n.stale_skills) list.append(el('li', { text: `${w.hostname} · ${w.session_name}: ${w.repository_id}:${w.course_id} version ${w.version}, below its minimum ${w.min_worker_version} — restart it from a pulled checkout` }));
+  for (const w of n.stale_skills) {
+    const what = w.course_id == null ? 'declares no course' : `${w.repository_id}:${w.course_id} version ${w.version}, below its minimum ${w.min_worker_version}`;
+    list.append(el('li', { text: `${w.hostname} · ${w.session_name}: ${what} — restart it from a pulled checkout` }));
+  }
   // R-BTN-69: a refused course file; the one in force stays until a passing one is posted.
   for (const c of n.courses_refused ?? []) {
     const first = c.violations[0];

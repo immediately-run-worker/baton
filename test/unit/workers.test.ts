@@ -357,3 +357,27 @@ describe('round-one review fixes (baton#4)', () => {
     expect((await rows<{ a: string }>(`SELECT json_extract(detail_json, '$.action') AS a FROM events WHERE kind = 'suspension' ORDER BY seq`)).map((r) => r.a)).toEqual(['set', 'started', 'lifted']);
   });
 });
+
+describe('R-BTN-48: the courses a heartbeat declares', () => {
+  const at = (n: number) => ({ repository: 'docs', course: 'roadmap-pr', version: n });
+  it.each([
+    ['65 courses', Array.from({ length: 65 }, (_, i) => ({ repository: 'docs', course: `c${i}`, version: 1 }))],
+    ['one course twice', [at(3), at(4)]],
+    ['a negative version', [at(-1)]],
+    ['a version past the ceiling', [at(1_000_000_001)]],
+    ['an entry that is not an object', ['docs:roadmap-pr']],
+    ['a malformed repository', [{ repository: 'Docs', course: 'roadmap-pr', version: 1 }]],
+    ['a malformed course', [{ repository: 'docs', course: 'Roadmap PR', version: 1 }]],
+    ['courses that are not a list', { docs: 3 }],
+  ])('refuses %s', async (_what, courses) => {
+    const res = await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { secret_hash: await sha256('s'), courses }) });
+    expect([res.status, ((await res.json()) as { code: string }).code]).toEqual([400, 'invalid-params']);
+  });
+
+  it('a worker that declares no course is stale on every registered course, and Needs you lists it', async () => {
+    const { id, first } = await register('vm-a', { courses: [] });
+    expect(first.stale_courses).toEqual([{ repository: 'docs', course: 'roadmap-pr', version: null, min_worker_version: 3 }]);
+    const state = (await (await ownerCall('/v1/ui/state')).json()) as { needs_you: { stale_skills: { id: number; course_id: string | null }[] } };
+    expect(state.needs_you.stale_skills).toEqual([expect.objectContaining({ id, course_id: null })]);
+  });
+});

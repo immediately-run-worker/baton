@@ -355,9 +355,14 @@ export class BatonCore {
       throw new BatonError('snapshot-rejected', `a rewritten history is held for the owner until ${new Date(deadline).toISOString()}; claims continue on the current head`);
     }
     if (p.sha === head) {
-      // §6.7: the sync's confirm-only post re-sends the head with its confirmations.
-      const confirmed = this.store.transaction(() => this.claims.confirm(confirmations));
-      return { ok: true, unchanged: true, confirmed };
+      // §6.7: the sync's confirm-only post re-sends the head with its confirmations. Its
+      // registry is applied too, so a head that predates the registry (migration 0007) gets its
+      // courses without waiting for main to move.
+      return this.store.transaction(() => {
+        const tickets = this.sql<{ course_id: string }>('SELECT DISTINCT course_id FROM tickets WHERE repository_id = ?', r).map((t) => t.course_id);
+        const refused = this.applyRegistry(r, p, tickets, at);
+        return { ok: true, unchanged: true, confirmed: this.claims.confirm(confirmations), ...(refused.length ? { courses_refused: refused } : {}) };
+      });
     }
     if (!accepted && p.parent_sha !== head) throw new BatonError('head-moved', `the head is ${head ?? 'unset'}; re-read it and retry`);
 
@@ -371,11 +376,8 @@ export class BatonCore {
     this.store.transaction(() => {
       // The course registry first (R-BTN-48, R-BTN-69): every ticket must name a course in
       // force, and a refused file with none to keep refuses the whole post.
-      const refused = p.registry ? this.courses.apply(r, p.registry, p.sha, at) : [];
+      const refused = this.applyRegistry(r, p, rows.map(({ row }) => row.course_id), at);
       if (refused.length) changed.courses_refused = refused;
-      for (const { row } of rows) {
-        if (!this.courses.get(r, row.course_id)) throw new BatonError('invalid-params', `${row.id}: its course ${row.course_id} is not in ${r}'s registry`);
-      }
       // The repository's own tickets only, keyed by their local ids (R-BTN-47).
       const have = new Map(this.sql<{ local_id: string; row_hash: string }>('SELECT local_id, row_hash FROM tickets WHERE repository_id = ?', r).map((x) => [x.local_id, x.row_hash]));
       for (const { row, hash } of rows) {
@@ -422,6 +424,17 @@ export class BatonCore {
       changed.stale_released = this.claims.staleBoard(r);
     });
     return { ok: true, ...changed };
+  }
+
+  /** The registry of a post (R-BTN-48, R-BTN-69), inside its transaction: applied whole, then
+   *  every course the post's tickets name must be in force — a refused file with none to keep,
+   *  or a course the registry dropped while a ticket still names it, refuses the post. */
+  private applyRegistry(r: string, p: BoardPayload, ticketCourses: string[], at: number): string[] {
+    const refused = p.registry ? this.courses.apply(r, p.registry, p.sha, at) : [];
+    for (const c of new Set(ticketCourses)) {
+      if (!this.courses.get(r, c)) throw new BatonError('invalid-params', `a ticket's course ${c} is not in ${r}'s registry`);
+    }
+    return refused;
   }
 
   /** The reference data the sync posts with every snapshot (§7.3, §7.4): providers, peak

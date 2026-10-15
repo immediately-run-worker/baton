@@ -83,6 +83,17 @@ describe('the claim and end contracts (§6.2, §6.5, §11)', () => {
     expect(await claimItem('mac', none.secret)).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
   });
 
+  it('G-BTN-40, rule 9: a ticket whose course is not registered fits no worker, in the query and isEligible alike', async () => {
+    const { id, secret } = await register('vm-a');
+    await rows(`DELETE FROM courses`); // a head posted before the registry existed
+    const got = await withCore((o) => {
+      const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
+      return c.candidates(c.worker(id), T0, 100);
+    });
+    expect(got).toEqual([]);
+    expect(await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' })).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
+  });
+
   it('§7.2 rule 6: an operator-only item goes only to a worker that declared human-operator', async () => {
     const mac = await register('mac', { capabilities: ['human-operator', 'agent-venue'] });
     const vm = await register('vm-a');

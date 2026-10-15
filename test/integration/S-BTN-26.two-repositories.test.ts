@@ -254,7 +254,7 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     expect([refused.status, ((await refused.json()) as { code: string }).code]).toEqual([400, 'invalid-params']);
     expect(await rows(`SELECT count(*) AS n FROM tickets WHERE repository_id = 'other'`)).toEqual([{ n: 0 }]);
     const unnamed = await syncCall('/v1/sync/board', payload(OPS_SHA, null, { ...opsBoard, registry: [] }), token);
-    expect(((await unnamed.json()) as { message: string }).message).toMatch(/its course runbook is not in other's registry/);
+    expect(((await unnamed.json()) as { message: string }).message).toMatch(/course runbook is not in other's registry/);
     expect(await rows(`SELECT count(*) AS n FROM courses WHERE repository_id = 'other'`)).toEqual([{ n: 0 }]);
   });
 });

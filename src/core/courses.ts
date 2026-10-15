@@ -6,23 +6,25 @@
 import { validateCourse, type CourseViolation } from './course';
 import { BatonError } from './http';
 import type { Store } from './ports';
-import { COURSE_ID } from './validate';
+import { COURSE_ID, COURSE_VERSION_MAX, COURSES_MAX } from './validate';
 
 export { COURSE_ID };
 
 /** A skill's name (`next-roadmap-item`), as a directory under `.claude/skills/`. */
 const SKILL = /^[a-z0-9][a-z0-9-]{0,63}$/;
-/** A §6.9 step kind (R-BTN-50). */
-const STEP_KIND = /^[a-z][a-z0-9-]{0,39}$/;
 /** A branch pattern (R-BTN-51): `{ticket}` and `{repository}` placeholders and `*`. */
 const BRANCH_PATTERN = /^[A-Za-z0-9._/{}*-]{1,200}$/;
-/** Course entries per post, and the size of one course file (spec-silent, recorded on R3-1231). */
-export const REGISTRY_MAX = 64;
-export const COURSE_FILE_MAX_BYTES = 256 * 1024;
-const VERSION_MAX = 1_000_000_000;
+/** The size of one course file (spec-silent, recorded on R3-1231): a whole registry of them
+ *  stays well inside either host's 8 MiB body. docs' roadmap-pr is under 1 KiB. */
+export const COURSE_FILE_MAX_BYTES = 64 * 1024;
+export const REGISTRY_MAX = COURSES_MAX;
+/** Step kinds per course. */
+const STEP_KINDS_MAX = 64;
 
 export interface RegistryEntry {
   id: string;
+  /** Over COURSE_FILE_MAX_BYTES: refused as a course, its file set aside unread. */
+  oversized: boolean;
   version: number;
   min_worker_version: number;
   skill: string;
@@ -58,23 +60,25 @@ export function checkRegistry(v: unknown): RegistryEntry[] {
     const id = r.id as string;
     if (seen.has(id)) bad(`${at}.id`, `repeats ${id}`);
     seen.add(id);
-    if (!int(r.version, 0, VERSION_MAX)) bad(`${at}.version`, 'must be a non-negative integer');
+    if (!int(r.version, 0, COURSE_VERSION_MAX)) bad(`${at}.version`, 'must be a non-negative integer');
     // R-BTN-65: a worker is never asked for a version the course has not reached.
     if (!int(r.min_worker_version, 0, r.version as number)) bad(`${at}.min_worker_version`, 'must be an integer from 0 to version');
     if (typeof r.skill !== 'string' || !SKILL.test(r.skill)) bad(`${at}.skill`, 'must be a skill name');
-    if (!Array.isArray(r.step_kinds) || r.step_kinds.length > 64 || !r.step_kinds.every((k) => typeof k === 'string' && STEP_KIND.test(k))
+    if (!Array.isArray(r.step_kinds) || r.step_kinds.length > STEP_KINDS_MAX || !r.step_kinds.every((k) => typeof k === 'string' && COURSE_ID.test(k))
       || new Set(r.step_kinds).size !== r.step_kinds.length) {
-      bad(`${at}.step_kinds`, 'must be at most 64 distinct step kinds');
+      bad(`${at}.step_kinds`, `must be at most ${STEP_KINDS_MAX} distinct step kinds`);
     }
     if (r.report_horizon_h !== undefined && !int(r.report_horizon_h, 1, 168)) bad(`${at}.report_horizon_h`, 'must be an integer from 1 to 168');
+    // An oversized file is a refusal of that course, as any file failing R-BTN-69 is: the previous
+    // one stays in force and the board still advances. It is never stored or walked.
     let size = Infinity;
     try {
       size = new TextEncoder().encode(JSON.stringify(r.course ?? null)).length;
     } catch {
-      // A value JSON cannot hold is no course file; the size check refuses it.
+      // A value JSON cannot hold is no course file.
     }
-    if (size > COURSE_FILE_MAX_BYTES) bad(`${at}.course`, `must be a course file of at most ${COURSE_FILE_MAX_BYTES} bytes`);
     return {
+      oversized: size > COURSE_FILE_MAX_BYTES,
       id,
       version: r.version as number,
       min_worker_version: r.min_worker_version as number,
@@ -103,14 +107,21 @@ export class Courses {
     return this.c.store.exec<T>(q, ...p).toArray();
   }
 
-  /** Apply a posted registry inside the board's transaction. Each course whose file passes is
-   *  written whole and its refusal cleared; each whose file fails keeps the row it had and is
-   *  recorded under Needs you. A failing course with no row in force refuses the post: its
-   *  tickets would have no course. Returns the refused course ids. */
+  /** Apply a posted registry inside the board's transaction. It is the repository's whole
+   *  registry (its `.baton/baton.json`), so a course it no longer lists leaves, with any refusal
+   *  of it; the caller then refuses the post if a ticket still names one. Each course whose file
+   *  passes is written whole and its refusal cleared; each whose file fails keeps the row it had
+   *  and is recorded under Needs you. A failing course with no row in force refuses the post:
+   *  its tickets would have no course. Returns the refused course ids. */
   apply(repo: string, registry: RegistryEntry[], sha: string, now: number): string[] {
+    const listed = JSON.stringify(registry.map((e) => e.id));
+    this.c.store.exec('DELETE FROM courses WHERE repository_id = ? AND id NOT IN (SELECT value FROM json_each(?))', repo, listed);
+    this.c.store.exec('DELETE FROM course_refusals WHERE repository_id = ? AND course_id NOT IN (SELECT value FROM json_each(?))', repo, listed);
     const refused: string[] = [];
     for (const e of registry) {
-      const violations: CourseViolation[] = validateCourse(e.course);
+      const violations: CourseViolation[] = e.oversized
+        ? [{ rule: 'bound', path: '', message: `the course file is over ${COURSE_FILE_MAX_BYTES} bytes` }]
+        : validateCourse(e.course);
       if (violations.length) {
         if (!this.get(repo, e.id)) {
           throw new BatonError('invalid-params', `registry: ${e.id}'s course file fails R-BTN-69 and no earlier one is in force — ${violations.slice(0, 3).map((v) => `${v.path || '(file)'}: ${v.message}`).join('; ')}`);

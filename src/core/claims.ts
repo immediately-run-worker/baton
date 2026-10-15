@@ -148,9 +148,9 @@ export class Claims {
       claims,
       override: this.override(item.id),
       suspensions: shared.suspensions,
-      // Rule 9 (R-BTN-65): the item's course's; a course no longer registered asks for nothing
-      // and cannot be reached anyway — every ticket names a registered course (§7.1).
-      minWorkerVersion: this.rows<{ v: number }>('SELECT min_worker_version AS v FROM courses WHERE repository_id = ? AND id = ?', item.repository, item.course)[0]?.v ?? 0,
+      // Rule 9 (R-BTN-65): the item's course's. A ticket whose course is not registered (a head
+      // posted before migration 0007, until its next post) fits no worker, as the query has it.
+      minWorkerVersion: this.rows<{ v: number }>('SELECT min_worker_version AS v FROM courses WHERE repository_id = ? AND id = ?', item.repository, item.course)[0]?.v ?? Number.POSITIVE_INFINITY,
       expediteActive: shared.expediteActive,
       expediteBound: EXPEDITE_BOUND,
       lastEndReason,
@@ -244,7 +244,7 @@ export class Claims {
       const item = this.item(id)!;
       return this.eligible(w, item, now, shared).code === RULE_CODES[9];
     })) {
-      throw new BatonError('stale-skills', 'this worker declares the ready tickets’ courses below their min_worker_version (R-BTN-22, R-BTN-65)', { rule: 9 });
+      throw new BatonError('stale-skills', 'this worker does not declare the ready tickets’ courses at their min_worker_version — it declares an older version or none (R-BTN-22, R-BTN-65)', { rule: 9 });
     }
     throw new BatonError('no-eligible-ticket', 'no ready ticket fits this worker');
   }
@@ -687,12 +687,17 @@ export class Claims {
                                           WHERE kind = 'release' AND status IN ('pending','delivered') ORDER BY sent_at`),
       fence_pending: this.rows(`SELECT id, ticket_id, worker_id, ended_at FROM claims WHERE status = 'reaped' AND fence_pending = 1 ORDER BY ended_at`),
       // R-BTN-22: live workers declaring a course below its min_worker_version, one row per
-      // course — each needs a restart from a pulled checkout.
+      // course, and those declaring none (course_id null) — each needs a restart from a pulled
+      // checkout.
       stale_skills: this.rows(`SELECT w.id, w.hostname, w.session_name, f.repository_id, f.course_id, f.version, k.min_worker_version
                                FROM workers w JOIN worker_courses f ON f.worker_id = w.id
                                JOIN courses k ON k.repository_id = f.repository_id AND k.id = f.course_id
                                WHERE w.reaped_at IS NULL AND w.kind != 'legacy' AND f.version < k.min_worker_version AND ? - w.last_seen_at < w.lease_timeout_ms
-                               ORDER BY w.id, f.repository_id, f.course_id`, now),
+                               UNION ALL
+                               SELECT w.id, w.hostname, w.session_name, NULL, NULL, NULL, NULL FROM workers w
+                               WHERE w.reaped_at IS NULL AND w.kind != 'legacy' AND ? - w.last_seen_at < w.lease_timeout_ms
+                                 AND NOT EXISTS (SELECT 1 FROM worker_courses f WHERE f.worker_id = w.id) AND EXISTS (SELECT 1 FROM courses)
+                               ORDER BY 1, 4, 5`, now, now),
       held_items: this.rows<{ ticket_id: string; hold_reason: string | null; set_at: number }>(
         `SELECT ticket_id, hold_reason, set_at FROM ticket_overrides WHERE hold = 1 ORDER BY ticket_id`).map((h) => ({
         ...h,
