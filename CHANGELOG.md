@@ -1,0 +1,24 @@
+# Baton changelog
+
+One row per change to Baton — the spec (`BATON_SPEC`, its `roadmap-pr` course spec), this
+repository, and Baton's roadmap items — newest first. A row is not a commit: one change may
+span several commits or both repositories, and a commit may carry several changes. Commit
+messages hold the detail; the spec's **Review record** holds every review finding and how it
+was resolved.
+
+Times are UTC. *Where* names the pull request or commit that carries the change; a PR still
+open is marked *(open)*.
+
+| When | Change | Why | How | Where |
+|---|---|---|---|---|
+| 2026-10-15 06:10 | External resources and human decisions | Owner: a general vocabulary for what a leg can be blocked on outside Baton — provider capacity, API rate limits, shared disk — and decisions waiting on people | Resources registered with a scope (worker, account, service) and a JSON Schema; instruments (usually workers, also probe keys) post readings of instances — an envelope core reads, a schema-checked `detail` — per Baton, not per repository; readings lapse to `unknown`, which never blocks; decisions are a fourth block kind, posted from git, never lapsing (R-BTN-76 revised, R-BTN-53, R-BTN-78) | docs#213 *(open)*, `ce50cf50` |
+| 2026-10-15 05:57 | Formal model, review round 1 | Two reviewers found 12 issues, among them a reachable violation of `safety` (overlapping sync runs) and checks that never reached deep states | One sync reading in flight; abstract time with leases, sleep, alarm reaps and clock drift (`noActAfterLoss`); gate verdicts as ghosts (`gatesHeld`); a progress step and seeded witnesses; 10,000 samples in CI; liveness split out (Apalache cannot check fairness) | baton#10 *(open)*, `de4fb28` |
+| 2026-10-15 04:53 | One sync reading in flight per repository | The formal model showed that observation numbers order readings only if runs never overlap, and Actions' concurrency group is agent-editable git | Baton refuses a new observation number while one is outstanding (`sync-busy`) and voids a number left over 10 minutes (R-BTN-62) | docs#213 *(open)*, `4c9aabd9` |
+| 2026-10-15 04:17 | Blocks: why a ticket cannot move | Owner: cheap answers to "is it blocked and why", "what is blocked on this ticket / this model", and a signal on unblocking | `ticket_blocks` rows written with their causes and indexed by (repository, kind, ref); `blocked`/`unblocked` events message idle workers and dispatch an optional workflow; three review rounds (R-BTN-75, -77) | docs#213 *(open)*; R3-1251 |
+| 2026-10-15 04:40 | Formal model of the core (R3-1243) | Cutover precondition (R-BTN-68): races and stuck states checked mechanically, not by review | Quint model of claims, legs, the hook's await, bars, fencing, syncs racing advances; ten safety invariants; regression runs for every review defect; `npm run model`, Apalache in CI | baton#10 *(open)* |
+| 2026-10-15 04:05 | BATON_SPEC amendment landed | Review gate passed: three rounds, 45 findings fixed, the one surviving blocking finding not reproduced by the adjudicator | docs#212 merged; R3-1228 archived | docs `b7537395` |
+| 2026-10-14 20:59 | Ticket sources and the CLI's defaults | Owner: how a repository's work items become tickets on courses should be the repository's choice, with a sane default | `.baton/tickets.mjs` and per-course `sync.mjs` overrides; `baton sync` falls back to a markdown ticket source and a built-in `pr` course; `baton init`, `--eject` (R-BTN-74) | docs#212, `6f42db3b`; R3-1249 |
+| 2026-10-14 20:48 | Configurable origin; one-command GitHub App | Owner: Baton is open source and runs at any domain; every instance needs its own App, since no operator runs another's hooks | `BATON_ORIGIN` for signatures, the OIDC audience, the dashboard's Origin check and webhooks; `baton admin github-app create` via GitHub's manifest flow | docs#212, `0a5e9b94` |
+| 2026-10-14 20:48 | Review gate rounds 1–3 on the amendment | The formal gate (R3-1228) before merge | Fixes for the expedite override in matching, holds at advance, bars in hook input, the default `pr` course reading merged PRs, one sync implementation, and more — each row in the Review record | docs#212, `0a5e9b94` … `a3df6909` |
+| 2026-10-14 20:29 | Sixth adversarial review fixes | 1 blocking, 8 major, 9 minor findings on the stations revision | Listed webhook payload fields and a trailing dispatch; `short_waits`; renames resolved through `renamed_from`; course-scoped bars; confirmation by path extension; `regressed_since` | docs#212, `1dae3316` |
+| 2026-10-14 (earlier) | The 2026-10-14 amendment and its first five reviews | Owner's design session: tickets, courses and legs, stations, advice versus gates, hooks and probes, SSH identity, administration, the runner, webhooks | See BATON_SPEC's Review record, rounds one to five | docs#212 |
