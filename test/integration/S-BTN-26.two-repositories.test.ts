@@ -30,7 +30,8 @@ const RUNBOOK_FILE = {
   stations: { filed: { label: 'Filed' }, prepared: { label: 'Prepared' }, done: { label: 'Done' } },
   legs: { prepare: { from: ['filed'], to: 'prepared' }, run: { from: ['prepared'], to: 'done' } },
 };
-const runbook = (version = 1, min = version) => course(version, min, { id: 'runbook', skill: 'run-runbook', course: RUNBOOK_FILE, step_kinds: ['orient', 'other-step'] });
+const runbook = (version = 1, min = version, branch_pattern = 'claude/{ticket}-*', previous_branch_pattern?: string) =>
+  course(version, min, { id: 'runbook', skill: 'run-runbook', course: RUNBOOK_FILE, step_kinds: ['orient', 'other-step'], branch_pattern, ...(previous_branch_pattern ? { previous_branch_pattern } : {}) });
 const opsBoard = {
   items: [{ ...fixture, title: 'ops: same local id', course: 'runbook' }, { ...fixture, id: 'T-1', title: 'ops: its own ticket', order: 20, course: 'runbook' }],
   ready: ['R3-9001', 'T-1'],
@@ -291,6 +292,23 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     for (const bad of ['repo=x&branch=claude/T-1-x', 'repo=immediately-run/sandbox&branch=a..b']) {
       expect((await workerCall(`/v1/runner/branch-holder?${bad}`, { cred: 'vm-b' })).status).toBe(400);
     }
+  });
+
+  it('§6.3: a course’s previous pattern still maps its branches, and a reaped claim’s fence is reported (round 3, 3-A-0)', async () => {
+    // ops renames its branches; live ones keep the previous pattern (R-BTN-51).
+    const renamed = { ...opsBoard, registry: [runbook(1, 1, 'work/{ticket}', 'claude/{ticket}-*')] };
+    await opsCall('/v1/sync/board', payload('e'.repeat(40), OPS_SHA, renamed));
+    await cutover(1, 'ops');
+    const w2 = await register('vm-a', BOTH);
+    const ask = async (branch: string) =>
+      (await workerCall(`/v1/runner/branch-holder?repo=immediately-run/ops&branch=${encodeURIComponent(branch)}`, { cred: 'vm-b' })).json();
+    expect(await ask('work/T-1')).toMatchObject({ tickets: ['ops:T-1'] });
+    expect(await ask('claude/T-1-x')).toMatchObject({ tickets: ['ops:T-1'] }); // the previous pattern
+    const { json: c } = await claimItem('vm-a', w2.secret, { ticket_id: 'ops:T-1' });
+    expect(await ask('claude/T-1-x')).toMatchObject({ held_by_other: true, fence_pending: false });
+    // The owner reaps the live holder: its claim is fence-pending until its sidecar confirms.
+    expect(await (await owner(`/v1/ui/claims/${c.claim_id}/reap`, { confirm: true })).json()).toMatchObject({ fence_pending: true });
+    expect(await ask('claude/T-1-x')).toEqual({ tickets: ['ops:T-1'], held_by_other: false, fence_pending: true });
   });
 
   it.todo('R3-1232: each repository in its own hook’s or default order, and with 60 ready docs legs ops’ first five still reach the merge (per-group limit)');
