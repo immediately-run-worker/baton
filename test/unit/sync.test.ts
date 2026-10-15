@@ -107,12 +107,11 @@ describe('the course registry on a board post (R-BTN-48, R-BTN-69)', () => {
   const runbook = { start: 'a', start_leg: 'go', end: ['b'], stations: { a: { label: 'A' }, b: { label: 'B' } }, legs: { go: { from: ['a'], to: 'b' } } };
   const extra = course(1, 1, { id: 'runbook', skill: 'run-runbook', course: runbook, step_kinds: ['orient'] });
 
-  it('a repeat of the head applies its registry: a head posted before the registry gets its courses', async () => {
-    await syncCall('/v1/sync/board', payload(A, null, board.states.A));
-    await rows(`DELETE FROM courses`);
+  it('a repeat of the head does not apply its registry: its body may be built at an ancestor (round 2, 2-A-0)', async () => {
+    await syncCall('/v1/sync/board', payload(A, null, board.states.A, { registry: [course(5)] }));
     const res = await syncCall('/v1/sync/board', payload(A, null, board.states.A, { registry: [course(3)] }));
     expect(await res.json()).toMatchObject({ ok: true, unchanged: true });
-    expect(await rows(`SELECT id, version FROM courses`)).toEqual([{ id: 'roadmap-pr', version: 3 }]);
+    expect(await rows(`SELECT id, version FROM courses`)).toEqual([{ id: 'roadmap-pr', version: 5 }]);
   });
 
   it('an oversized course file is that course’s refusal: the one in force stays and the board advances', async () => {
@@ -125,16 +124,18 @@ describe('the course registry on a board post (R-BTN-48, R-BTN-69)', () => {
   });
 
   it('the registry is the whole registry: a course it no longer lists leaves, unless a ticket still names it', async () => {
+    const { B, C, D } = board.shas;
     await syncCall('/v1/sync/board', payload(A, null, board.states.A, { registry: [course(3), extra] }));
     expect(await rows(`SELECT id FROM courses ORDER BY id`)).toEqual([{ id: 'roadmap-pr' }, { id: 'runbook' }]);
-    await syncCall('/v1/sync/board', payload(A, null, board.states.A, { registry: [course(3), { ...extra, version: 2, course: { ...runbook, start_leg: 'nope' } }] }));
+    await syncCall('/v1/sync/board', payload(B, A, board.states.B, { registry: [course(3), { ...extra, version: 2, course: { ...runbook, start_leg: 'nope' } }] }));
     expect(await rows(`SELECT course_id FROM course_refusals`)).toEqual([{ course_id: 'runbook' }]);
-    await syncCall('/v1/sync/board', payload(A, null, board.states.A, { registry: [course(3)] }));
+    await syncCall('/v1/sync/board', payload(C, B, board.states.C, { registry: [course(3)] }));
     expect(await rows(`SELECT id FROM courses`)).toEqual([{ id: 'roadmap-pr' }]);
     expect(await rows(`SELECT count(*) AS n FROM course_refusals`)).toEqual([{ n: 0 }]);
     // Every ticket is roadmap-pr's: a registry without it refuses the post and changes nothing.
-    const res = await syncCall('/v1/sync/board', payload(A, null, board.states.A, { registry: [extra] }));
+    const res = await syncCall('/v1/sync/board', payload(D, C, board.states.C, { registry: [extra] }));
     expect([res.status, (await body(res)).code]).toEqual([400, 'invalid-params']);
     expect(await rows(`SELECT id FROM courses`)).toEqual([{ id: 'roadmap-pr' }]);
+    expect(await head()).toBe(C);
   });
 });

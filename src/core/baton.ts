@@ -355,14 +355,13 @@ export class BatonCore {
       throw new BatonError('snapshot-rejected', `a rewritten history is held for the owner until ${new Date(deadline).toISOString()}; claims continue on the current head`);
     }
     if (p.sha === head) {
-      // §6.7: the sync's confirm-only post re-sends the head with its confirmations. Its
-      // registry is applied too, so a head that predates the registry (migration 0007) gets its
-      // courses without waiting for main to move.
-      return this.store.transaction(() => {
-        const tickets = this.sql<{ course_id: string }>('SELECT DISTINCT course_id FROM tickets WHERE repository_id = ?', r).map((t) => t.course_id);
-        const refused = this.applyRegistry(r, p, tickets, at);
-        return { ok: true, unchanged: true, confirmed: this.claims.confirm(confirmations), ...(refused.length ? { courses_refused: refused } : {}) };
-      });
+      // §6.7: the sync's confirm-only post re-sends the head with its confirmations. Its registry
+      // is not applied: the sync builds that body at the commit it fetched, which may be an
+      // ancestor of the head, and an older registry would roll a course back. A head that
+      // predates the registry (migration 0007) gets its courses with the next new head; until
+      // then its tickets fit no worker (rule 9), failing closed.
+      const confirmed = this.store.transaction(() => this.claims.confirm(confirmations));
+      return { ok: true, unchanged: true, confirmed };
     }
     if (!accepted && p.parent_sha !== head) throw new BatonError('head-moved', `the head is ${head ?? 'unset'}; re-read it and retry`);
 
