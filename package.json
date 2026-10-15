@@ -4,12 +4,14 @@
   "type": "module",
   "description": "Baton — work-item leases, workers and the factory dashboard on a Cloudflare Durable Object (BATON_SPEC).",
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run && MODEL_SAMPLES=1000 npm run model",
     "test:baton": "vitest run",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "vendor": "node scripts/vendor.mjs",
     "fixtures": "node scripts/board-fixtures.mjs",
-    "dev": "wrangler dev"
+    "dev": "wrangler dev",
+    "model": "node model/check.mjs",
+    "model:verify": "quint verify model/instances.qnt --main=small --init=pinit --step=pstep --invariant=safety --max-steps=5"
   },
   "dependencies": {
     "jose": "^6.2.12"
@@ -17,6 +19,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.1",
     "@cloudflare/workers-types": "^5.20261013.1",
+    "@informalsystems/quint": "0.33.0",
     "@types/node": "^22.20.5",
     "typescript": "^5.9.3",
     "vitest": "4.1.11",

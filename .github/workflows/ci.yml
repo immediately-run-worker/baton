@@ -30,3 +30,23 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+
+  # The formal model of Baton's core (R3-1243, BATON_SPEC R-BTN-68): the fast checks
+  # (typecheck, regression runs, simulation, witnesses) and Apalache's bounded proof of the
+  # safety invariants. Apalache needs a JVM.
+  model:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - run: npm run model          # the item's 10,000 samples; npm test runs 1,000
+      - run: npm run model:verify
