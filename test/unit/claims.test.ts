@@ -1,12 +1,10 @@
 // R3-1212 — claims (BATON_SPEC §6.1–6.7, §7.2, §11): G-BTN-1, -2, -3, -6, -14 and -40, plus the
 // claim and end contracts, the holder query, matching's worker rules, and the held history.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { runInDurableObject } from 'cloudflare:test';
 import { confirmations } from '../../src/shared/batonSync.mjs';
 import { isEligible } from '../../src/shared/baton.mjs';
-import type { Baton } from '../../src/baton';
 import {
-  beat, claimItem, claimRow, cutover, endClaim, hbBody, ORIGIN, ownerCall, payload, register, requestId, rows, setClock, sha256, stub, syncCall, workerCall, tick,
+  beat, claimItem, claimRow, cutover, endClaim, hbBody, ORIGIN, ownerCall, payload, register, requestId, rows, setClock, sha256, syncCall, withCore, workerCall, tick,
 } from '../helpers';
 
 const board = inject('board');
@@ -270,7 +268,7 @@ describe('G-BTN-40: the matching query and isEligible agree; git overtaking a cl
         const item = { id: it.id, tier: it.tier, tags: it.tags, requires: it.requires, expedite: it.queue === 'expedite' };
         return isEligible(facts, item, { now: T0, claims: [], override: null, suspensions: [], minSkillsVersion: 3, expediteActive: 0, lastEndReason: null }).ok;
       });
-      const got = await runInDurableObject(stub(), (o: Baton) => {
+      const got = await withCore((o) => {
         const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
         return c.candidates(c.worker(id), T0, 100);
       });

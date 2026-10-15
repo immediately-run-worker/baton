@@ -5,7 +5,7 @@ import { BatonError } from './http';
 import { checkConfirm, ITEM_ID, SESSION_NAME } from './validate';
 import { isUniqueViolation, logEvent, randomHex } from './db';
 
-type Row = Record<string, SqlStorageValue>;
+import type { Row, SqlValue, Store } from './ports';
 /** The cutover refuses a board older than this: the import must see git's in-progress items as they are. */
 export const FRESH_BOARD_MS = 15 * 60_000;
 /** §13: a legacy claim is reaped at its claim note's date plus 7 days — the witness's rule. */
@@ -18,7 +18,7 @@ export const LEGACY_REAP_MS = 7 * 24 * 3_600_000;
  * `item-<id>-<nonce>`; the claim is reaped at `claimedAt` plus 7 days. Logs the `claimed`
  * (legacy) event the export reads as the claim's record.
  */
-export function importLegacyClaim(sql: SqlStorage, now: number,
+export function importLegacyClaim(sql: Store, now: number,
   o: { item: string; preferred: string | null; nonce: string; claimedAt: number; sha: string; requestId: string; detail?: Record<string, unknown> }) {
   const taken = (name: string) => sql.exec(`SELECT 1 FROM workers WHERE hostname = 'legacy' AND session_name = ?`, name).toArray().length > 0;
   sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities) VALUES ('legacy', 'legacy', '[]') ON CONFLICT (id) DO NOTHING`);
@@ -35,7 +35,7 @@ export function importLegacyClaim(sql: SqlStorage, now: number,
 }
 
 export interface Ctx {
-  storage: DurableObjectStorage;
+  store: Store;
   now: () => number;
 }
 
@@ -43,13 +43,13 @@ export class Cutover {
   constructor(private readonly c: Ctx) {}
 
   private rows<T = Row>(q: string, ...p: unknown[]): T[] {
-    return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[])).toArray() as T[];
+    return this.c.store.exec(q, ...p).toArray() as T[];
   }
   private exec(q: string, ...p: unknown[]) {
-    return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[]));
+    return this.c.store.exec(q, ...p);
   }
   private event(kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null) {
-    logEvent(this.c.storage.sql, this.c.now(), kind, actor, detail, ticketId, claimId);
+    logEvent(this.c.store, this.c.now(), kind, actor, detail, ticketId, claimId);
   }
 
   cutoverAt(): number | null {
@@ -90,7 +90,7 @@ export class Cutover {
     for (const it of items) {
       // A holder session that two notes share falls back to the item's own name rather than
       // merging two claims into one worker (the per-hostname session name is unique).
-      importLegacyClaim(this.c.storage.sql, now, {
+      importLegacyClaim(this.c.store, now, {
         item: it.id, preferred: it.holder, nonce: randomHex(3), sha, requestId: `legacy:${it.id}`,
         claimedAt: it.since ? Date.parse(`${it.since}T00:00:00Z`) : now, detail: { since: it.since },
       });

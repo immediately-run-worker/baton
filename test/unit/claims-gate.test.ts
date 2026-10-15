@@ -2,10 +2,8 @@
 // unconfirmed completion, the reap's dedupe, the stale-board race, rules 2 and 8 through the
 // server, the hold and legacy branches, and the dashboard's Running / Timeline / Needs you data.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { runInDurableObject } from 'cloudflare:test';
-import type { Baton } from '../../src/baton';
 import {
-  beat, claimItem, claimRow, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, stub, syncCall, workerCall, tick,
+  beat, claimItem, claimRow, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, withCore, workerCall, tick,
 } from '../helpers';
 
 const board = inject('board');
@@ -296,7 +294,7 @@ describe('the hold override and legacy claims', () => {
   it('a hold override takes an item out of the candidates and isEligible agrees', async () => {
     const { id, secret } = await register('vm-a');
     await rows(`INSERT INTO ticket_overrides (ticket_id, hold, hold_reason, set_by, set_at) VALUES ('R3-9001', 1, 'owner', 'owner:test', 0)`);
-    const got = await runInDurableObject(stub(), (o: Baton) => {
+    const got = await withCore((o) => {
       const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
       return c.candidates(c.worker(id), T0, 100);
     });

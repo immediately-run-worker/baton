@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "es2022",
+    "moduleResolution": "bundler",
+    "lib": [
+      "es2023",
+      "dom"
+    ],
+    "types": [
+      "node"
+    ],
+    "strict": true,
+    "noEmit": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "paths": {
+      "#host": [
+        "./test/hosts/local.ts"
+      ]
+    }
+  },
+  "include": [
+    "src/core",
+    "src/local",
+    "src/migrations",
+    "src/modules.d.ts",
+    "test/hosts/local.ts",
+    "test/provided.d.ts",
+    "test/unit/local-queue.test.ts",
+    "test/unit/boundary-host.test.ts"
+  ]
+}

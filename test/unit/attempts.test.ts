@@ -1,9 +1,9 @@
 // R3-1217 — attempts, retries and holds (BATON_SPEC §6.10 R-BTN-23, §7.4, §8): G-BTN-31 — only
 // the listed ends count as failed attempts; backoff is 1 h then 4 h; the third failed attempt,
-// or a non-retryable class, holds the item. The policy is pure (src/attempts.ts) and is tested
+// or a non-retryable class, holds the item. The policy is pure (src/core/attempts.ts) and is tested
 // both alone and through the server.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord, reviewCapacityRun } from '../../src/attempts';
+import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord, reviewCapacityRun } from '../../src/core/attempts';
 import {
   beat, claimItem, claimRow, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, tick, workerCall,
 } from '../helpers';

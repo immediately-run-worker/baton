@@ -1,10 +1,9 @@
 // R3-1211 — workers (BATON_SPEC §5, §6.8, §6.9, §9, §10.1–10.4, §11): G-BTN-5, -13, -17, -23,
 // -24, messages, mode and shadow reports.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { env, runInDurableObject } from 'cloudflare:test';
-import { WorkerApi } from '../../src/workerApi';
-import type { Baton } from '../../src/baton';
-import { beat, call, hbBody, ORIGIN, ownerCall, payload, register, rows, seedClaim, setClock, sha256, stub, syncCall, workerCall , tick } from '../helpers';
+import { env } from 'cloudflare:test';
+import { WorkerApi } from '../../src/core/workerApi';
+import { beat, call, hbBody, ORIGIN, ownerCall, payload, register, rows, seedClaim, setClock, sha256, syncCall, workerCall , tick, withCore } from '../helpers';
 
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');
@@ -292,10 +291,10 @@ describe('round-one review fixes (baton#4)', () => {
     await rows(`UPDATE credentials SET hostname = 'elsewhere' WHERE id = 'vm-a'`);
     expect((await beat('vm-a', secret)).json.code).toBe('forbidden');
     // A changed secret is mirrored: the hash removed revokes vm-a.
-    await runInDurableObject(stub(), (o: Baton, state: DurableObjectState) => {
+    await withCore((o) => {
       const hashes = JSON.parse(env.TOKEN_HASHES!);
       delete hashes['vm-a'];
-      const api = new WorkerApi({ storage: state.storage, env: { ...env, TOKEN_HASHES: JSON.stringify(hashes) } as Env, now: () => o.now() });
+      const api = new WorkerApi({ store: o.store, config: { ...env, TOKEN_HASHES: JSON.stringify(hashes) }, now: () => o.now() });
       expect(() => api.credential('vm-a')).toThrow(/revoked/);
       expect(() => api.credential('vm-b')).not.toThrow();
     });

@@ -1,67 +1,78 @@
-// baton.ts — the one Durable Object (BATON_SPEC §3): every table, every write. Requests reach
-// it only through the Worker (src/worker.ts), which has already verified the principal, so
-// nothing here re-reads a credential. Each request runs alone and its writes are one
-// transaction, so the compare-and-set below needs no lock.
-import { DurableObject } from 'cloudflare:workers';
-import { MIGRATIONS } from './migrations';
+// baton.ts — Baton's core (BATON_SPEC §3, §3a R-BTN-55): every table, every write, the routing
+// of the API behind the front (front.ts), and the alarm. It names no platform: a host hands it
+// the ports (ports.ts) — the Durable Object on Cloudflare (src/cloudflare/), a Node process
+// locally (src/local/) — and runs one request at a time between awaits, as §3 requires. Each
+// request's writes are one transaction, so the compare-and-set below needs no lock. Requests
+// reach it only through the front, which has already verified the principal, so nothing here
+// re-reads a credential.
+import { MIGRATIONS } from '../migrations';
 import { BatonError, errorResponse, json } from './http';
 import { checkPayload, inPeak, nextPeakChange, rowFor, rowHash, type BoardPayload } from './board';
-import { priceFor } from './shared/sessionUsage.mjs';
-import { familyOf } from './shared/baton.mjs';
-import { fitsTier, TIERS } from './shared/vocabulary.mjs';
+import { priceFor } from '../shared/sessionUsage.mjs';
+import { familyOf } from '../shared/baton.mjs';
+import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
 import { WorkerApi } from './workerApi';
 import { Claims } from './claims';
 import { Cutover } from './cutover';
-import { dispatchWorkflow, Mirror, type Workflow } from './mirror';
+import { Mirror } from './mirror';
 import { checkConfirmations, ITEM_ID } from './validate';
+import type { Ports, Row, SqlValue, Store, Workflow } from './ports';
 
 const HELD_AUTO_ACCEPT_MS = 24 * 3_600_000; // §7.1: a held history is accepted after 24 h (R3-1212)
 const ALARM_EVERY_MS = 60_000; // §3: one alarm, every 60 seconds
 
-export class Baton extends DurableObject<Env> {
-  /** The clock (R-BTN-32). Tests replace it through `runInDurableObject`; nothing else here
-   *  reads the time. */
-  now: () => number = () => Date.now();
+export class BatonCore {
+  /** The clock (R-BTN-32). Tests replace it; nothing else here reads the time. */
+  now: () => number;
 
   readonly workers: WorkerApi;
   readonly claims: Claims;
   readonly cutover: Cutover;
   readonly mirror: Mirror;
+  readonly store: Store;
   /** §12: workflows to dispatch once the current request or alarm has committed. */
   private pendingDispatch = new Set<Workflow>();
   /** The dispatch call; tests replace it (as they replace `now`) to see what would be sent. */
-  dispatcher: (workflow: Workflow) => Promise<unknown> = (wf) => dispatchWorkflow(this.env, wf);
+  dispatcher: (workflow: Workflow) => Promise<unknown>;
+  /** §3: a signature check (R3-1239) or a hook call (R3-1236) is awaited through this, so
+   *  another request may run meanwhile on both hosts alike (R-BTN-55). No caller yet. */
+  readonly outside: <T>(work: () => Promise<T>) => Promise<T>;
 
-  constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
-    this.claims = new Claims({ storage: ctx.storage, now: () => this.now(), dispatch: (wf) => this.pendingDispatch.add(wf) });
-    this.cutover = new Cutover({ storage: ctx.storage, now: () => this.now() });
-    this.mirror = new Mirror({ storage: ctx.storage, now: () => this.now() });
-    this.workers = new WorkerApi({ storage: ctx.storage, env, now: () => this.now(), fenced: (w, inc, id) => this.claims.fenced(w, inc, id) });
-    // The object refuses to serve until every migration is applied (§3), and keeps one alarm.
-    ctx.blockConcurrencyWhile(async () => {
-      this.migrate();
-      if ((await ctx.storage.getAlarm()) == null) await ctx.storage.setAlarm(this.now() + ALARM_EVERY_MS);
-    });
+  constructor(private readonly ports: Ports) {
+    this.now = ports.clock ?? (() => Date.now());
+    this.store = ports.store;
+    this.dispatcher = (wf) => ports.dispatch.send(wf);
+    this.outside = ports.gate ? (work) => ports.gate!.outside(work) : (work) => work();
+    const store = ports.store;
+    this.claims = new Claims({ store, now: () => this.now(), dispatch: (wf) => this.pendingDispatch.add(wf) });
+    this.cutover = new Cutover({ store, now: () => this.now() });
+    this.mirror = new Mirror({ store, now: () => this.now() });
+    this.workers = new WorkerApi({ store, config: ports.config, now: () => this.now(), fenced: (w, inc, id) => this.claims.fenced(w, inc, id) });
   }
 
-  /** §3: the one alarm, every 60 seconds. R3-1211 gives it suspensions and message expiry;
-   *  R3-1212 adds reaping. */
+  /** Before the first request (§3): every migration applied — the core refuses to serve until
+   *  they are — and the one alarm armed. The host runs this before it lets a request in. */
+  async start(): Promise<void> {
+    this.migrate();
+    if ((await this.ports.scheduler.get()) == null) await this.ports.scheduler.set(this.now() + ALARM_EVERY_MS);
+  }
+
   /** Send the dispatches a committed transaction asked for — only after cutover, when the
    *  mirror writes git; before it, claim.sh does. Never awaited by the caller's response. */
   private flushDispatch() {
     const due = [...this.pendingDispatch];
     this.pendingDispatch.clear();
     if (!due.length || !this.cutover.cutoverAt()) return;
-    this.ctx.waitUntil(Promise.all(due.map((wf) => this.dispatcher(wf).catch(() => false))));
+    this.ports.dispatch.defer(Promise.all(due.map((wf) => this.dispatcher(wf).catch(() => false))));
   }
 
+  /** §3: the one alarm, every 60 seconds. */
   async alarm(): Promise<void> {
     // Re-armed first, so one failing tick never ends the cycle.
-    await this.ctx.storage.setAlarm(this.now() + ALARM_EVERY_MS);
+    await this.ports.scheduler.set(this.now() + ALARM_EVERY_MS);
     // Claims first, so a worker reaped this tick has its messages expired in the same tick.
     try {
-      this.ctx.storage.transactionSync(() => {
+      this.store.transaction(() => {
         this.claims.alarm();
         this.workers.alarm();
       });
@@ -72,19 +83,19 @@ export class Baton extends DurableObject<Env> {
     this.flushDispatch();
   }
 
-  private sql<T = Record<string, SqlStorageValue>>(query: string, ...params: unknown[]): T[] {
-    return this.ctx.storage.sql.exec(query, ...(params as SqlStorageValue[])).toArray() as T[];
+  private sql<T = Row>(query: string, ...params: unknown[]): T[] {
+    return this.store.exec<T>(query, ...params).toArray();
   }
 
   /** Apply the numbered migrations not yet applied, each in its own transaction. */
   migrate(): void {
-    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS _baton_migrations (id INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)');
+    this.store.exec('CREATE TABLE IF NOT EXISTS _baton_migrations (id INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)');
     const done = new Set(this.sql<{ id: number }>('SELECT id FROM _baton_migrations').map((r) => r.id));
     for (const m of MIGRATIONS) {
       if (done.has(m.id)) continue;
-      this.ctx.storage.transactionSync(() => {
-        this.ctx.storage.sql.exec(m.sql);
-        this.ctx.storage.sql.exec('INSERT INTO _baton_migrations (id, applied_at) VALUES (?, ?)', m.id, this.now());
+      this.store.transaction(() => {
+        this.store.script(m.sql);
+        this.store.exec('INSERT INTO _baton_migrations (id, applied_at) VALUES (?, ?)', m.id, this.now());
       });
     }
   }
@@ -115,7 +126,7 @@ export class Baton extends DurableObject<Env> {
       }
       if (req.method === 'POST' && url.pathname === '/v1/sync/foreign-claim') {
         const body = await readJson(req);
-        return json(this.ctx.storage.transactionSync(() => this.mirror.foreignClaim(body)));
+        return json(this.store.transaction(() => this.mirror.foreignClaim(body)));
       }
       if (req.method === 'POST' && url.pathname === '/v1/sync/board') return json(await this.board(checkPayload(await readJson(req))));
       if (req.method === 'GET' && url.pathname === '/v1/ui/state') return json(this.uiState());
@@ -130,7 +141,7 @@ export class Baton extends DurableObject<Env> {
     }
   }
 
-  /** The worker and owner routes of R3-1211. The Worker has verified the principal and passes
+  /** The worker and owner routes of R3-1211. The front has verified the principal and passes
    *  it in `X-Baton-Credential` (a worker token's credential) or `X-Baton-Owner` (the Access
    *  email); it strips both from every incoming request first. */
   private async workerRoute(req: Request, url: URL): Promise<Response | null> {
@@ -139,7 +150,7 @@ export class Baton extends DurableObject<Env> {
     const owner = req.headers.get('X-Baton-Owner');
     const cred = req.headers.get('X-Baton-Credential');
     const secret = req.headers.get('X-Worker-Secret');
-    const tx = <T>(f: () => T): T => this.ctx.storage.transactionSync(f);
+    const tx = <T>(f: () => T): T => this.store.transaction(f);
     if (p.startsWith('/v1/worker/')) {
       if (!cred) throw new BatonError('unauthenticated', 'no worker principal');
       if (m === 'POST' && p === '/v1/worker/heartbeat') {
@@ -273,7 +284,7 @@ export class Baton extends DurableObject<Env> {
     if (p.force && !accepted) {
       // A held post still carries the sync's confirmations: git carries those completions
       // whichever history the owner keeps, and dropping them would leave their items blocked.
-      this.ctx.storage.transactionSync(() => this.claims.confirm(confirmations));
+      this.store.transaction(() => this.claims.confirm(confirmations));
       // Held once per sha: a repeat (the sync re-posts every 15 minutes) changes nothing, so
       // the first deadline stands and the dashboard lists it once. Every row is a hold against
       // the current head (rows held against a head are deleted when it moves, below), so a row
@@ -282,8 +293,8 @@ export class Baton extends DurableObject<Env> {
       const known = this.sql<{ auto_accept_at: number }>('SELECT auto_accept_at FROM held_snapshots WHERE sha = ?', p.sha)[0];
       const deadline = known?.auto_accept_at ?? at + HELD_AUTO_ACCEPT_MS;
       if (!known) {
-        this.ctx.storage.transactionSync(() => {
-          this.ctx.storage.sql.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
+        this.store.transaction(() => {
+          this.store.exec('INSERT INTO held_snapshots (sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at) VALUES (?, ?, ?, ?, ?, ?)',
             p.sha, p.parent_sha, head, p.state.items.length, at, deadline);
           this.event('snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, ticket_count: p.state.items.length, auto_accept_at: deadline }, at);
         });
@@ -292,7 +303,7 @@ export class Baton extends DurableObject<Env> {
     }
     if (p.sha === head) {
       // §6.7: the sync's confirm-only post re-sends the head with its confirmations.
-      const confirmed = this.ctx.storage.transactionSync(() => this.claims.confirm(confirmations));
+      const confirmed = this.store.transaction(() => this.claims.confirm(confirmations));
       return { ok: true, unchanged: true, confirmed };
     }
     if (!accepted && p.parent_sha !== head) throw new BatonError('head-moved', `the head is ${head ?? 'unset'}; re-read it and retry`);
@@ -304,13 +315,13 @@ export class Baton extends DurableObject<Env> {
       return { row, hash: await rowHash(row) };
     }));
     const changed = { upserted: 0, deleted: 0 };
-    this.ctx.storage.transactionSync(() => {
+    this.store.transaction(() => {
       const have = new Map(this.sql<{ id: string; row_hash: string }>('SELECT id, row_hash FROM tickets').map((r) => [r.id, r.row_hash]));
       for (const { row, hash } of rows) {
         const before = have.get(row.id);
         have.delete(row.id);
         if (before === hash) continue;
-        this.ctx.storage.sql.exec(
+        this.store.exec(
           `INSERT INTO tickets (id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only,
              depends_on, blocked_by, repos, ord, rank, snapshot_sha, row_hash, since, holder)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -322,26 +333,26 @@ export class Baton extends DurableObject<Env> {
              since = excluded.since, holder = excluded.holder`,
           row.id, row.path, row.title, row.project, row.status, row.node, row.queue, row.tags, row.tier,
           row.requires_clause, row.operator_only, row.depends_on, row.blocked_by, row.repos, row.ord, row.rank, p.sha, hash, row.since, row.holder);
-        this.ctx.storage.sql.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', row.id);
-        for (const name of row.requires) this.ctx.storage.sql.exec('INSERT INTO ticket_requires (ticket_id, name) VALUES (?, ?)', row.id, name);
+        this.store.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', row.id);
+        for (const name of row.requires) this.store.exec('INSERT INTO ticket_requires (ticket_id, name) VALUES (?, ?)', row.id, name);
         changed.upserted++;
       }
       // Items no longer live leave the cache (R-BTN-35); their claims and events stay.
       for (const gone of have.keys()) {
-        this.ctx.storage.sql.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', gone);
-        this.ctx.storage.sql.exec('DELETE FROM tickets WHERE id = ?', gone);
+        this.store.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', gone);
+        this.store.exec('DELETE FROM tickets WHERE id = ?', gone);
         changed.deleted++;
       }
       this.reference(p);
-      this.ctx.storage.sql.exec('INSERT INTO board_snapshots (sha, parent_sha, received_at, ticket_count) VALUES (?, ?, ?, ?) ON CONFLICT (sha) DO NOTHING', p.sha, p.parent_sha, at, p.state.items.length);
-      this.ctx.storage.sql.exec('INSERT INTO board_head (id, sha) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET sha = excluded.sha', p.sha);
+      this.store.exec('INSERT INTO board_snapshots (sha, parent_sha, received_at, ticket_count) VALUES (?, ?, ?, ?) ON CONFLICT (sha) DO NOTHING', p.sha, p.parent_sha, at, p.state.items.length);
+      this.store.exec('INSERT INTO board_head (id, sha) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET sha = excluded.sha', p.sha);
       // A hold is against one head (R3-1223): when the head moves — an accepted rewrite or a
       // plain fast-forward — every row held against the head it leaves is retired, answered or
       // not. Left in place, an accepted row would accept a NEW rewrite silently whenever the
       // head came back to that sha; an unanswered one is moot (main moved on), and a re-post of
       // its sha is held afresh. So every row left is a hold against the current head. Their
       // history stays in the events.
-      this.ctx.storage.sql.exec('DELETE FROM held_snapshots WHERE head_sha IS ?', head);
+      this.store.exec('DELETE FROM held_snapshots WHERE head_sha IS ?', head);
       this.event('snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, ticket_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
       (changed as Record<string, number>).confirmed = this.claims.confirm(confirmations);
       // R-BTN-35: git wins over a claim it has overtaken.
@@ -356,7 +367,7 @@ export class Baton extends DurableObject<Env> {
    *  the file no longer lists is deleted. (Nothing references `model_providers` yet; when
    *  workers and suspensions do, R3-1211 decides what retiring a referenced account means.) */
   private reference(p: BoardPayload) {
-    const exec = (q: string, ...a: unknown[]) => this.ctx.storage.sql.exec(q, ...(a as SqlStorageValue[]));
+    const exec = (q: string, ...a: unknown[]) => this.store.exec(q, ...a);
     if (p.providers) {
       exec('DELETE FROM provider_models');
       const ids = p.providers.accounts.map((a) => a.id);
@@ -395,7 +406,7 @@ export class Baton extends DurableObject<Env> {
   }
 
   private event(kind: string, detail: unknown, at: number) {
-    this.ctx.storage.sql.exec('INSERT INTO events (at, kind, actor, detail_json) VALUES (?, ?, ?, ?)', at, kind, 'sync', JSON.stringify(detail));
+    this.store.exec('INSERT INTO events (at, kind, actor, detail_json) VALUES (?, ?, ?, ?)', at, kind, 'sync', JSON.stringify(detail));
   }
 
   // ── the dashboard's state (§14: Ready and Providers in rollout step 1) ─────────────────
@@ -404,7 +415,7 @@ export class Baton extends DurableObject<Env> {
     const now = this.now();
     const headSha = this.sql<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? null;
     const snap = headSha ? this.sql('SELECT sha, parent_sha, received_at, ticket_count FROM board_snapshots WHERE sha = ?', headSha)[0] : null;
-    const items = this.sql<Record<string, SqlStorageValue>>(
+    const items = this.sql<Record<string, SqlValue>>(
       `SELECT id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only, ord, rank
        FROM tickets WHERE node LIKE 'ready-%' AND rank IS NOT NULL ORDER BY rank`);
     const requires = new Map<string, string[]>();

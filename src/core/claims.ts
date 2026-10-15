@@ -5,12 +5,12 @@
 // SQLite refuse a second holder, never check-then-insert without them (R-BTN-4).
 import { BatonError } from './http';
 import { isUniqueViolation, logEvent, randomHex } from './db';
-import { familyOf, isEligible, RULE_CODES, suspended } from './shared/baton.mjs';
-import { fitsTier, TIERS } from './shared/vocabulary.mjs';
+import { familyOf, isEligible, RULE_CODES, suspended } from '../shared/baton.mjs';
+import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
 import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord, reviewCapacityRun, REVIEW_CAPACITY_LOOPS, type ResumeActivity } from './attempts';
 import { checkAccept, checkClaim, checkConfirm, checkEnd, checkOverride, checkResolve } from './validate';
 
-type Row = Record<string, SqlStorageValue>;
+import type { Row, SqlValue, Store } from './ports';
 const EXPEDITE_BOUND = 2; // §7.2 rule 2
 const RELEASE_ACK_MS = 2 * 3_600_000; // §9: a delivered release unacknowledged for 2 h reaps the claim
 export const UNCONFIRMED_FLAG_MS = 6 * 3_600_000; // §6.7
@@ -19,7 +19,7 @@ const STALLED_MS = 2 * 3_600_000; // §14 Running: alive but no activity for 2 h
 const GIT_ENDS = new Set(['done', 'superseded', 'deferred', 'deprioritized']);
 
 export interface Ctx {
-  storage: DurableObjectStorage;
+  store: Store;
   now: () => number;
   /** §12: ask for a workflow dispatch once this request's transaction has committed. */
   dispatch?: (workflow: 'baton-mirror.yml' | 'baton-sync.yml') => void;
@@ -58,13 +58,13 @@ export class Claims {
   constructor(private readonly c: Ctx) {}
 
   private rows<T = Row>(q: string, ...p: unknown[]): T[] {
-    return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[])).toArray() as T[];
+    return this.c.store.exec(q, ...p).toArray() as T[];
   }
   private exec(q: string, ...p: unknown[]) {
-    return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[]));
+    return this.c.store.exec(q, ...p);
   }
   private event(kind: string, actor: string, detail: unknown, ticketId: string | null = null, claimId: number | null = null) {
-    logEvent(this.c.storage.sql, this.c.now(), kind, actor, detail, ticketId, claimId);
+    logEvent(this.c.store, this.c.now(), kind, actor, detail, ticketId, claimId);
   }
   private setting(key: string): string | null {
     return this.rows<{ value: string }>('SELECT value FROM baton_settings WHERE key = ?', key)[0]?.value ?? null;
@@ -195,11 +195,11 @@ export class Claims {
   /** `isEligible` for one item. Rule 8 reads the reviewer matrix, which a board may post
    *  without a usable row (no `default`): that fails closed as rule 8, never as a 500. */
   private eligible(w: WorkerFacts, item: ItemFacts, now: number, shared: ReturnType<Claims['shared']>): { ok: boolean; rule?: number | string; code?: string } {
-    const ctx = this.contextFor(item, now, shared);
+    const context = this.contextFor(item, now, shared);
     try {
-      return isEligible(w, item, ctx);
+      return isEligible(w, item, context);
     } catch (e) {
-      if (ctx.lastEndReason !== 'released:awaiting-review-capacity') throw e;
+      if (context.lastEndReason !== 'released:awaiting-review-capacity') throw e;
       return { ok: false, rule: 8, code: RULE_CODES[8] };
     }
   }

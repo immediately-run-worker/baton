@@ -3,6 +3,7 @@
 // verified JWT is trusted: no header, cookie or query parameter stands in for one.
 import { createLocalJWKSet, createRemoteJWKSet, errors, jwtVerify, type JWTVerifyGetKey } from 'jose';
 import { BatonError } from './http';
+import type { Config } from './ports';
 import { SHA256_HEX } from './validate';
 
 const remoteSets = new Map<string, JWTVerifyGetKey>();
@@ -19,7 +20,7 @@ function remote(url: string): JWTVerifyGetKey {
 
 /** The test key set, honoured ONLY under the test bindings (§13a): a deployed Worker, staging
  *  included, has no BATON_TEST_BINDINGS, so no test key can ever verify there. */
-function testKeys(env: Env, jwks: string | undefined): JWTVerifyGetKey | null {
+function testKeys(env: Config, jwks: string | undefined): JWTVerifyGetKey | null {
   if (env.BATON_TEST_BINDINGS !== 'true' || !jwks) return null;
   return createLocalJWKSet(JSON.parse(jwks));
 }
@@ -52,7 +53,7 @@ const bearer = (req: Request) => {
  * repository, ref and the workflow ref must all match; a token minted by a workflow on a
  * branch, another workflow or another repository is refused.
  */
-export async function verifySync(req: Request, env: Env, workflowRef: string = env.SYNC_WORKFLOW_REF): Promise<void> {
+export async function verifySync(req: Request, env: Config, workflowRef: string = env.SYNC_WORKFLOW_REF): Promise<void> {
   const token = bearer(req);
   if (!token) throw new BatonError('unauthenticated', 'an OIDC bearer token is required');
   const keys = testKeys(env, env.TEST_OIDC_JWKS) ?? remote(env.OIDC_JWKS_URL);
@@ -72,7 +73,7 @@ export async function verifySync(req: Request, env: Env, workflowRef: string = e
  * against the team's certs with the application's `aud`, for an email in OWNER_EMAILS.
  * Returns that email.
  */
-export async function verifyOwner(req: Request, env: Env): Promise<string> {
+export async function verifyOwner(req: Request, env: Config): Promise<string> {
   const token = req.headers.get('Cf-Access-Jwt-Assertion') ?? '';
   if (!token) throw new BatonError('unauthenticated', 'Cloudflare Access is required');
   const team = env.ACCESS_TEAM_DOMAIN;
@@ -91,7 +92,7 @@ export async function verifyOwner(req: Request, env: Env): Promise<string> {
 }
 
 /** R-BTN-16: a state-changing `/v1/ui/*` request needs a JSON body and our own Origin. */
-export function checkStateChanging(req: Request, env: Env): void {
+export function checkStateChanging(req: Request, env: Config): void {
   const type = (req.headers.get('Content-Type') ?? '').split(';')[0].trim().toLowerCase();
   if (type !== 'application/json' || req.headers.get('Origin') !== env.BATON_ORIGIN) {
     throw new BatonError('forbidden', 'a state-changing request needs Content-Type: application/json and the dashboard Origin');
@@ -102,7 +103,7 @@ export function checkStateChanging(req: Request, env: Env): void {
  *  `TOKEN_HASHES` Worker secret's values (`{credential id: hex}`). Returns that credential id.
  *  Revoking a token is deleting its hash; the credential's policy (hostname, allowed
  *  capabilities) is the `CREDENTIALS` secret, which the object mirrors into `credentials`. */
-export async function verifyWorker(req: Request, env: Env): Promise<string> {
+export async function verifyWorker(req: Request, env: Config): Promise<string> {
   const token = bearer(req);
   if (!token) throw new BatonError('unauthenticated', 'a worker token is required');
   let hashes: Record<string, string>;
@@ -117,8 +118,25 @@ export async function verifyWorker(req: Request, env: Env): Promise<string> {
     if (!SHA256_HEX.test(hex)) continue;
     const want = Uint8Array.from(hex.match(/../g)!.map((h) => parseInt(h, 16)));
     // Compare every entry in constant time, so the scan's timing says nothing.
-    if (crypto.subtle.timingSafeEqual(presented, want)) match = id;
+    if (equalBytes(presented, want)) match = id;
   }
   if (!match) throw new BatonError('unauthenticated', 'unknown worker token');
   return match;
+}
+
+/** Constant-time equality of two byte strings: every byte is compared whatever differs, so the
+ *  time says nothing about where. Portable, where `crypto.subtle.timingSafeEqual` is
+ *  Cloudflare's alone (R-BTN-55). */
+export function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+/** The administrators' keys (R-BTN-57) from `BATON_ADMIN_KEYS` or an `--admin-keys` file: one
+ *  OpenSSH public key per line; blank lines and `#` comments are not keys. Both hosts read
+ *  them through this one parse. */
+export function parseAdminKeys(text: string): string[] {
+  return text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l && !l.startsWith('#'));
 }

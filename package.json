@@ -2,14 +2,18 @@
   "name": "@immediately-run/baton",
   "private": true,
   "type": "module",
-  "description": "Baton — work-item leases, workers and the factory dashboard on a Cloudflare Durable Object (BATON_SPEC).",
+  "description": "Baton — work-item leases, workers and the factory dashboard, on a Cloudflare Durable Object or as a local Node process (BATON_SPEC §3a).",
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "test": "vitest run && MODEL_SAMPLES=1000 npm run model",
     "test:baton": "vitest run",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.local.json",
     "vendor": "node scripts/vendor.mjs",
     "fixtures": "node scripts/board-fixtures.mjs",
     "dev": "wrangler dev",
+    "start:local": "node scripts/start-local.mjs",
     "model": "node model/check.mjs",
     "model:verify": "quint verify model/instances.qnt --main=small --init=pinit --step=pstep --invariant=safety --max-steps=5"
   },
@@ -21,6 +25,7 @@
     "@cloudflare/workers-types": "^5.20261013.1",
     "@informalsystems/quint": "0.33.0",
     "@types/node": "^22.20.5",
+    "esbuild": "0.28.2",
     "typescript": "^5.9.3",
     "vitest": "4.1.11",
     "wrangler": "^4.150.0"

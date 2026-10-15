@@ -4,7 +4,7 @@
 // only `stop` sends a `release` with reason `provider-suspended`, and only to that account's
 // holders. Holders are seeded claim rows here — R3-1212 makes them real.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { beat, ORIGIN, ownerCall, payload, register, rows, seedClaim, setClock, stub, syncCall , tick } from '../helpers';
+import { beat, ORIGIN, ownerCall, payload, register, rows, seedClaim, setClock, syncCall , tick } from '../helpers';
 
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');

@@ -6,7 +6,7 @@ import { ITEM_ID } from './validate';
 import { logEvent } from './db';
 import { importLegacyClaim } from './cutover';
 
-type Row = Record<string, SqlStorageValue>;
+import type { Config, Row, SqlValue, Store, Workflow } from './ports';
 const MAX_PAGE = 200;
 const NONCE = /^[0-9a-f]{6}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
@@ -18,7 +18,7 @@ const DETAIL_KEYS = new Set(['foreign', 'end_reason', 'ended_at_sha', 'hold_reas
 const actorKind = (actor: string) => actor.split(':')[0];
 
 export interface Ctx {
-  storage: DurableObjectStorage;
+  store: Store;
   now: () => number;
 }
 
@@ -26,7 +26,7 @@ export class Mirror {
   constructor(private readonly c: Ctx) {}
 
   private rows<T = Row>(q: string, ...p: unknown[]): T[] {
-    return this.c.storage.sql.exec(q, ...(p as SqlStorageValue[])).toArray() as T[];
+    return this.c.store.exec(q, ...p).toArray() as T[];
   }
 
   /**
@@ -98,27 +98,27 @@ export class Mirror {
       // A repeated report of the same commit (a run that failed before its scan point moved)
       // logs nothing new.
       const seen = this.rows(`SELECT 1 FROM events WHERE kind = 'foreign-claim' AND ticket_id = ? AND json_extract(detail_json, '$.sha') = ?`, item, b.sha).length;
-      if (!seen) logEvent(this.c.storage.sql, now, 'foreign-claim', 'sync', { nonce, holder_nonce: holder.nonce, sha: b.sha }, item, holder.id);
+      if (!seen) logEvent(this.c.store, now, 'foreign-claim', 'sync', { nonce, holder_nonce: holder.nonce, sha: b.sha }, item, holder.id);
       return { held: true, claim_id: holder.id, nonce: holder.nonce, claimed_at: holder.claimed_at };
     }
     // Nobody holds it: a legacy claim of its own legacy worker, the shape the cutover import makes.
     const head = this.rows<{ sha: string }>('SELECT sha FROM board_head WHERE id = 1')[0]?.sha ?? '';
-    const { claimId } = importLegacyClaim(this.c.storage.sql, now, {
+    const { claimId } = importLegacyClaim(this.c.store, now, {
       item, preferred: null, nonce, claimedAt: b.at as number, sha: head, requestId: `foreign:${item}:${nonce}`, detail: { foreign: true },
     });
-    logEvent(this.c.storage.sql, now, 'foreign-claim', 'sync', { nonce, sha: b.sha, imported: true }, item, claimId);
+    logEvent(this.c.store, now, 'foreign-claim', 'sync', { nonce, sha: b.sha, imported: true }, item, claimId);
     return { imported: true, claim_id: claimId, nonce };
   }
 }
 
 /** §10.3: the workflows Baton dispatches. */
-export type Workflow = 'baton-mirror.yml' | 'baton-sync.yml';
+export type { Workflow };
 
 /**
  * Dispatch `workflow` on docs main with the Actions-write token (§10.3). Fire and forget: a
  * missing or revoked token, or a failed call, leaves the workflow to its 15-minute schedule.
  */
-export async function dispatchWorkflow(env: Env, workflow: Workflow): Promise<boolean> {
+export async function dispatchWorkflow(env: Config, workflow: Workflow): Promise<boolean> {
   if (!env.GITHUB_DISPATCH_TOKEN) return false;
   try {
     const res = await fetch(`https://api.github.com/repos/${env.OIDC_REPOSITORY}/actions/workflows/${workflow}/dispatches`, {
