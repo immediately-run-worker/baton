@@ -219,3 +219,15 @@ export async function captureDispatches() {
 
 /** A qualified ticket id in docs, the repository the fixtures post (R-BTN-47). */
 export const q = (local: string) => `docs:${local}`;
+
+// ── GitHub App webhooks (R3-1247) ─────────────────────────────────────────────────────────
+
+/** A GitHub App delivery of `event` with `payload`, signed with the run's webhook secret
+ *  unless `secret` says otherwise (R-BTN-73). */
+export async function webhookCall(event: string, payload: unknown, { id = requestId(), secret = env.BATON_GITHUB_WEBHOOK_SECRET!, signature }: { id?: string; secret?: string; signature?: string } = {}) {
+  const body = JSON.stringify(payload);
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const mac = new Uint8Array(await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(body)));
+  const sig = signature ?? 'sha256=' + [...mac].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return call('/v1/github/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-GitHub-Event': event, 'X-GitHub-Delivery': id, 'X-Hub-Signature-256': sig }, body });
+}

@@ -17,7 +17,7 @@ How Baton differs from a durable-execution engine such as Temporal, and where ea
 |---|---|
 | `src/core/` | Everything Baton decides, on either host (R-BTN-55): no platform import, checked by `test/unit/boundary-host.test.ts` |
 | `src/core/ports.ts` | The platform services core takes: `Store`, `Scheduler`, `Clock`, `AdminKeys`, `HookRunner`, `Dispatch`, `Gate`, and the instance's `Config` |
-| `src/core/front.ts` | What stands in front of the core: verifies the principal (OIDC for the sync, Access for the owner), sets the R-BTN-16 headers, serves the dashboard, forwards the API |
+| `src/core/front.ts` | What stands in front of the core: verifies the principal (OIDC for the sync, Access for the owner, a signed request's shape for a worker, the App's signature for a webhook), sets the R-BTN-16 headers, serves the dashboard, forwards the API |
 | `src/core/baton.ts` | The core: migrations, board sync (§7.1), routing, the alarm, the dashboard state |
 | `src/core/workerApi.ts` | The worker API (§11): heartbeat and registration, activities, messages, suspensions, mode and shadow reports, the Workers view |
 | `src/core/claims.ts` | The lease (§6, R3-1212): claim and end, matching (§7.2 rules 1–9 via `isEligible`), the alarm's reaps, the fence before re-issue, confirmations, git winning over a stale claim, the Running / Timeline / Needs you data |
@@ -25,6 +25,7 @@ How Baton differs from a durable-execution engine such as Temporal, and where ea
 | `src/core/registry.ts` | The registered repositories (R-BTN-47): a checked, insert-only registration, the `BATON_REPOSITORIES` seed, the one repository a sync token binds to (R-BTN-15), qualified ticket ids (`docs:R3-1205`) |
 | `src/core/cutover.ts` | The one-way cutover (R-BTN-28): `POST /v1/ui/cutover`, the legacy import, adoption on the owner's confirmation |
 | `src/core/validate.ts` | Pure: every worker- and owner-supplied field checked before any write (§10.4) |
+| `src/core/webhook.ts` | GitHub App deliveries (R-BTN-73): `X-Hub-Signature-256` before anything is read, the one parser of R-BTN-73's fields, repeat and own-work drops, the repository map, one sync dispatch per repository per 30 seconds plus a trailing one |
 | `src/core/observations.ts` | The per-repository observation counter (R-BTN-62): `POST /v1/sync/observation` hands out the next number (`sync-busy` while one is outstanding, void after 10 minutes); a board post's number is used once and must be above the last accepted reading's |
 | `src/core/courses.ts` | The course registry each sync posts (R-BTN-48): its shape check, each course file judged by `validateCourse` (a failing one keeps the previous and is listed under Needs you, R-BTN-69), the `min_worker_version` rule 9 reads |
 | `src/core/course.ts` | Pure: `validateCourse`, every way a course file breaks R-BTN-69's rules (stations reachable, an end from everywhere, cycles bounded, `start_leg`, inputs) |
@@ -78,6 +79,19 @@ credential's hash revokes it on its next call. Bearer tokens go once every worke
 
 After the first heartbeat a worker also presents the per-session secret it registered
 (R-BTN-14). Only the credential named `test` may send `test_harness` (R-BTN-32).
+
+## GitHub App webhooks
+
+`POST /v1/github/webhook` takes the GitHub App's deliveries (R-BTN-73): `push`, `pull_request`,
+`pull_request_review`, `issue_comment` and `workflow_run`, as JSON. The Worker verifies
+`X-Hub-Signature-256` with the secret `BATON_GITHUB_WEBHOOK_SECRET` before reading anything
+(no secret, no delivery is accepted), reads only the event, the delivery id,
+`repository.full_name`, `workflow_run.path` and a push's `pusher.name` and
+`head_commit.author.email`, and dispatches the sync of every registered repository whose tickets
+name the delivery's repository — at most once per repository per 30 seconds, plus one trailing
+dispatch when a window that suppressed a delivery closes. A repeated delivery id, a
+`workflow_run` of a registered repository's own sync or mirror workflow, and the mirror's push
+dispatch nothing.
 
 ## Running locally
 

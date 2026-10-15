@@ -3,7 +3,8 @@
 // forwards the API to the core — through the Durable Object on Cloudflare, through the request
 // queue locally (R-BTN-55). Every response leaves with the security headers.
 import { verifyOwner, verifyRequest, verifySyncToken, verifyWorker, checkStateChanging, withBody } from './auth';
-import { BatonError, errorResponse, withSecurityHeaders } from './http';
+import { BatonError, errorResponse, json, withSecurityHeaders } from './http';
+import { pickDelivery, verifyDelivery } from './webhook';
 import type { Config } from './ports';
 import page from '../ui/index.html';
 import style from '../ui/app.css';
@@ -20,7 +21,7 @@ const STATIC: Record<string, [string, string]> = {
 };
 
 /** The headers that carry a verified principal to the object. A request never brings its own. */
-const PRINCIPAL_HEADERS = ['X-Baton-Credential', 'X-Baton-Owner', 'X-Baton-Sync', 'X-Baton-Signed'];
+const PRINCIPAL_HEADERS = ['X-Baton-Credential', 'X-Baton-Owner', 'X-Baton-Sync', 'X-Baton-Signed', 'X-Baton-Webhook'];
 
 async function route(req: Request, env: Config, to: Forward): Promise<Response> {
   const { pathname } = new URL(req.url);
@@ -29,6 +30,22 @@ async function route(req: Request, env: Config, to: Forward): Promise<Response> 
     // sync or mirror workflow (Registry.forSync), so the front names no repository.
     const claims = await verifySyncToken(req, env);
     return forward(req, to, { 'X-Baton-Sync': JSON.stringify(claims) });
+  }
+  if (pathname === '/v1/github/webhook') {
+    // R-BTN-73: the GitHub App's delivery — the one route whose credential is GitHub's
+    // signature. Verified before anything is read; then only R-BTN-73's fields go on, in a
+    // request that carries nothing else of the delivery's.
+    if (req.method !== 'POST') throw new BatonError('not-found', 'no such route');
+    const body = await verifyDelivery(req, env.BATON_GITHUB_WEBHOOK_SECRET);
+    let payload: unknown = null;
+    try {
+      payload = JSON.parse(new TextDecoder().decode(body));
+    } catch {
+      // A form-encoded or broken body is not a delivery Baton reads.
+    }
+    const d = pickDelivery(req.headers.get('X-GitHub-Event'), req.headers.get('X-GitHub-Delivery'), payload);
+    if (!d) return json({ outcome: 'dropped' });
+    return forward(new Request(req.url, { method: 'POST' }), to, { 'X-Baton-Webhook': JSON.stringify(d) });
   }
   if (pathname.startsWith('/v1/runner/')) {
     if (req.headers.has('Signature-Input') || req.headers.has('Signature')) {

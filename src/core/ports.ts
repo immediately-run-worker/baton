@@ -91,6 +91,8 @@ export interface Config {
   /** §10.3: a fine-grained token, Actions: write on docs only, for workflow_dispatch. Absent,
    *  the two workflows run on their 15-minute schedules. */
   GITHUB_DISPATCH_TOKEN?: string;
+  /** R-BTN-73: the GitHub App's webhook secret. Absent, every delivery is refused. */
+  BATON_GITHUB_WEBHOOK_SECRET?: string;
   /** Test bindings only (vitest.config.ts, §13a): never set by a deploy or a local start. */
   BATON_TEST_BINDINGS?: string;
   TEST_OIDC_JWKS?: string;

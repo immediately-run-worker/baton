@@ -10,6 +10,7 @@ import courses from './0007_courses.sql';
 import observations from './0008_observations.sql';
 import tiers from './0009_tiers.sql';
 import keys from './0010_keys.sql';
+import webhooks from './0011_webhooks.sql';
 
 export const MIGRATIONS: { id: number; sql: string }[] = [
   { id: 1, sql: init },
@@ -22,4 +23,5 @@ export const MIGRATIONS: { id: number; sql: string }[] = [
   { id: 8, sql: observations },
   { id: 9, sql: tiers },
   { id: 10, sql: keys },
+  { id: 11, sql: webhooks },
 ];
