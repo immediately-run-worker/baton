@@ -10,7 +10,9 @@ defect: it is filed against BATON_SPEC with the trace, never fixed by weakening 
 | File | What it holds |
 |---|---|
 | `baton.qnt` | the state (one record, `st`) and every action; the sizes are constants |
-| `properties.qnt` | the safety invariants (conjoined as `safety`), the liveness properties, the reachability witnesses — over any instance |
+| `properties.qnt` | the safety invariants, conjoined as `safety`, over any instance |
+| `liveness.qnt` | the liveness properties under weak fairness, over `small` (kept apart: their fairness terms made Apalache's input too large) |
+| `witnesses.qnt` | the reachability witnesses, each an invariant that must fail |
 | `instances.qnt` | `sim` (R3-1243's bounds: 3 workers, 2 tickets, 2 overlapping sync runs) and `small` (2 workers, 1 ticket, 1 sync run, for Apalache) |
 | `regressions.qnt` | one deterministic run per defect the reviews found (22), each asserting the merged spec does not reach it |
 | `check.mjs` | `npm run model` |
@@ -23,7 +25,7 @@ defect: it is filed against BATON_SPEC with the trace, never fixed by weakening 
   eight reachability witnesses. No JVM; about 6 minutes, run by CI's `model` job. `npm test`
   runs it with `MODEL_SAMPLES=1000` (about a minute).
 - `npm run model:verify` — Apalache's bounded proof of `safety` on `small` to depth 5, about
-  5 minutes on 4 CPUs (depth 6 had not finished after 14 more minutes). Needs
+  15 minutes on 4 CPUs since the round-1 fixes (depth 6 does not finish in CI's budget). Needs
   Java (CI installs Temurin 21); the first run downloads Apalache.
 
 Simulation uses Quint's TypeScript backend: the Rust evaluator is fetched from GitHub
@@ -84,7 +86,7 @@ releases at first use, which a sandboxed agent cannot always reach.
 | `noStuckTicket` — no deadlock: a ticket git has not finished or withdrawn, once the syncs are idle and the head matches git, is held, fenced, owner-held, waiting on `policy`, flagged, or claimable | §6.7, R-BTN-10, R-BTN-35, R-BTN-67 |
 
 **Liveness** — `fencesClear`, `endsResolve`, `barsLiftClaimable`, `readyIsClaimed` — is stated
-in `properties.qnt` under weak fairness of each resolving step, per worker. The item's fifth,
+in `liveness.qnt` under weak fairness of each resolving step, per worker. The item's fifth,
 a held history accepted within 24 hours, is not stated: held histories are not modelled. See
 *Checked how* for what has been run.
 
@@ -110,8 +112,8 @@ outstanding (`sync-busy`). `overlappingSyncRunsRefusedTest` keeps it.
 | `safety`, 10,000 × 40 steps of `step`; 3,000 × 40 of `progressStep` | `sim` | no violation |
 | witnesses (a confirmed suspension, a resumed claim, a fence, a refused claim, an alarm reap; a fix leg, a regression, a merge) | `sim` | all reached |
 | a second review, a confirmed `done` | — | reached by regression runs only |
-| Apalache, `safety` | `small`, depth 5 | being measured (round-1 fixes) |
-| Apalache, liveness | `small` | being measured (round-1 fixes) |
+| Apalache, `safety` | `small`, depth 5 | no violation (15 min 29 s on 4 CPUs) |
+| liveness, `fencesClear` | `small`, TLC (Apalache cannot check fairness) | no violation in 8,187 distinct states (971 million generated) before a 28-minute cap; **not exhaustive** — R3-1254 narrows the instance |
 
 Depth 5 on `small` reaches claims, advances, pushes and a sync; it does not reach a judged
 snapshot (a confirmation, a stale release or a regression needs 6–8 steps), so for those
@@ -141,4 +143,4 @@ invariants the evidence is the simulation and the regression runs, not the proof
   state as given; **R-BTN-40** (suspend rather than wait on the lease) is a worker's choice, so
   `endClaim(…, "suspended", …)` may happen at any point — both are modelled as nondeterminism,
   not as rules of their own.
-- **Blocks** (BATON_SPEC §2g, R-BTN-75–77; docs#213, in review): to be added when it merges.
+- **Blocks, decisions, leg queues and notices** (BATON_SPEC §2g, R-BTN-75–80; docs#213): R3-1254, with exhaustive liveness on a narrowed instance.
