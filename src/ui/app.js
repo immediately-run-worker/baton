@@ -311,7 +311,12 @@ function renderNeeds() {
     list.append(el('li', { text: `Release of ${item} to worker #${m.to_worker_id}: ${m.delivered_at ? `delivered ${fmtTime(m.delivered_at)}` : 'not yet delivered'}, unacknowledged` }));
   }
   for (const c of n.fence_pending) list.append(el('li', { text: `${c.ticket_id}: reaped ${fmtTime(c.ended_at)}, waiting for worker #${c.worker_id} to confirm its fence` }));
-  for (const w of n.stale_skills) list.append(el('li', { text: `${w.hostname} · ${w.session_name}: skills version ${w.skills_version}, below the minimum` }));
+  for (const w of n.stale_skills) list.append(el('li', { text: `${w.hostname} · ${w.session_name}: ${w.repository_id}:${w.course_id} version ${w.version}, below its minimum ${w.min_worker_version} — restart it from a pulled checkout` }));
+  // R-BTN-69: a refused course file; the one in force stays until a passing one is posted.
+  for (const c of n.courses_refused ?? []) {
+    const first = c.violations[0];
+    list.append(el('li', { text: `${c.repository_id}:${c.course_id} version ${c.version} refused at ${c.snapshot_sha.slice(0, 8)} (${c.violations.length} problem${c.violations.length === 1 ? '' : 's'}${first ? `, first: ${first.path || 'the file'} — ${first.message}` : ''}); the previous file stays in force` }));
+  }
   for (const h of n.held_items) {
     // §6.10: the owner decides what a hold means — retry (Lift), re-draft, re-tier or park.
     const li = el('li', { text: `${h.ticket_id}: held (${h.hold_reason ?? 'owner'})` });

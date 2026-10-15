@@ -1,6 +1,6 @@
 // R3-1206 — board sync's compare-and-set (BATON_SPEC §7.1 R-BTN-11; G-BTN-7).
 import { describe, it, expect, inject } from 'vitest';
-import { payload, rows, setClock, syncCall } from '../helpers';
+import { course, payload, rows, setClock, syncCall } from '../helpers';
 
 const board = inject('board');
 const { A, B, C, D } = board.shas;
@@ -64,7 +64,11 @@ describe('POST /v1/sync/board', () => {
     ['a malformed item id', { sha: A, parent_sha: null, state: { items: [{ id: '../etc', title: 't', status: 'available', queue: 'autonomous', node: 'blocked' }] }, ready: [] }],
     ['a control character in a title', { sha: A, parent_sha: null, state: { items: [{ id: 'R3-1', title: 'a\u0007b', status: 'available', queue: 'autonomous', node: 'blocked' }] }, ready: [] }],
     ['force as a string', { ...payload(A, null, board.states.A), force: 'false' }],
-    ['a negative min_skills_version', { ...payload(A, null, board.states.A), min_skills_version: -1 }],
+    ['a registry that is not a list', { ...payload(A, null, board.states.A), registry: {} }],
+    ['a course named twice', { ...payload(A, null, board.states.A), registry: [course(), course()] }],
+    ['a min_worker_version above its version', { ...payload(A, null, board.states.A), registry: [course(3, 4)] }],
+    ['a branch pattern without {ticket}', { ...payload(A, null, board.states.A), registry: [course(3, 3, { branch_pattern: 'claude/*' })] }],
+    ['an item naming a malformed course', { sha: A, parent_sha: null, state: { items: [{ id: 'R3-1', title: 't', status: 'available', queue: 'autonomous', node: 'blocked', course: 'Roadmap PR' }] }, ready: [] }],
     ['an account list that is not a list', { ...payload(A, null, board.states.A), providers: { accounts: 'x', peak_schedules: [], models: [] } }],
     ['an unknown billing kind', { ...payload(A, null, board.states.A), providers: { accounts: [{ id: 'zai', name: 'Z', billing: 'credits', window_limits: null }], peak_schedules: [], models: [] } }],
     ['a model on an unknown schedule', { ...payload(A, null, board.states.A), providers: { accounts: [{ id: 'zai', name: 'Z', billing: 'api', window_limits: null }], peak_schedules: [], models: [{ provider: 'zai', model: 'm', monthly_limit_usd: null, peak_schedule: 'nope' }] } }],

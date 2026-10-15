@@ -2,6 +2,8 @@
 // the fake clock (R-BTN-32). Host-neutral (S-BTN-31): `#host` is the Cloudflare host (workerd)
 // or the local one (Node), per vitest project.
 import { importJWK, SignJWT } from 'jose';
+import roadmapPr from './fixtures/courses/roadmap-pr/course.json';
+import { ACTIVITY_KINDS } from '../src/core/validate';
 import { call as hostCall, config as env, tick as hostTick, withCore } from '#host';
 
 export { HOST, withCore } from '#host';
@@ -69,7 +71,14 @@ export function payload(
   extra: Record<string, unknown> = {},
 ) {
   const { items, state, ready, sha: _s, parent_sha: _p, ...reference } = snap;
-  return { ...reference, sha, parent_sha: parent, state: { items: state?.items ?? items ?? [] }, ready, confirmations: [], ...extra };
+  return { registry: [course()], ...reference, sha, parent_sha: parent, state: { items: state?.items ?? items ?? [] }, ready, confirmations: [], ...extra };
+}
+
+/** A registry entry (R-BTN-48) as the sync posts it: docs' `roadmap-pr`, its course file the
+ *  vendored fixture, at `version` with workers needed at `min` (rule 9). */
+export function course(version = 3, min = version, over: Record<string, unknown> = {}) {
+  return { id: 'roadmap-pr', version, min_worker_version: min, skill: 'next-roadmap-item', course: roadmapPr,
+    step_kinds: [...ACTIVITY_KINDS], branch_pattern: 'claude/{ticket}-*', ...over };
 }
 
 // ── workers (R3-1211) ─────────────────────────────────────────────────────────────────────
@@ -94,7 +103,7 @@ export function hbBody(cred: keyof typeof TOKENS, over: Record<string, unknown> 
   return {
     hostname: HOSTS[cred], session_name: `s-${cred}`, harness: 'opencode', kind: 'vm', model_id: 'zai-coding-plan/glm-5.3',
     model_provider_id: 'zai', billing: { 'zai-coding-plan': 'zai', 'opencode-go': 'opencode_go_plus' }, capabilities: ['agent-venue'],
-    tier_ceiling: 'critical', lease_timeout_s: 900, skills_version: 3, ...over,
+    tier_ceiling: 'critical', lease_timeout_s: 900, courses: [{ repository: 'docs', course: 'roadmap-pr', version: 3 }], ...over,
   };
 }
 

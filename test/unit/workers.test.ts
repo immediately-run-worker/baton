@@ -20,7 +20,7 @@ beforeEach(async () => {
 describe('G-BTN-5: identity — the secret, the hostname and the capability allow-list', () => {
   it('a first heartbeat registers; later calls need the secret; a wrong one is session-taken', async () => {
     const { id, secret, first } = await register('vm-a');
-    expect(first).toMatchObject({ worker_id: id, incarnation: 1, lease_timeout_s: 900, claim: null, messages: [], mode: { docs: 'shadow' }, min_skills_version: 3 });
+    expect(first).toMatchObject({ worker_id: id, incarnation: 1, lease_timeout_s: 900, claim: null, messages: [], mode: { docs: 'shadow' }, stale_courses: [] });
     expect((await beat('vm-a', secret)).status).toBe(200);
     const wrong = await beat('vm-a', 'not-the-secret');
     expect(wrong.status).toBe(409);

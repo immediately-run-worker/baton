@@ -143,7 +143,7 @@ export class WorkerApi {
   /** `POST /v1/runner/heartbeat` (§11): registration on first contact, the secret and re-key
    *  rules (R-BTN-14), the credential's hostname and capability allow-list (R-BTN-13), settings
    *  rewritten only when their hash changes (§3), transcripts, usage and rate limits; the answer
-   *  carries the claim, the messages, the suspensions, `min_skills_version` and the mode. */
+   *  carries the claim, the messages, the suspensions, the stale courses and the mode. */
   async heartbeat(credentialId: string, secretHeader: string | null, body: unknown) {
     const hb = checkHeartbeat(body, this.transcriptRepos());
     // Every hash first; then every read and write in one synchronous transaction (§3).
@@ -151,7 +151,8 @@ export class WorkerApi {
     const settingsHash = await sha256Hex(JSON.stringify({
       harness: hb.harness, kind: hb.kind, model_id: hb.model_id ?? null, model_provider_id: hb.model_provider_id ?? null,
       billing: Object.entries(hb.billing).sort(), capabilities: [...hb.capabilities].sort(), tier: hb.tier_ceiling,
-      lease: hb.lease_timeout_s, skills: hb.skills_version,
+      lease: hb.lease_timeout_s,
+      courses: hb.courses.map((c) => `${c.repository}:${c.course}@${c.version}`).sort(),
     }));
     return this.c.store.transaction(() => this.heartbeatTx(credentialId, presented, settingsHash, hb));
   }
@@ -175,10 +176,10 @@ export class WorkerApi {
     if (!w) {
       if (!hb.secret_hash) bad('secret_hash', 'the first heartbeat of a session carries its SHA-256');
       this.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, model_id, model_provider_id,
-                   skills_version, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at, last_activity_at)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
+                   tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at, last_activity_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?)`,
         hb.hostname, hb.session_name, hb.secret_hash, cred.id, hb.harness, hb.kind, hb.model_id ?? null, modelProvider,
-        hb.skills_version, hb.tier_ceiling, hb.lease_timeout_s * 1000, now, now, hb.last_activity_at ?? null);
+        hb.tier_ceiling, hb.lease_timeout_s * 1000, now, now, hb.last_activity_at ?? null);
       w = this.rows<typeof w>('SELECT id, secret_hash, credential_id, reaped_at, incarnation, settings_hash, secret_seen FROM workers WHERE hostname = ? AND session_name = ?', hb.hostname, hb.session_name)[0];
     } else {
       if (w.credential_id !== cred.id) throw new BatonError('forbidden', 'this session is registered under another credential');
@@ -209,8 +210,8 @@ export class WorkerApi {
     const current = rekeyed ? hb.secret_hash : w.secret_hash; // the hash stored now
     const secretSeen = presented != null && presented === current ? 1 : 0;
     this.exec(`UPDATE workers SET last_seen_at = ?, secret_seen = MAX(secret_seen, ?), last_activity_at = COALESCE(?, last_activity_at), harness = ?, kind = ?,
-                 model_id = ?, model_provider_id = ?, skills_version = ?, tier_ceiling = ?, lease_timeout_ms = ? WHERE id = ?`,
-      now, secretSeen, hb.last_activity_at ?? null, hb.harness, hb.kind, hb.model_id ?? null, modelProvider, hb.skills_version, hb.tier_ceiling,
+                 model_id = ?, model_provider_id = ?, tier_ceiling = ?, lease_timeout_ms = ? WHERE id = ?`,
+      now, secretSeen, hb.last_activity_at ?? null, hb.harness, hb.kind, hb.model_id ?? null, modelProvider, hb.tier_ceiling,
       hb.lease_timeout_s * 1000, w.id);
     // The stored hash also covers which billed accounts the reference data knows, so a prefix
     // skipped while its account was unknown is written once the account arrives (§7.4).
@@ -232,7 +233,8 @@ export class WorkerApi {
       claim: claim ? { ...claim, activity: this.currentActivity(w.id) } : null,
       messages: this.deliver(w.id, now),
       suspensions: this.suspensionsFor(now),
-      min_skills_version: Number(this.setting('min_skills_version') ?? 0),
+      // R-BTN-22: the declared courses below their min_worker_version — no new claim on them.
+      stale_courses: this.staleCourses(w.id),
       // §11: each repository's mode (R-BTN-28, per repository).
       mode: Object.fromEntries(this.rows<{ id: string; cutover_at: number | null }>('SELECT id, cutover_at FROM repositories WHERE retired_at IS NULL ORDER BY id')
         .map((r) => [r.id, r.cutover_at == null ? 'shadow' : 'cut-over'])),
@@ -263,6 +265,11 @@ export class WorkerApi {
     this.exec('DELETE FROM worker_providers WHERE worker_id = ?', workerId);
     for (const [prefix, account] of Object.entries(hb.billing)) {
       if (knownAccounts.has(account)) this.exec('INSERT INTO worker_providers (worker_id, prefix, provider_id) VALUES (?, ?, ?)', workerId, prefix, account);
+    }
+    // R-BTN-48: the courses its checkouts run, at their versions — rule 9 reads them.
+    this.exec('DELETE FROM worker_courses WHERE worker_id = ?', workerId);
+    for (const c of hb.courses) {
+      this.exec('INSERT INTO worker_courses (worker_id, repository_id, course_id, version) VALUES (?, ?, ?, ?)', workerId, c.repository, c.course, c.version);
     }
     this.exec('UPDATE workers SET settings_hash = ? WHERE id = ?', hash, workerId);
   }
@@ -546,11 +553,21 @@ export class WorkerApi {
     return { ok: true, claim_id: holder.id };
   }
 
+  /** A worker's declared courses (R-BTN-48) with each one's `min_worker_version` — only those
+   *  below it (rule 9), or all of them for the Workers view. A course no repository registered
+   *  has no minimum and is never stale. */
+  staleCourses(workerId: number, all = false) {
+    return this.rows<{ repository: string; course: string; version: number; min_worker_version: number | null }>(
+      `SELECT f.repository_id AS repository, f.course_id AS course, f.version, c.min_worker_version
+       FROM worker_courses f LEFT JOIN courses c ON c.repository_id = f.repository_id AND c.id = f.course_id
+       WHERE f.worker_id = ? AND (? OR f.version < c.min_worker_version) ORDER BY f.repository_id, f.course_id`, workerId, all ? 1 : 0);
+  }
+
   // ── the dashboard's Workers view (§14) ──────────────────────────────────────────────────
 
   workersView(now: number) {
     const workers = this.rows<Row>(`SELECT id, hostname, session_name, harness, kind, model_id, model_provider_id, tier_ceiling, lease_timeout_ms,
-                                       skills_version, first_seen_at, last_seen_at, last_activity_at, reaped_at, incarnation FROM workers ORDER BY hostname, id`);
+                                       first_seen_at, last_seen_at, last_activity_at, reaped_at, incarnation FROM workers ORDER BY hostname, id`);
     return workers.map((w) => {
       const id = w.id as number;
       const alive = w.reaped_at == null && now - (w.last_seen_at as number) < (w.lease_timeout_ms as number);
@@ -562,6 +579,7 @@ export class WorkerApi {
         alive,
         capabilities: this.rows<{ capability: string; declared: string }>('SELECT capability, declared FROM worker_capabilities WHERE worker_id = ? ORDER BY capability', id),
         providers: this.rows<{ prefix: string; provider_id: string }>('SELECT prefix, provider_id FROM worker_providers WHERE worker_id = ? ORDER BY prefix', id),
+        courses: this.staleCourses(id, true),
         claim: this.activeClaim(id),
         activity: this.currentActivity(id),
         // §6.8: built only as a blob link from validated parts, never a reported URL.

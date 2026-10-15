@@ -49,6 +49,9 @@ export function buildFixtureRepo() {
   for (const f of readdirSync(join(FIXTURES, 'roadmap'))) put(f.replace(/\.mdx$/, ''), fixture(f.replace(/\.mdx$/, '')));
   mkdirSync(join(work, 'scripts/data'), { recursive: true });
   for (const f of readdirSync(join(FIXTURES, 'data'))) copyFileSync(join(FIXTURES, 'data', f), join(work, 'scripts/data', f));
+  // docs' course file, which the sync posts in its registry (R-BTN-48): the vendored copy.
+  mkdirSync(join(work, '.baton/courses/roadmap-pr'), { recursive: true });
+  copyFileSync(join(FIXTURES, 'courses/roadmap-pr/course.json'), join(work, '.baton/courses/roadmap-pr/course.json'));
   const A = commit('roadmap: file R3-9001..9004', '2026-10-13T10:00:00Z');
   git(work, ['remote', 'add', 'origin', bare]);
   git(work, ['push', '-q', 'origin', 'main']);

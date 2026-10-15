@@ -145,8 +145,7 @@ export class Registry {
   }
 
   /** The repository whose sync still posts the instance's fleet data — providers, prices, the
-   *  reviewer matrix and catalog, `min_skills_version` — until part 2b replaces them with each
-   *  course's own version (§2a drops the reference repository; R3-1231). An interim, so it is
+   *  reviewer matrix and catalog — until the course data of §7.1's board post replaces them (§2a drops the reference repository; R3-1231). An interim, so it is
    *  the one a deployment registered first (docs, the board these tables came from), and no
    *  other repository's sync can rewrite what every repository's claims read. */
   fleetRepository(): string | null {

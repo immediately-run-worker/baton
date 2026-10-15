@@ -34,16 +34,19 @@ interface WorkerFacts {
   model_id: string | null;
   model_provider_id: string | null;
   tier_ceiling: string;
-  skills_version: number;
   lease_timeout_ms: number;
   last_seen_at: number;
   last_activity_at: number | null;
   declared: string[];
   billing: Record<string, string>;
+  /** The courses its checkouts run (R-BTN-48): rule 9. */
+  courses: { repository: string; course: string; version: number }[];
 }
 
 interface ItemFacts {
   id: string;
+  repository: string;
+  course: string;
   path: string;
   node: string;
   queue: string;
@@ -85,18 +88,20 @@ export class Claims {
   // ── what matching reads ─────────────────────────────────────────────────────────────────
 
   private worker(id: number): WorkerFacts {
-    const w = this.rows<Omit<WorkerFacts, 'declared' | 'billing'>>(
-      `SELECT id, kind, incarnation, model_id, model_provider_id, tier_ceiling, skills_version, lease_timeout_ms, last_seen_at, last_activity_at
+    const w = this.rows<Omit<WorkerFacts, 'declared' | 'billing' | 'courses'>>(
+      `SELECT id, kind, incarnation, model_id, model_provider_id, tier_ceiling, lease_timeout_ms, last_seen_at, last_activity_at
        FROM workers WHERE id = ?`, id)[0];
     if (!w) throw new BatonError('unauthenticated', 'no such worker');
     const declared = this.rows<{ declared: string }>('SELECT DISTINCT declared FROM worker_capabilities WHERE worker_id = ? ORDER BY declared', id).map((r) => r.declared);
     const billing = Object.fromEntries(this.rows<{ prefix: string; provider_id: string }>('SELECT prefix, provider_id FROM worker_providers WHERE worker_id = ?', id).map((r) => [r.prefix, r.provider_id]));
-    return { ...w, declared, billing };
+    const courses = this.rows<{ repository: string; course: string; version: number }>(
+      'SELECT repository_id AS repository, course_id AS course, version FROM worker_courses WHERE worker_id = ? ORDER BY repository_id, course_id', id);
+    return { ...w, declared, billing, courses };
   }
 
   private item(id: string): ItemFacts | null {
-    const r = this.rows<{ id: string; path: string; node: string; queue: string; status: string; tier: string | null; tags: string; requires_clause: string; operator_only: number; rank: number | null }>(
-      'SELECT id, path, node, queue, status, tier, tags, requires_clause, operator_only, rank FROM tickets WHERE id = ?', id)[0];
+    const r = this.rows<{ id: string; repository_id: string; course_id: string; path: string; node: string; queue: string; status: string; tier: string | null; tags: string; requires_clause: string; operator_only: number; rank: number | null }>(
+      'SELECT id, repository_id, course_id, path, node, queue, status, tier, tags, requires_clause, operator_only, rank FROM tickets WHERE id = ?', id)[0];
     if (!r) return null;
     const requires = r.requires_clause === 'listed'
       ? this.rows<{ name: string }>('SELECT name FROM ticket_requires WHERE ticket_id = ? ORDER BY name', id).map((x) => x.name)
@@ -105,7 +110,7 @@ export class Claims {
     // Rule 6 reads `operator_only` (§7.2): the sync stores no role name, human-operator included.
     if (r.operator_only && !tags.includes('OP')) tags.push('OP');
     const override = this.override(id);
-    return { id: r.id, path: r.path, node: r.node, queue: r.queue, status: r.status, tier: r.tier, tags, requires,
+    return { id: r.id, repository: r.repository_id, course: r.course_id, path: r.path, node: r.node, queue: r.queue, status: r.status, tier: r.tier, tags, requires,
       expedite: r.queue === 'expedite' || !!override?.expedite, rank: r.rank };
   }
 
@@ -125,7 +130,7 @@ export class Claims {
   }
 
   /** `isEligible`'s context for one item (§7.2), from Baton's own tables (R-BTN-33). */
-  private contextFor(item: ItemFacts, now: number, shared: { suspensions: Row[]; minSkills: number; expediteActive: number; reviewer: ReturnType<Claims['reviewerData']> }) {
+  private contextFor(item: ItemFacts, now: number, shared: { suspensions: Row[]; expediteActive: number; reviewer: ReturnType<Claims['reviewerData']> }) {
     const claims = this.rows('SELECT status, confirmed_at, fence_pending FROM claims WHERE ticket_id = ?', item.id);
     const last = this.rows<{ end_reason: string | null }>(
       `SELECT end_reason FROM claims WHERE ticket_id = ? AND status != 'active' ORDER BY ended_at DESC, id DESC LIMIT 1`, item.id)[0];
@@ -143,7 +148,9 @@ export class Claims {
       claims,
       override: this.override(item.id),
       suspensions: shared.suspensions,
-      minSkillsVersion: shared.minSkills,
+      // Rule 9 (R-BTN-65): the item's course's; a course no longer registered asks for nothing
+      // and cannot be reached anyway — every ticket names a registered course (§7.1).
+      minWorkerVersion: this.rows<{ v: number }>('SELECT min_worker_version AS v FROM courses WHERE repository_id = ? AND id = ?', item.repository, item.course)[0]?.v ?? 0,
       expediteActive: shared.expediteActive,
       expediteBound: EXPEDITE_BOUND,
       lastEndReason,
@@ -156,7 +163,6 @@ export class Claims {
   private shared(now: number) {
     return {
       suspensions: this.suspensions(),
-      minSkills: Number(this.setting('min_skills_version') ?? 0),
       // Rule 2 counts active Baton claims on expedited items, not git in-progress.
       expediteActive: this.rows<{ n: number }>(
         `SELECT count(*) AS n FROM claims c LEFT JOIN tickets w ON w.id = c.ticket_id
@@ -167,10 +173,10 @@ export class Claims {
     };
   }
 
-  /** The §7.2 candidate query: rules 1, 3, 4, 5 (as a tier rank), 6 and 10, across every
+  /** The §7.2 candidate query: rules 1, 3, 4, 5 (as a tier rank), 6, 9 and 10, across every
    *  cut-over repository: expedited first, then the repositories by weight, each in its own rank
    *  order (an interim of R-BTN-61's merge, which R3-1232 builds). */
-  candidates(w: WorkerFacts, now: number, limit = 20): string[] {
+  candidates(w: WorkerFacts, now: number, limit = 20, rule9 = true): string[] {
     return this.rows<{ id: string }>(
       `SELECT w.id FROM tickets w JOIN repositories p ON p.id = w.repository_id
        WHERE w.node LIKE 'ready-%' AND p.cutover_at IS NOT NULL AND p.retired_at IS NULL
@@ -184,19 +190,19 @@ export class Claims {
                          AND r.name NOT IN (SELECT capability FROM worker_capabilities WHERE worker_id = ?))
          AND ? >= CASE COALESCE(w.tier, 'critical') WHEN 'routine' THEN 0 WHEN 'judgement' THEN 1 ELSE 2 END
          AND (? OR w.operator_only = 0)
+         AND (? = 0 OR EXISTS (SELECT 1 FROM worker_courses f JOIN courses k ON k.repository_id = f.repository_id AND k.id = f.course_id
+                               WHERE f.worker_id = ? AND f.repository_id = w.repository_id AND f.course_id = w.course_id
+                                 AND f.version >= k.min_worker_version))
        ORDER BY COALESCE((SELECT expedite FROM ticket_overrides o WHERE o.ticket_id = w.id), 0) DESC, p.weight DESC, w.rank, w.repository_id
        LIMIT ?`,
-      now, w.id, (TIERS as string[]).indexOf(w.tier_ceiling), w.declared.includes('human-operator') ? 1 : 0, limit).map((r) => r.id);
+      now, w.id, (TIERS as string[]).indexOf(w.tier_ceiling), w.declared.includes('human-operator') ? 1 : 0, rule9 ? 1 : 0, w.id, limit).map((r) => r.id);
   }
 
-  /** The worker-level rules, checked once before any query (§7.2): 7 and 9, with the same
+  /** The worker-level rule, checked once before any query (§7.2): 7, with the same
    *  functions `isEligible` applies to each item. */
   private workerRules(w: WorkerFacts, now: number, shared: ReturnType<Claims['shared']>) {
     if (suspended(shared.suspensions, w.model_provider_id, w.model_id, now)) {
       throw new BatonError('provider-suspended', 'the coding model’s account is suspended or unresolved (§7.4)', { rule: 7 });
-    }
-    if ((w.skills_version ?? 0) < shared.minSkills) {
-      throw new BatonError('stale-skills', 'this worker’s skills are below min_skills_version (R-BTN-22)', { rule: 9 });
     }
   }
 
@@ -222,7 +228,8 @@ export class Claims {
       const item = this.item(wanted);
       if (!item || !item.node.startsWith('ready-')) throw new BatonError('not-eligible', `${wanted} is not in the claim order`, { rule: 1, rule_code: 'not-ready' });
       const v = this.eligible(w, item, now, shared);
-      if (!v.ok) throw new BatonError(v.code === 'backing-off' ? 'backing-off' : 'not-eligible', `${wanted}: ${v.code}`, { rule: v.rule, rule_code: v.code });
+      // Two refusals have codes of their own (§11): a backoff, and a worker stale on the course.
+      if (!v.ok) throw new BatonError(v.code === 'backing-off' || v.code === 'stale-skills' ? v.code : 'not-eligible', `${wanted}: ${v.code}`, { rule: v.rule, rule_code: v.code });
       return { item, reason: 'requested' };
     }
     for (const id of this.candidates(w, now)) {
@@ -230,6 +237,14 @@ export class Claims {
       if (this.eligible(w, item, now, shared).ok) {
         return { item, reason: item.expedite ? 'expedite lane' : `${item.queue} queue · rank ${item.rank ?? '—'}` };
       }
+    }
+    // Rule 9 is per course now: say `stale-skills` when it alone stood between this worker and
+    // a ticket, so the worker knows to restart from a pulled checkout (R-BTN-22).
+    if (this.candidates(w, now, 20, false).some((id) => {
+      const item = this.item(id)!;
+      return this.eligible(w, item, now, shared).code === RULE_CODES[9];
+    })) {
+      throw new BatonError('stale-skills', 'this worker declares the ready tickets’ courses below their min_worker_version (R-BTN-22, R-BTN-65)', { rule: 9 });
     }
     throw new BatonError('no-eligible-ticket', 'no ready ticket fits this worker');
   }
@@ -664,7 +679,6 @@ export class Claims {
   }
 
   needsYou(now: number) {
-    const minSkills = Number(this.setting('min_skills_version') ?? 0);
     return {
       // §6.7: never auto-confirmed; the owner resolves it.
       unconfirmed: this.rows(`SELECT id, ticket_id, worker_id, ended_at, end_reason, ended_at_sha FROM claims
@@ -672,8 +686,13 @@ export class Claims {
       unacknowledged_releases: this.rows(`SELECT id, to_worker_id, payload_json, sent_at, delivered_at FROM messages
                                           WHERE kind = 'release' AND status IN ('pending','delivered') ORDER BY sent_at`),
       fence_pending: this.rows(`SELECT id, ticket_id, worker_id, ended_at FROM claims WHERE status = 'reaped' AND fence_pending = 1 ORDER BY ended_at`),
-      stale_skills: this.rows(`SELECT id, hostname, session_name, skills_version FROM workers
-                               WHERE reaped_at IS NULL AND kind != 'legacy' AND skills_version < ? AND ? - last_seen_at < lease_timeout_ms`, minSkills, now),
+      // R-BTN-22: live workers declaring a course below its min_worker_version, one row per
+      // course — each needs a restart from a pulled checkout.
+      stale_skills: this.rows(`SELECT w.id, w.hostname, w.session_name, f.repository_id, f.course_id, f.version, k.min_worker_version
+                               FROM workers w JOIN worker_courses f ON f.worker_id = w.id
+                               JOIN courses k ON k.repository_id = f.repository_id AND k.id = f.course_id
+                               WHERE w.reaped_at IS NULL AND w.kind != 'legacy' AND f.version < k.min_worker_version AND ? - w.last_seen_at < w.lease_timeout_ms
+                               ORDER BY w.id, f.repository_id, f.course_id`, now),
       held_items: this.rows<{ ticket_id: string; hold_reason: string | null; set_at: number }>(
         `SELECT ticket_id, hold_reason, set_at FROM ticket_overrides WHERE hold = 1 ORDER BY ticket_id`).map((h) => ({
         ...h,
