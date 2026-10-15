@@ -9,7 +9,7 @@ import { familyOf, isEligible, RULE_CODES, suspended } from '../shared/baton.mjs
 import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
 import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord, reviewCapacityRun, REVIEW_CAPACITY_LOOPS, type ResumeActivity } from './attempts';
 import { checkAccept, checkClaim, checkConfirm, checkEnd, checkOverride, checkResolve } from './validate';
-import { repositoryOf, transcriptReposOf } from './registry';
+import { ceilingIn, repositoryOf, transcriptReposOf } from './registry';
 
 import type { Row, SqlValue, Store } from './ports';
 const EXPEDITE_BOUND = 2; // §7.2 rule 2
@@ -34,6 +34,8 @@ interface WorkerFacts {
   model_id: string | null;
   model_provider_id: string | null;
   tier_ceiling: string;
+  /** Per repository (R-BTN-66); `ceilingIn` resolves the one rule 5 compares. */
+  tier_ceilings: Record<string, string>;
   lease_timeout_ms: number;
   last_seen_at: number;
   last_activity_at: number | null;
@@ -58,6 +60,18 @@ interface ItemFacts {
   rank: number | null;
 }
 
+
+/** A course with no registry row maps branches the default way (R-BTN-51). */
+const DEFAULT_BRANCH_PATTERN = 'claude/{ticket}-*';
+const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Whether `branch` is `pattern` with `{ticket}` = `local` and `{repository}` = `repository`,
+ *  `*` matching anything, compared case-insensitively as GitHub branch names are typed. */
+export function branchMatches(pattern: string, branch: string, local: string, repository: string): boolean {
+  const re = pattern.split(/(\{ticket\}|\{repository\}|\*)/).map((part) =>
+    part === '{ticket}' ? escapeRe(local) : part === '{repository}' ? escapeRe(repository) : part === '*' ? '.*' : escapeRe(part)).join('');
+  return new RegExp(`^${re}$`, 'i').test(branch);
+}
 
 export class Claims {
   constructor(private readonly c: Ctx) {}
@@ -88,15 +102,15 @@ export class Claims {
   // ── what matching reads ─────────────────────────────────────────────────────────────────
 
   private worker(id: number): WorkerFacts {
-    const w = this.rows<Omit<WorkerFacts, 'declared' | 'billing' | 'courses'>>(
-      `SELECT id, kind, incarnation, model_id, model_provider_id, tier_ceiling, lease_timeout_ms, last_seen_at, last_activity_at
+    const w = this.rows<Omit<WorkerFacts, 'declared' | 'billing' | 'courses' | 'tier_ceilings'> & { tier_ceilings: string }>(
+      `SELECT id, kind, incarnation, model_id, model_provider_id, tier_ceiling, tier_ceilings, lease_timeout_ms, last_seen_at, last_activity_at
        FROM workers WHERE id = ?`, id)[0];
     if (!w) throw new BatonError('unauthenticated', 'no such worker');
     const declared = this.rows<{ declared: string }>('SELECT DISTINCT declared FROM worker_capabilities WHERE worker_id = ? ORDER BY declared', id).map((r) => r.declared);
     const billing = Object.fromEntries(this.rows<{ prefix: string; provider_id: string }>('SELECT prefix, provider_id FROM worker_providers WHERE worker_id = ?', id).map((r) => [r.prefix, r.provider_id]));
     const courses = this.rows<{ repository: string; course: string; version: number }>(
       'SELECT repository_id AS repository, course_id AS course, version FROM worker_courses WHERE worker_id = ? ORDER BY repository_id, course_id', id);
-    return { ...w, declared, billing, courses };
+    return { ...w, tier_ceilings: JSON.parse(w.tier_ceilings) as Record<string, string>, declared, billing, courses };
   }
 
   private item(id: string): ItemFacts | null {
@@ -127,6 +141,17 @@ export class Claims {
     const m = this.setting('reviewer_matrix');
     const c = this.setting('reviewer_catalog');
     return { matrix: m ? JSON.parse(m) : null, catalog: c ? JSON.parse(c) : null };
+  }
+
+  /** A repository's tier ladder, lowest first (R-BTN-66). */
+  private ladder(repo: string): string[] {
+    const t = this.rows<{ tiers: string }>('SELECT tiers FROM repositories WHERE id = ?', repo)[0]?.tiers;
+    return t ? (JSON.parse(t) as string[]) : [...TIERS];
+  }
+
+  /** The worker's ceiling in `repo`'s ladder, by name (rule 5). */
+  private ceiling(w: WorkerFacts, repo: string): string {
+    return ceilingIn(repo, this.ladder(repo), w.tier_ceilings, w.tier_ceiling);
   }
 
   /** The counter's last number handed out for `repo` (R-BTN-62): recorded with a claim and an
@@ -194,14 +219,26 @@ export class Claims {
                          AND (o.hold = 1 OR o.retry_after > ?))
          AND NOT EXISTS (SELECT 1 FROM ticket_requires r WHERE r.ticket_id = w.id
                          AND r.name NOT IN (SELECT capability FROM worker_capabilities WHERE worker_id = ?))
-         AND ? >= CASE COALESCE(w.tier, 'critical') WHEN 'routine' THEN 0 WHEN 'judgement' THEN 1 ELSE 2 END
+         -- rule 5: the ticket's position in its ladder, untiered the top, against the worker's
+         -- ceiling there (R-BTN-66)
+         AND COALESCE(w.tier_position, json_array_length(p.tiers) - 1) <= json_extract(?, '$."' || w.repository_id || '"')
          AND (? OR w.operator_only = 0)
          AND (? = 0 OR EXISTS (SELECT 1 FROM worker_courses f JOIN courses k ON k.repository_id = f.repository_id AND k.id = f.course_id
                                WHERE f.worker_id = ? AND f.repository_id = w.repository_id AND f.course_id = w.course_id
                                  AND f.version >= k.min_worker_version))
        ORDER BY COALESCE((SELECT expedite FROM ticket_overrides o WHERE o.ticket_id = w.id), 0) DESC, p.weight DESC, w.rank, w.repository_id
        LIMIT ?`,
-      now, w.id, (TIERS as string[]).indexOf(w.tier_ceiling), w.declared.includes('human-operator') ? 1 : 0, rule9 ? 1 : 0, w.id, limit).map((r) => r.id);
+      now, w.id, JSON.stringify(this.ceilingPositions(w)), w.declared.includes('human-operator') ? 1 : 0, rule9 ? 1 : 0, w.id, limit).map((r) => r.id);
+  }
+
+  /** The worker's ceiling's position in every repository's ladder: the query's rule 5. */
+  private ceilingPositions(w: WorkerFacts): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const r of this.rows<{ id: string; tiers: string }>('SELECT id, tiers FROM repositories WHERE retired_at IS NULL')) {
+      const ladder = JSON.parse(r.tiers) as string[];
+      out[r.id] = ladder.indexOf(ceilingIn(r.id, ladder, w.tier_ceilings, w.tier_ceiling));
+    }
+    return out;
   }
 
   /** The worker-level rule, checked once before any query (§7.2): 7, with the same
@@ -215,9 +252,10 @@ export class Claims {
   /** `isEligible` for one item. Rule 8 reads the reviewer matrix, which a board may post
    *  without a usable row (no `default`): that fails closed as rule 8, never as a 500. */
   private eligible(w: WorkerFacts, item: ItemFacts, now: number, shared: ReturnType<Claims['shared']>): { ok: boolean; rule?: number | string; code?: string } {
-    const context = this.contextFor(item, now, shared);
+    const context = { ...this.contextFor(item, now, shared), tiers: this.ladder(item.repository) };
     try {
-      return isEligible(w, item, context);
+      // Rule 5 compares in the item's repository's ladder, at the worker's ceiling there.
+      return isEligible({ ...w, tier_ceiling: this.ceiling(w, item.repository) }, item, context);
     } catch (e) {
       if (context.lastEndReason !== 'released:awaiting-review-capacity') throw e;
       return { ok: false, rule: 8, code: RULE_CODES[8] };
@@ -484,6 +522,32 @@ export class Claims {
     return { held_by_other: held, fence_pending: fence };
   }
 
+  /** `GET /v1/runner/branch-holder?repo=&branch=` (§6.3, R-BTN-51): every live ticket the branch
+   *  maps to through its course's current or previous `branch_pattern` — `{ticket}` its local id,
+   *  `{repository}` its repository's id, `*` anything — among the tickets whose home is that git
+   *  repository or whose `repos` name it; and whether another live worker holds one of them or a
+   *  reaped claim on one is fence-pending. Two repositories' tickets sharing a local id both map,
+   *  and the push is refused if either is held: a collision fails safe. */
+  branchHolder(callerId: number | null, gitRepo: string, branch: string) {
+    const name = gitRepo.slice(gitRepo.indexOf('/') + 1).toLowerCase();
+    const full = gitRepo.toLowerCase();
+    const live = this.rows<{ id: string; local_id: string; repository_id: string; repos: string; github: string; branch_pattern: string | null; previous_branch_pattern: string | null }>(
+      `SELECT t.id, t.local_id, t.repository_id, t.repos, p.github, k.branch_pattern, k.previous_branch_pattern
+       FROM tickets t JOIN repositories p ON p.id = t.repository_id
+       LEFT JOIN courses k ON k.repository_id = t.repository_id AND k.id = t.course_id
+       WHERE p.retired_at IS NULL`);
+    const tickets = live.filter((t) => {
+      // `repos` holds owner/name once the sync resolves them (§7.1); docs' interim post sends
+      // short names, matched against the repository's own name.
+      const repos = (JSON.parse(t.repos) as string[]).map((r) => r.toLowerCase());
+      if (t.github.toLowerCase() !== full && !repos.includes(full) && !repos.includes(name)) return false;
+      return [t.branch_pattern ?? DEFAULT_BRANCH_PATTERN, t.previous_branch_pattern].some((pat) => pat != null && branchMatches(pat, branch, t.local_id, t.repository_id));
+    }).map((t) => t.id).sort();
+    // The same answer per ticket as the ticket holder query (R-BTN-7), any of them counting.
+    const each = tickets.map((id) => this.holder(callerId, id));
+    return { tickets, held_by_other: each.some((h) => h.held_by_other), fence_pending: each.some((h) => h.fence_pending) };
+  }
+
   /** The heartbeat's `fenced` report (R-BTN-19): clears the fence of a claim reaped while this
    *  worker was alive — only in the incarnation it was reaped in, since a re-key never clears one. */
   fenced(workerId: number, incarnation: number, claimId: number) {
@@ -588,15 +652,18 @@ export class Claims {
    *  and the shadow reports end claims. */
   staleBoard(repo: string, observation: number) {
     if (!this.rows('SELECT 1 FROM repositories WHERE id = ? AND cutover_at IS NOT NULL', repo).length) return 0;
-    const active = this.rows<{ id: number; ticket_id: string; worker_id: number; tier_ceiling: string; kind: string }>(
-      `SELECT c.id, c.ticket_id, c.worker_id, w.tier_ceiling, w.kind FROM claims c JOIN workers w ON w.id = c.worker_id
+    const active = this.rows<{ id: number; ticket_id: string; worker_id: number; tier_ceiling: string; tier_ceilings: string; kind: string }>(
+      `SELECT c.id, c.ticket_id, c.worker_id, w.tier_ceiling, w.tier_ceilings, w.kind FROM claims c JOIN workers w ON w.id = c.worker_id
        WHERE c.status = 'active' AND substr(c.ticket_id, 1, length(?) + 1) = ? || ':'
          AND c.claim_observation < ?`, repo, repo, observation); // R-BTN-62: a reading from before the claim cannot judge it
     let n = 0;
+    const ladder = this.ladder(repo);
     for (const c of active) {
       const it = this.rows<{ status: string; tier: string | null }>('SELECT status, tier FROM tickets WHERE id = ?', c.ticket_id)[0];
+      // A legacy holder declared no ceiling: its claim is never re-tiered away.
+      const ceiling = c.kind === 'legacy' ? ladder[ladder.length - 1] : ceilingIn(repo, ladder, JSON.parse(c.tier_ceilings), c.tier_ceiling);
       const why = !it ? 'gone or archived' : GIT_ENDS.has(it.status) ? it.status
-        : !fitsTier(it.tier ?? null, c.tier_ceiling) ? `re-tiered ${it.tier ?? 'untiered'}` : null;
+        : !fitsTier(it.tier ?? null, ceiling, ladder) ? `re-tiered ${it.tier ?? 'untiered'}` : null;
       if (!why) continue;
       this.finish(c.id, c.ticket_id, 'released', 'released:stale-board', 'sync', {});
       if (c.kind !== 'legacy') {

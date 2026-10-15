@@ -261,4 +261,30 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     expect(((await unnamed.json()) as { message: string }).message).toMatch(/course runbook is not in other's registry/);
     expect(await rows(`SELECT count(*) AS n FROM courses WHERE repository_id = 'other'`)).toEqual([{ n: 0 }]);
   });
+
+  it('§6.3: a branch both repositories’ T-1 map to is refused while either is held by another worker', async () => {
+    const code = { repos: ['immediately-run/sandbox'] }; // a code repository both tickets list
+    const docsItems = [...(board.states.A.state.items as Record<string, unknown>[]), { ...fixture, id: 'T-1', title: 'docs: T-1', ...code }];
+    await syncCall('/v1/sync/board', payload(sha.B, sha.A, { ...board.states.A, state: { items: docsItems }, ready: [...board.states.A.ready, 'T-1'] }));
+    await opsCall('/v1/sync/board', payload('e'.repeat(40), OPS_SHA, { ...opsBoard, items: opsBoard.items.map((i) => ((i as { id?: string }).id === 'T-1' ? { ...i, ...code } : i)) }));
+    await cutover(1, 'ops');
+    const w1 = await register('vm-b');
+    const w2 = await register('vm-a', BOTH);
+    const ask = async (branch: string, secret?: string, repo = 'immediately-run/sandbox') =>
+      (await workerCall(`/v1/runner/branch-holder?repo=${encodeURIComponent(repo)}&branch=${encodeURIComponent(branch)}`, { cred: secret === w2.secret ? 'vm-a' : 'vm-b', secret })).json();
+    expect(await ask('claude/T-1-fix')).toEqual({ tickets: ['docs:T-1', 'ops:T-1'], held_by_other: false, fence_pending: false });
+    expect((await claimItem('vm-a', w2.secret, { ticket_id: 'ops:T-1' })).status).toBe(200);
+    expect(await ask('claude/T-1-fix', w1.secret)).toMatchObject({ held_by_other: true });
+    expect(await ask('claude/t-1-fix', w1.secret)).toMatchObject({ held_by_other: true }); // GitHub branch case
+    expect(await ask('claude/T-1-fix', w2.secret)).toMatchObject({ held_by_other: false }); // its own claim
+    // A branch no pattern maps, or a repository neither ticket lists, maps to nothing.
+    expect(await ask('claude/T-1')).toMatchObject({ tickets: [] });
+    expect(await ask('claude/T-1-fix', undefined, 'immediately-run/other')).toMatchObject({ tickets: [] });
+    // docs' own repository is its tickets' home; ops' R3-9001 lists docs among its repos, so the
+    // branch maps to both — the collision failing safe.
+    expect(await ask('claude/R3-9001-x', undefined, 'immediately-run/docs')).toMatchObject({ tickets: ['docs:R3-9001', 'ops:R3-9001'] });
+    for (const bad of ['repo=x&branch=claude/T-1-x', 'repo=immediately-run/sandbox&branch=a..b']) {
+      expect((await workerCall(`/v1/runner/branch-holder?${bad}`, { cred: 'vm-b' })).status).toBe(400);
+    }
+  });
 });

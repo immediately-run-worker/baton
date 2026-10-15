@@ -83,6 +83,8 @@ export interface TicketRow {
   ord: string | null;
   rank: number | null;
   course_id: string;
+  /** The tier's position in the repository's ladder (R-BTN-66), set by the core, which knows it. */
+  tier_position?: number | null;
   requires: string[];
   since: string | null;
   holder: string | null;
@@ -126,7 +128,8 @@ export function checkPayload(body: unknown): BoardPayload {
     list(it.requires, NAME, `${it.id}: requires`);
     list(it.dependsOn, ID, `${it.id}: dependsOn`);
     list(it.blockedBy, ID, `${it.id}: blockedBy`);
-    list(it.repos, /^[A-Za-z0-9._-]{1,100}$/, `${it.id}: repos`);
+    // `repos`: GitHub owner/name (§7.1); docs' interim post still sends short names.
+    list(it.repos, /^([A-Za-z0-9-]{1,39}\/)?[A-Za-z0-9._-]{1,100}$/, `${it.id}: repos`);
     if (it.course !== undefined && (typeof it.course !== 'string' || !COURSE_ID.test(it.course))) throw new BatonError('invalid-params', `${it.id}: course must be a course id`);
   }
   for (const id of p.ready) if (!seen.has(id)) throw new BatonError('invalid-params', `ready names ${id}, which is not in state.items`);

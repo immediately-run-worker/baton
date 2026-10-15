@@ -6,7 +6,7 @@
 // no `node:` module, no `process.env`, no direct `Date.now()`. Every input (the matrix, the
 // providers, the suspensions, the clock) is an argument, so the Worker bundles it as is.
 
-import { capabilitiesOf, fitsTier } from './vocabulary.mjs';
+import { capabilitiesOf, fitsTier, TIERS } from './vocabulary.mjs';
 
 // ── the clock (R-BTN-32) ────────────────────────────────────────────────────────────────
 
@@ -203,7 +203,8 @@ export function claimBlocks(claim) {
  *   clause's names, `null` when it has none; `expedite` true for the expedite lane or an
  *   expedite override.
  * - `ctx`: `{now, claims, override, suspensions, minWorkerVersion, expediteActive,
- *   expediteBound, lastEndReason, authorFamilies, catalog, matrix}` — `minWorkerVersion` the
+ *   expediteBound, lastEndReason, authorFamilies, catalog, matrix, tiers}` — `tiers` the item's
+ *   repository's ladder (R-BTN-66), `minWorkerVersion` the
  *   item's course's (R-BTN-65), `claims` the item's
  *   claim rows, `override` its `ticket_overrides` row or `null`, `expediteActive` the active
  *   Baton claims on expedited items, `lastEndReason` its most recent claim's end.
@@ -219,7 +220,10 @@ export function isEligible(worker, item, ctx) {
   const held = capabilitiesOf(worker.declared);
   for (const need of capabilitiesOf(item.requires)) if (!held.has(need)) return refuse(4);
 
-  if (!fitsTier(item.tier ?? null, worker.tier_ceiling ?? 'critical')) return refuse(5);
+  // Rule 5 in the item's repository's ladder (R-BTN-66); the caller resolves the worker's
+  // ceiling for that repository. No ladder given: docs' three tiers.
+  const ladder = ctx.tiers ?? TIERS;
+  if (!fitsTier(item.tier ?? null, worker.tier_ceiling ?? ladder.at(-1), ladder)) return refuse(5);
 
   const operatorOnly = (item.tags ?? []).includes('OP') || (item.requires ?? []).includes('human-operator');
   if (operatorOnly && !(worker.declared ?? []).includes('human-operator')) return refuse(6);

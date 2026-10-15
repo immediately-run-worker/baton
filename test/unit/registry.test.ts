@@ -4,6 +4,7 @@
 // workflow on its default branch; a dispatch names that repository's workflow. S-BTN-26.
 import { describe, it, expect } from 'vitest';
 import { checkRegistration } from '../../src/core/registry';
+import { branchMatches } from '../../src/core/claims';
 import type { DispatchTarget } from '../../src/core/ports';
 import { rows, withCore } from '../helpers';
 
@@ -96,3 +97,17 @@ describe('the registry', () => {
       { github: 'immediately-run/docs', workflow: 'baton-mirror.yml', ref: 'main' }]);
   });
 });
+
+describe('branch patterns (R-BTN-51, §6.3)', () => {
+  it.each([
+    ['claude/{ticket}-*', 'claude/R3-1231-x', 'R3-1231', true],
+    ['claude/{ticket}-*', 'claude/R3-12310-x', 'R3-1231', false],
+    ['claude/{ticket}-*', 'claude/R3-1231', 'R3-1231', false],
+    ['claude/{repository}/{ticket}', 'claude/ops/T-1', 'T-1', true],
+    ['claude/{repository}/{ticket}', 'claude/docs/T-1', 'T-1', false],
+    ['feat.{ticket}', 'featX{ticket}'.replace('{ticket}', 'T-1'), 'T-1', false], // `.` is literal
+  ])('%s against %s (ticket %s): %s', (pattern, branch, local, want) => {
+    expect(branchMatches(pattern as string, branch as string, local as string, 'ops')).toBe(want);
+  });
+});
+

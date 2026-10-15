@@ -15,10 +15,10 @@ import { WorkerApi } from './workerApi';
 import { Claims } from './claims';
 import { Cutover } from './cutover';
 import { Mirror } from './mirror';
-import { checkConfirmations, checkRepositoryId } from './validate';
+import { checkConfirmations, checkRepositoryId, GIT_BRANCH, GIT_REPO } from './validate';
 import { Courses } from './courses';
 import { Observations } from './observations';
-import { Registry, TICKET_ID, qualify, repositoryOf, type Repository, type SyncClaims } from './registry';
+import { Registry, TICKET_ID, qualify, repositoryOf, tierPosition, type Repository, type SyncClaims } from './registry';
 import type { Ports, Row, SqlValue, Store, Workflow } from './ports';
 
 const HELD_AUTO_ACCEPT_MS = 24 * 3_600_000; // §7.1: a held history is accepted after 24 h (R3-1212)
@@ -216,6 +216,16 @@ export class BatonCore {
         if (!this.registry.get(repo)) throw new BatonError('invalid-params', 'repository: must be a registered repository id');
         return json(this.workers.mode(repo));
       }
+      if (m === 'GET' && p === '/v1/runner/branch-holder') {
+        // §6.3: a push to an item branch asks who holds the tickets it maps to; machine key alone,
+        // or with a secret so the caller's own claim is not "another".
+        const gitRepo = url.searchParams.get('repo') ?? '';
+        const branch = url.searchParams.get('branch') ?? '';
+        if (!GIT_REPO.test(gitRepo)) throw new BatonError('invalid-params', 'repo: must be owner/name');
+        if (!GIT_BRANCH.test(branch)) throw new BatonError('invalid-params', 'branch: must be a branch name');
+        const caller = secret ? await this.workers.authWorker(cred, secret) : null;
+        return json(this.claims.branchHolder(caller, gitRepo, branch));
+      }
       const holder = /^\/v1\/runner\/tickets\/([^/]+)\/holder$/.exec(p);
       if (m === 'GET' && holder) {
         // R-BTN-7: callable with the token alone (the witness has no sidecar); with a secret, the
@@ -400,7 +410,8 @@ export class BatonCore {
     // Hash every row before the transaction: the digest is async, the transaction is not.
     const rankOf = new Map(p.ready.map((id, i) => [id, i]));
     const rows = await Promise.all(p.state.items.map(async (it) => {
-      const row = rowFor(it, rankOf);
+      // R-BTN-66: tiers arrive by name and are matched as positions in this repository's ladder.
+      const row = { ...rowFor(it, rankOf), tier_position: tierPosition(repo.tiers, it.tier ?? null) };
       return { row, hash: await rowHash(row) };
     }));
     const changed: { upserted: number; deleted: number; confirmed?: number; stale_released?: number; courses_refused?: string[]; fleet_ignored?: boolean } = { upserted: 0, deleted: 0 };
@@ -422,16 +433,16 @@ export class BatonCore {
         const id = qualify(r, row.id);
         this.store.exec(
           `INSERT INTO tickets (id, repository_id, local_id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only,
-             depends_on, blocked_by, repos, ord, rank, snapshot_sha, row_hash, since, holder, course_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             depends_on, blocked_by, repos, ord, rank, snapshot_sha, row_hash, since, holder, course_id, tier_position)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (id) DO UPDATE SET path = excluded.path, title = excluded.title, project = excluded.project,
              status = excluded.status, node = excluded.node, queue = excluded.queue, tags = excluded.tags,
              tier = excluded.tier, requires_clause = excluded.requires_clause, operator_only = excluded.operator_only,
              depends_on = excluded.depends_on, blocked_by = excluded.blocked_by, repos = excluded.repos,
              ord = excluded.ord, rank = excluded.rank, snapshot_sha = excluded.snapshot_sha, row_hash = excluded.row_hash,
-             since = excluded.since, holder = excluded.holder, course_id = excluded.course_id`,
+             since = excluded.since, holder = excluded.holder, course_id = excluded.course_id, tier_position = excluded.tier_position`,
           id, r, row.id, row.path, row.title, row.project, row.status, row.node, row.queue, row.tags, row.tier,
-          row.requires_clause, row.operator_only, row.depends_on, row.blocked_by, row.repos, row.ord, row.rank, p.sha, hash, row.since, row.holder, row.course_id);
+          row.requires_clause, row.operator_only, row.depends_on, row.blocked_by, row.repos, row.ord, row.rank, p.sha, hash, row.since, row.holder, row.course_id, row.tier_position);
         this.store.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', id);
         for (const name of row.requires) this.store.exec('INSERT INTO ticket_requires (ticket_id, name) VALUES (?, ?)', id, name);
         changed.upserted++;
@@ -560,7 +571,13 @@ export class BatonCore {
       operator_only: r.operator_only === 1,
     }));
     // Per tier ceiling, the order a worker under it would be offered (§13 step 1's exit).
-    const byTier = Object.fromEntries((TIERS as string[]).map((t) => [t, ready.filter((r) => fitsTier(r.tier ?? null, t)).map((r) => r.id)]));
+    // Each tier name of any ladder, lowest first; a ticket appears under the names of its own
+    // repository's ladder that it fits (R-BTN-66).
+    const names = [...new Set(this.registry.all().flatMap((x) => x.tiers))];
+    const byTier = Object.fromEntries(names.map((t) => [t, ready.filter((r) => {
+      const ladder = this.registry.get(r.repository_id as string)?.tiers ?? [...TIERS];
+      return ladder.includes(t) && fitsTier((r.tier as string | null) ?? null, t, ladder);
+    }).map((r) => r.id)]));
 
     const schedules = new Map(this.sql<{ id: string; rules_json: string; factor: number }>('SELECT id, rules_json, factor FROM peak_schedules').map((s) => [s.id, s]));
     const providers = this.sql<{ id: string; name: string; billing: string; window_limits_json: string | null }>('SELECT id, name, billing, window_limits_json FROM model_providers ORDER BY id').map((a) => {
