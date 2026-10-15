@@ -44,7 +44,9 @@ module baton {
   // ---- time (§6.3, R-BTN-6, R-BTN-26), in abstract ticks ----
   // A lease lasts TIMEOUT ticks from the last heartbeat. A worker's own fence check refuses to
   // act MARGIN ticks before its lease ends by ITS clock, which runs up to MAX_DRIFT ticks
-  // behind Baton's. The spec's margin is 4 minutes; the assumption it rests on — drift below
+  // behind Baton's — standing for how far the worker's last_ok lags Baton's renewal plus its
+  // clock's rate skew, since R-BTN-6 measures now − last_ok on one clock and a constant offset
+  // cancels (round 2, 2-A-5). The spec's margin is 4 minutes; the assumption it rests on — drift below
   // the margin — is MAX_DRIFT <= MARGIN here (Baton reaps at the lease end; the worker stops
   // strictly before end − MARGIN by its clock), and a mutation with MAX_DRIFT > MARGIN breaks
   // `noActAfterLoss`.
@@ -341,8 +343,12 @@ module baton {
               .with("localClaim", st.localClaim.set(w, c.id))
               .with("localLease", st.localLease.set(w, st.now + TIMEOUT))
     } else {
-      // no active claim: a fenced worker keeps its local claim until it clears the fence
+      // no active claim: a fenced worker keeps its local claim until it clears the fence, and
+      // its heartbeat keeps the fence alive — R-BTN-19's timeout runs from its last heartbeat
       st' = st.with("localClaim", if (workerFenced(w)) st.localClaim else st.localClaim.set(w, 0))
+              .with("claims", st.claims.keys().mapBy(i => {
+                 val c = st.claims.get(i)
+                 if (c.worker == w and c.fencePending) c.with("leaseUntil", st.now + TIMEOUT) else c }))
     },
   }
   // R-BTN-4, §6.6: the alarm reaps a claim whose lease ran out — its worker dead or silent.
@@ -356,14 +362,11 @@ module baton {
                   .with("endObs", st.counter))),
     },
   }
-  // A dead worker restarts once the alarm has reaped its claim; its fence clears at its
-  // timeout too (R-BTN-19).
+  // A dead worker restarts once the alarm has reaped its claim and any fence of its own has
+  // timed out (below).
   action reapDead(w: str): bool = all {
-    not(st.up.get(w)), workerClaim(w).size() == 0,
-    st' = st.with("claims", st.claims.keys().mapBy(i => {
-              val c = st.claims.get(i)
-              if (c.worker == w and c.fencePending) c.with("fencePending", false) else c }))
-            .with("up", st.up.set(w, true)).with("asleep", st.asleep.set(w, false))
+    not(st.up.get(w)), workerClaim(w).size() == 0, not(workerFenced(w)),
+    st' = st.with("up", st.up.set(w, true)).with("asleep", st.asleep.set(w, false))
             .with("localClaim", st.localClaim.set(w, 0)).with("pushed", st.pushed.set(w, false)),
   }
   // R-BTN-19: the owner force-reaps a live worker's claim; the ticket is not re-issued until
@@ -374,6 +377,17 @@ module baton {
     st' = st.with("claims", st.claims.set(c.id, c.with("status", "reaped").with("kind", "reap")
                 .with("endObs", st.counter).with("fencePending", true)))
             .with("ownerBudget", st.ownerBudget - 1).with("pushed", st.pushed.set(w, false)),
+  }
+  // R-BTN-19: a fence also clears when its worker has been silent past its own timeout — dead
+  // or asleep — measured by time, never by knowing it is dead (baton#10 round 2, 2-A-0). The
+  // worker is not told; if it wakes, its own fence check (R-BTN-26) must stop it.
+  action fenceTimeout(i: int): bool = all {
+    st.claims.keys().contains(i),
+    val c = st.claims.get(i)
+    all {
+      c.status == "reaped", c.fencePending, c.leaseUntil <= st.now,
+      st' = st.with("claims", st.claims.set(i, c.with("fencePending", false))),
+    },
   }
   // R-BTN-6, R-BTN-26: the worker learns its lease is lost, kills its tool calls and reports.
   action fenceCleared(w: str): bool = all {
@@ -503,7 +517,7 @@ module baton {
       claimStart(w, t), claimFinish(w, hook),
       pushEvidence(w, b), advance(w, leg, holderBars, b2), endClaim(w, kind, b),
       heartbeat(w), sleep(w), wake(w), tick, alarmReap(i),
-      crash(w), reapDead(w), forceReap(w), fenceCleared(w),
+      crash(w), reapDead(w), forceReap(w), fenceCleared(w), fenceTimeout(i),
       setHold(t, b), setOwnerBar(tag, applies), liftOwnerBars, ownerResolve(i),
       foreignPush(t, leg), regress(t), withdraw(t),
       syncNumber(s), syncRead(s, postBars), syncVoid(s), syncPost(s),

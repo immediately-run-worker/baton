@@ -189,6 +189,26 @@ module regressions {
       .then(pushEvidence("w1", true))
       .fail()
 
+  // baton#10 round 2 (2-A-0) / R-BTN-19: a force-reaped worker that sleeps is silent past its
+  // timeout; its fence clears by time, the ticket is re-issued, and when it wakes its own
+  // fence check stops it pushing.
+  run sleeperFenceTimesOutTest =
+    start.then(claim("w1", "t1")).then(advance("w1", "implement", NONE, false))
+      .then(forceReap("w1")).then(sleep("w1"))
+      .then(tick).then(tick).then(tick).then(tick)
+      .then(fenceTimeout(1)).then(sync1)
+      .expect(fencedOf("t1").size() == 0 and ticketClaimable("t1"))
+      .then(claim("w2", "t1")).then(wake("w1"))
+      .then(pushEvidence("w1", true))
+      .fail()
+
+  // ... while a fenced worker that keeps heartbeating keeps its fence.
+  run heartbeatingFenceHoldsTest =
+    start.then(claim("w1", "t1")).then(forceReap("w1"))
+      .then(tick).then(tick).then(heartbeat("w1")).then(tick).then(tick)
+      .then(fenceTimeout(1))
+      .fail()
+
   // The drift edge: a worker whose clock runs MAX_DRIFT behind may act until its clock
   // reaches lease end − MARGIN, which is still before Baton's reap.
   run driftEdgeTest =

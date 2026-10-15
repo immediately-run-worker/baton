@@ -4,12 +4,15 @@
 //   3. random simulation of `safety` on the `sim` instance (instances.qnt): with the full
 //      `step` (every actor) and with `progressStep` (the happy path's actors, so runs reach
 //      merges, fix loops, regressions and confirmations — every such run is a run of `step`);
-//   4. reachability witnesses (properties.qnt): each must be VIOLATED — the state reached —
+//   4. reachability witnesses (witnesses.qnt): each must be VIOLATED — the state reached —
 //      or the properties above would hold only because the runs never get there.
 import { spawnSync } from 'node:child_process';
 
 const quint = (args) => spawnSync('npx', ['quint', ...args], { encoding: 'utf8' });
 const samples = process.env.MODEL_SAMPLES ?? '10000';
+// progressStep's runs scale with MODEL_SAMPLES (3,000 at the default 10,000), so `npm test`'s
+// smaller run stays short (baton#10 round 2, 2-A-3)
+const progressSamples = String(Math.max(100, Math.round(Number(samples) * 0.3)));
 const sim = (step) => ['model/instances.qnt', '--main=sim', '--init=pinit', `--step=${step}`,
   '--backend=typescript'];
 let failed = false;
@@ -26,8 +29,8 @@ const t = quint(['test', 'model/regressions.qnt', '--main=regressions', '--backe
 check('regression runs', t.status === 0, t.stdout + t.stderr);
 const s = quint(['run', ...sim('pstep'), '--invariant=safety', '--max-steps=40', `--max-samples=${samples}`]);
 check(`safety, ${samples} random runs of 40 steps of step`, s.status === 0, s.stdout.slice(-4000) + s.stderr);
-const sp = quint(['run', ...sim('pprogress'), '--invariant=safety', '--max-steps=40', '--max-samples=3000']);
-check('safety, 3000 random runs of 40 steps of progressStep', sp.status === 0, sp.stdout.slice(-4000) + sp.stderr);
+const sp = quint(['run', ...sim('pprogress'), '--invariant=safety', '--max-steps=40', `--max-samples=${progressSamples}`]);
+check(`safety, ${progressSamples} random runs of 40 steps of progressStep`, sp.status === 0, sp.stdout.slice(-4000) + sp.stderr);
 const wsim = (step) => ['model/witnesses.qnt', '--main=witnesses', '--init=winit', `--step=${step}`,
   '--backend=typescript'];
 const witnesses = [

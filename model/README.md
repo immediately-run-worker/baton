@@ -14,16 +14,17 @@ defect: it is filed against BATON_SPEC with the trace, never fixed by weakening 
 | `liveness.qnt` | the liveness properties under weak fairness, over `small` (kept apart: their fairness terms made Apalache's input too large) |
 | `witnesses.qnt` | the reachability witnesses, each an invariant that must fail |
 | `instances.qnt` | `sim` (R3-1243's bounds: 3 workers, 2 tickets, 2 overlapping sync runs) and `small` (2 workers, 1 ticket, 1 sync run, for Apalache) |
-| `regressions.qnt` | one deterministic run per defect the reviews found (22), each asserting the merged spec does not reach it |
+| `regressions.qnt` | one deterministic run per defect the reviews found (24), each asserting the merged spec does not reach it |
 | `check.mjs` | `npm run model` |
 
 ## Commands
 
-- `npm run model` — typecheck, the 22 regression runs, 10,000 random runs of 40 steps of `sim`
+- `npm run model` — typecheck, the 24 regression runs, 10,000 random runs of 40 steps of `sim`
   against `safety` with the full `step` and 3,000 with `progressStep` (the happy path's actors,
   so runs reach merges, fix loops and regressions; every run of it is a run of `step`), and
   eight reachability witnesses. No JVM; about 6 minutes, run by CI's `model` job. `npm test`
-  runs it with `MODEL_SAMPLES=1000` (about a minute).
+  runs it with `MODEL_SAMPLES=1000`, which also scales the `progressStep` runs (300), in
+  about two minutes.
 - `npm run model:verify` — Apalache's bounded proof of `safety` on `small` to depth 5, about
   15 minutes on 4 CPUs since the round-1 fixes (depth 6 does not finish in CI's budget). Needs
   Java (CI installs Temurin 21); the first run downloads Apalache.
@@ -53,7 +54,8 @@ releases at first use, which a sandboxed agent cannot always reach.
   holds, and its own fence check stops it `MARGIN` ticks before its lease ends by its own
   clock, which runs up to `MAX_DRIFT` behind Baton's. The owner force-reaps a live worker's
   claim, which stays fenced — the ticket not re-issued — until that worker reports
-  `fence-cleared` or dies and times out.
+  `fence-cleared` or has been silent (dead or asleep) past its timeout, measured in ticks
+  from its last heartbeat (`fenceTimeout`; round 2, 2-A-0).
 - **The sync** (§7.1, R-BTN-62): number, then read, then post, as three actions, so every
   interleaving with workers and git is explored — with at most one reading in flight per
   repository: a second number is refused while one is outstanding, and a voided number's post
@@ -101,6 +103,7 @@ outstanding (`sync-busy`). `overlappingSyncRunsRefusedTest` keeps it.
 - dropping the gate re-check after the hook fails `claimDuringHookCallTest`;
 - dropping the fence from the claim gate fails `forceReapFencesTest`;
 - dropping the advance's gate guard reaches a `gateViolation` (`gatesHeld`);
+- clearing a fence without its timeout fails `heartbeatingFenceHoldsTest`;
 - `MAX_DRIFT = 3`, above `MARGIN = 2`, lets a reaped worker push (`noActAfterLoss`); at
   `MAX_DRIFT = 2` it cannot — the spec's assumption is drift ≤ the margin.
 
@@ -108,10 +111,10 @@ outstanding (`sync-busy`). `overlappingSyncRunsRefusedTest` keeps it.
 
 | Check | Instance | Result |
 |---|---|---|
-| 22 regression runs | `sim` sizes, zero drift | pass |
+| 24 regression runs | `sim` sizes, zero drift | pass |
 | `safety`, 10,000 × 40 steps of `step`; 3,000 × 40 of `progressStep` | `sim` | no violation |
-| witnesses (a confirmed suspension, a resumed claim, a fence, a refused claim, an alarm reap; a fix leg, a regression, a merge) | `sim` | all reached |
-| a second review, a confirmed `done` | — | reached by regression runs only |
+| witnesses (a confirmed suspension, a resumed claim, a fence, an alarm reap; a fix leg, a regression, a merge, a confirmed `done`), seeded | `sim` | all reached |
+| a second review | — | reached by a regression run only (`maxRunsSurviveResumptionTest`) |
 | Apalache, `safety` | `small`, depth 5 | no violation (15 min 29 s on 4 CPUs) |
 | liveness, `fencesClear` | `small`, TLC (Apalache cannot check fairness) | no violation in 8,187 distinct states (971 million generated) before a 28-minute cap; **not exhaustive** — R3-1254 narrows the instance |
 
@@ -126,8 +129,12 @@ invariants the evidence is the simulation and the regression runs, not the proof
   claims, 1 git event, 1 owner act.
 - **Time** is abstract ticks: `TIMEOUT = 4`, `MARGIN = 2`, `MAX_DRIFT = 1`, at most 12 ticks
   a run. The 30-minute regression flag and the 6-hour unconfirmed flag are "eventually".
-  **The drift assumption**, checked: R-BTN-6's fence holds while a worker's clock runs behind
-  Baton's by at most the margin (4 minutes in the spec); above it, a reaped worker can push.
+  **The drift assumption**, checked: R-BTN-6's fence holds while the worker's lag is at most
+  the margin (4 minutes in the spec); above it, a reaped worker can push. R-BTN-6 computes
+  `now − last_ok` on the worker's own clock, so a constant clock offset cancels; what
+  `MAX_DRIFT` really bounds is how far the worker's `last_ok` lags Baton's renewal plus its
+  clock's rate skew over one lease (round 2, 2-A-5) — modelled, equivalently, as a clock
+  running behind.
 
 ## Not modelled, and why
 
