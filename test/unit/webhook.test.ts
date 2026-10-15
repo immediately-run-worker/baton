@@ -53,6 +53,21 @@ describe('the signature comes first (R-BTN-73)', () => {
   });
 });
 
+describe('a delivery whose fields are not Latin-1 (round 3, 3-A-0)', () => {
+  it('goes to the core with the same values', async () => {
+    const seen: string[] = [];
+    const to = async (r: Request) => (seen.push(r.headers.get('X-Baton-Webhook')!), new Response(null, { status: 204 }));
+    const email = 'пётр@example.ru';
+    const body = JSON.stringify({ repository: { full_name: 'immediately-run/sandbox' }, pusher: { name: 'pëtr' }, head_commit: { author: { email } } });
+    const req = await delivery(body);
+    req.headers.set('X-GitHub-Event', 'push');
+    req.headers.set('X-GitHub-Delivery', 'u-1');
+    expect((await front(req, env, to)).status).toBe(204);
+    expect(seen[0]).toMatch(/^[\x20-\x7e]+$/);
+    expect(JSON.parse(seen[0])).toEqual({ event: 'push', id: 'u-1', repository: 'immediately-run/sandbox', pusher: 'pëtr', author_email: email });
+  });
+});
+
 describe('the one parser (R-BTN-73)', () => {
   // Each event's own paths (round 2, 2-A-0): a push's fields are never read from a review.
   const COMMON = ['repository', 'repository.full_name'];

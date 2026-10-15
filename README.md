@@ -99,7 +99,7 @@ For development and CI (BATON_SPEC §3a): the same core, on a SQLite file. It ne
 later (`node:sqlite` without a flag).
 
 ```
-npm run start:local -- --db ./baton.db --port 8787 [--origin <url>] [--admin-keys <file>] [--config <file>]
+npm run start:local -- --db ./baton.db --port 8787 [--origin <url>] [--admin-keys <file>] [--github-webhook-secret <file>] [--config <file>]
 ```
 
 - `--origin` is the instance's own origin (default `http://<host>:<port>`): the OIDC audience,
@@ -108,9 +108,11 @@ npm run start:local -- --db ./baton.db --port 8787 [--origin <url>] [--admin-key
   `localhost`, where the address clients use cannot be derived.
 - One process holds a `--db` file at a time: a second start on it fails.
 - `--admin-keys` names a file of administrators' OpenSSH public keys, one per line (R-BTN-57).
+- `--github-webhook-secret` names a file holding the GitHub App's webhook secret (R-BTN-73); it
+  wins over `BATON_GITHUB_WEBHOOK_SECRET` in `--config`. Without either, every delivery is refused.
 - `--config` names a JSON object holding the Worker's other variables and secrets — `OIDC_*`,
   `BATON_REPOSITORIES`, `ACCESS_*`, `OWNER_EMAILS`, `BATON_KEYS`, `TOKEN_HASHES`,
-  `CREDENTIALS`, `GITHUB_DISPATCH_TOKEN` — as strings. Without it every principal is unconfigured: the sync
+  `CREDENTIALS`, `BATON_GITHUB_WEBHOOK_SECRET`, `GITHUB_DISPATCH_TOKEN` — as strings. Without it every principal is unconfigured: the sync
   and the owner are refused and no worker token is known, so the example above serves only
   refusals. Nothing is read from `.dev.vars`, and the test bindings are refused.
 

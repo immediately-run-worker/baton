@@ -1,6 +1,7 @@
 // main.ts — `npm run start:local -- --db <path> --port <n>` (BATON_SPEC §3a R-BTN-55, R-BTN-57).
 // Options, never a `.dev.vars` file: `--origin` (default `http://127.0.0.1:<port>`), `--admin-keys
-// <file>` (one OpenSSH public key per line) and `--config <file>`, a JSON object of the
+// <file>` (one OpenSSH public key per line), `--github-webhook-secret <file>` (R-BTN-73) and
+// `--config <file>`, a JSON object of the
 // Worker's other variables and secrets (OIDC_ISSUER, OIDC_JWKS_URL, BATON_REPOSITORIES — the
 // repositories to register, as a JSON string —, ACCESS_*, OWNER_EMAILS, TOKEN_HASHES,
 // CREDENTIALS, BATON_KEYS, BATON_GITHUB_WEBHOOK_SECRET, GITHUB_DISPATCH_TOKEN). The test
@@ -65,6 +66,7 @@ export async function main(argv: string[]) {
       host: { type: 'string', default: '127.0.0.1' },
       origin: { type: 'string' },
       'admin-keys': { type: 'string' },
+      'github-webhook-secret': { type: 'string' },
       config: { type: 'string' },
     },
   });
@@ -91,7 +93,11 @@ export async function main(argv: string[]) {
   const keys = parseAdminKeys(values['admin-keys'] ? readFileSync(values['admin-keys'], 'utf8') : '');
 
   const { store } = openStore(values.db);
-  const host = new LocalHost({ store, config: localConfig(file, origin), adminKeys: { list: () => keys } });
+  const config = localConfig(file, origin);
+  // R-BTN-55: the GitHub App's webhook secret, from the file `--github-webhook-secret` names
+  // (a file, so the secret is in no process list); it wins over a --config value.
+  if (values['github-webhook-secret']) config.BATON_GITHUB_WEBHOOK_SECRET = readFileSync(values['github-webhook-secret'], 'utf8').trim();
+  const host = new LocalHost({ store, config, adminKeys: { list: () => keys } });
   await host.start();
   const server = serve(host, origin);
   server.listen(port, values.host, () => console.log(`baton: serving ${origin} from ${values.db}`));

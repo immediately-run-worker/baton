@@ -45,7 +45,10 @@ async function route(req: Request, env: Config, to: Forward): Promise<Response> 
     }
     const d = pickDelivery(req.headers.get('X-GitHub-Event'), req.headers.get('X-GitHub-Delivery'), payload);
     if (!d) return new Response(null, { status: 204 });
-    return forward(new Request(req.url, { method: 'POST' }), to, { 'X-Baton-Webhook': JSON.stringify(d) });
+    // A header carries bytes only: every character from U+007F up goes as a \u escape, which
+    // the core's JSON.parse turns back into the same value (round 3, 3-A-0).
+    const ascii = JSON.stringify(d).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    return forward(new Request(req.url, { method: 'POST' }), to, { 'X-Baton-Webhook': ascii });
   }
   if (pathname.startsWith('/v1/runner/')) {
     if (req.headers.has('Signature-Input') || req.headers.has('Signature')) {
