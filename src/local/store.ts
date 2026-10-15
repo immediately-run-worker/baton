@@ -63,10 +63,26 @@ export function sqliteStore(db: DatabaseSync): Store {
   };
 }
 
-/** A database at `path` (`:memory:` for a throwaway one), foreign keys enforced as on Cloudflare. */
+/**
+ * A database at `path` (`:memory:` for a throwaway one), foreign keys enforced as on Cloudflare.
+ * A file is held exclusively for the process's life: one Baton per database, as the Durable
+ * Object is one instance, so a second start on the same file fails instead of serving beside
+ * the first with its own queue (§3).
+ */
 export function openStore(path: string): { db: DatabaseSync; store: Store } {
   const db = new DatabaseSync(path);
   db.exec('PRAGMA foreign_keys = ON');
-  if (path !== ':memory:') db.exec('PRAGMA journal_mode = WAL');
+  if (path !== ':memory:') {
+    try {
+      db.exec('PRAGMA busy_timeout = 0');
+      db.exec('PRAGMA locking_mode = EXCLUSIVE');
+      db.exec('PRAGMA journal_mode = WAL');
+      db.exec('BEGIN IMMEDIATE; COMMIT');
+    } catch (e) {
+      db.close();
+      if (/locked|busy/i.test(String(e))) throw new Error(`--db ${path} is in use by another Baton`);
+      throw e;
+    }
+  }
   return { db, store: sqliteStore(db) };
 }

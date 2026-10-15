@@ -52,7 +52,8 @@ const textModules: Plugin = {
   },
 };
 
-/** The tests only the local project runs: they need Node (the request queue, the file scan). */
+/** The tests only the local project runs: they need Node (the request queue, the file scan).
+ *  It also runs every integration scenario and the mirror's unit tests (S-BTN-14's server half). */
 const NODE_ONLY = ['test/unit/local-queue.test.ts', 'test/unit/boundary-host.test.ts'];
 const host = (name: string) => ({ '#host': resolve(import.meta.dirname, `test/hosts/${name}.ts`) });
 
@@ -91,7 +92,7 @@ export default defineConfig({
           environment: 'node',
           globalSetup: ['./test/global-setup.ts'],
           setupFiles: ['./test/setup.ts'],
-          include: ['test/integration/**/*.test.ts', ...NODE_ONLY],
+          include: ['test/integration/**/*.test.ts', 'test/unit/mirror.test.ts', ...NODE_ONLY],
           provide: { localConfig: { ...wranglerVars(), ...bindings } },
         },
       },

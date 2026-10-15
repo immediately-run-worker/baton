@@ -4,6 +4,9 @@
 // server answers as the Worker does; a local start refuses the test bindings.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
 import type { AddressInfo } from 'node:net';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { claimItem, cutover, hbBody, payload, register, rows, setClock, sha256, syncCall } from '../helpers';
 import { current } from '../hosts/local';
 import { RequestQueue } from '../../src/local/queue';
@@ -168,6 +171,20 @@ describe('the local store', () => {
     expect(store.exec('SELECT ? AS v, ? AS w', 2 ** 60, 7).one()).toEqual({ v: 2 ** 60, w: 7 });
   });
 
+  it('holds a database file exclusively: a second open fails clearly', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'baton-store-'));
+    const file = join(dir, 'baton.db');
+    try {
+      const first = openStore(file);
+      first.store.script('CREATE TABLE t (x INTEGER)');
+      expect(() => openStore(file)).toThrow(/in use by another Baton/);
+      first.db.close();
+      expect(() => openStore(file).db.close()).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('rolls a failed transaction back, nested ones included, as transactionSync does', () => {
     const { store } = openStore(':memory:');
     store.script('CREATE TABLE t (x INTEGER); CREATE TABLE u (y INTEGER)');
@@ -191,6 +208,13 @@ describe('a local start', () => {
       await expect(main(['--db', ':memory:', '--port', '8787', '--host', host])).rejects.toThrow(/--origin is required/);
     }
     expect(['127.0.0.1', '::1', 'localhost', '10.0.0.2'].map(concreteHost)).toEqual([true, true, true, true]);
+    expect(concreteHost('fe80::1%eth0')).toBe(false);
+  });
+
+  it('refuses an --origin that is not an origin', async () => {
+    for (const origin of ['baton.local', 'http://x/base', 'ftp//x']) {
+      await expect(main(['--db', ':memory:', '--origin', origin])).rejects.toThrow(/must be an origin/);
+    }
   });
 
   it('refuses the test bindings and non-string values', () => {

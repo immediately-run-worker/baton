@@ -66,8 +66,10 @@ npm run start:local -- --db ./baton.db --port 8787 [--origin <url>] [--admin-key
 ```
 
 - `--origin` is the instance's own origin (default `http://<host>:<port>`): the OIDC audience,
-  the dashboard's `Origin` check (R-BTN-56). It is required with `--port 0` or a wildcard
-  `--host`, where the address clients use cannot be derived.
+  the dashboard's `Origin` check (R-BTN-56), and must be just that: scheme, host and port, no
+  path. It is required with `--port 0`, or a `--host` that is not one IP address or
+  `localhost`, where the address clients use cannot be derived.
+- One process holds a `--db` file at a time: a second start on it fails.
 - `--admin-keys` names a file of administrators' OpenSSH public keys, one per line (R-BTN-57).
 - `--config` names a JSON object holding the Worker's other variables and secrets — `OIDC_*`,
   `*_WORKFLOW_REF`, `ACCESS_*`, `OWNER_EMAILS`, `TOKEN_HASHES`, `CREDENTIALS`,

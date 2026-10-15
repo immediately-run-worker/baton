@@ -20,7 +20,13 @@ const TEST_ONLY = /^(BATON_TEST_BINDINGS|TEST_.*)$/;
 export function concreteHost(host: string): boolean {
   if (host === 'localhost') return true;
   if (isIP(host) === 4) return !host.split('.').every((o) => Number(o) === 0);
-  if (isIP(host) === 6) return new URL(`http://[${host}]`).hostname !== '[::]';
+  if (isIP(host) === 6) {
+    try {
+      return new URL(`http://[${host}]`).hostname !== '[::]';
+    } catch {
+      return false; // a zone id (`fe80::1%eth0`) is not an origin's host
+    }
+  }
   return false;
 }
 
@@ -72,6 +78,14 @@ export async function main(argv: string[]) {
   }
   const bind = values.host!.includes(':') ? `[${values.host}]` : values.host;
   const origin = (values.origin ?? `http://${bind}:${port}`).replace(/\/+$/, '');
+  // R-BTN-56: an origin verbatim — scheme and host (and port), no path.
+  let parsed: string | null = null;
+  try {
+    parsed = new URL(origin).origin;
+  } catch {
+    parsed = null;
+  }
+  if (parsed !== origin) throw new Error(`--origin ${origin}: must be an origin, such as https://baton.example.com or http://127.0.0.1:8787, with no path`);
   const file = values.config ? JSON.parse(readFileSync(values.config, 'utf8')) : {};
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error('--config must hold a JSON object');
   const keys = parseAdminKeys(values['admin-keys'] ? readFileSync(values['admin-keys'], 'utf8') : '');
