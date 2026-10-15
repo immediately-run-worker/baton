@@ -29,7 +29,7 @@ How Baton differs from a durable-execution engine such as Temporal, and where ea
 | `src/core/courses.ts` | The course registry each sync posts (R-BTN-48): its shape check, each course file judged by `validateCourse` (a failing one keeps the previous and is listed under Needs you, R-BTN-69), the `min_worker_version` rule 9 reads |
 | `src/core/course.ts` | Pure: `validateCourse`, every way a course file breaks R-BTN-69's rules (stations reachable, an end from everywhere, cycles bounded, `start_leg`, inputs) |
 | `src/core/board.ts` | Pure: snapshot validation, the `tickets` row an item becomes, peaks, prices |
-| `src/core/auth.ts` | JWT verification (R-BTN-15, R-BTN-16); worker tokens against `TOKEN_HASHES` (R-BTN-13) |
+| `src/core/auth.ts` | JWT verification (R-BTN-15, R-BTN-16); the one verifier of signed requests, SSHSIG over RFC 9421 (R-BTN-13); worker tokens against `TOKEN_HASHES` during the transition |
 | `src/cloudflare/` | The Cloudflare host: the Worker (`worker.ts`) and the `Baton` Durable Object (`baton.ts`), wiring `ctx.storage`, the alarm and `waitUntil` into the ports |
 | `src/local/` | The local host: `node:sqlite` as the `Store` (`store.ts`), one queue for every request and alarm tick (`queue.ts`), a timer as the alarm (`host.ts`), `node:http` (`server.ts`), the command line (`main.ts`) |
 | `src/migrations/` | Numbered schema migrations, applied before the object serves |
@@ -53,12 +53,29 @@ How Baton differs from a durable-execution engine such as Temporal, and where ea
 
 ## Worker credentials
 
-Workers authenticate with a per-credential bearer token (R-BTN-13) and, after their first
-heartbeat, the per-session secret they registered (R-BTN-14). Two secrets carry the
-credentials: `TOKEN_HASHES` (`{"<credential>": "<sha256 of its token>"}`) and `CREDENTIALS`
-(`{"<credential>": {"hostname": "…", "allowed_capabilities": ["capability", …]}}`). Removing a
-credential's hash revokes it on its next call. Only the credential named `test` may send
-`test_harness` (R-BTN-32).
+A worker's identity is an SSH key (R-BTN-13 as amended; R3-1239): `ssh-ed25519`,
+`ecdsa-sha2-nistp256` or their `sk-` FIDO forms. Every `/v1/runner/*` call carries an RFC 9421
+`Signature-Input` and `Signature` covering `@method`, `@authority`, `@path`, `@query` and
+`content-digest` (the empty string's digest when there is no body), with `created`, `nonce`,
+`keyid` (the key's `SHA256:` fingerprint) and `tag="baton-request"`; the signature value is an
+SSHSIG in the namespace `baton-request` — what `ssh-keygen -Y sign -n baton-request` or an
+ssh-agent makes. Baton refuses a signature more than 5 minutes from its clock, for another
+origin, in another namespace, by an unknown or revoked key, or with a nonce it has seen for
+that key in 10 minutes. The front checks the shape, `@authority` and the digest before the
+object; the object checks the clock, the key, the signature and the nonce.
+
+Until R3-1240's owner grants, the secret `BATON_KEYS` seeds the worker keys at start:
+`[{"key": "ssh-ed25519 AAAA… comment", "name": "<the one hostname it registers>",
+"allowed_capabilities": ["capability", …]}]`. A key the list no longer names is revoked, for
+good; a machine whose key is lost gets a new one.
+
+**The transition.** A request with no signature headers may still use a bearer token: the
+secrets `TOKEN_HASHES` (`{"<credential>": "<sha256 of its token>"}`) and `CREDENTIALS`
+(`{"<credential>": {"hostname": "…", "allowed_capabilities": ["capability", …]}}`); removing a
+credential's hash revokes it on its next call. Bearer tokens go once every worker signs.
+
+After the first heartbeat a worker also presents the per-session secret it registered
+(R-BTN-14). Only the credential named `test` may send `test_harness` (R-BTN-32).
 
 ## Running locally
 
@@ -76,8 +93,8 @@ npm run start:local -- --db ./baton.db --port 8787 [--origin <url>] [--admin-key
 - One process holds a `--db` file at a time: a second start on it fails.
 - `--admin-keys` names a file of administrators' OpenSSH public keys, one per line (R-BTN-57).
 - `--config` names a JSON object holding the Worker's other variables and secrets — `OIDC_*`,
-  `BATON_REPOSITORIES`, `ACCESS_*`, `OWNER_EMAILS`, `TOKEN_HASHES`, `CREDENTIALS`,
-  `GITHUB_DISPATCH_TOKEN` — as strings. Without it every principal is unconfigured: the sync
+  `BATON_REPOSITORIES`, `ACCESS_*`, `OWNER_EMAILS`, `BATON_KEYS`, `TOKEN_HASHES`,
+  `CREDENTIALS`, `GITHUB_DISPATCH_TOKEN` — as strings. Without it every principal is unconfigured: the sync
   and the owner are refused and no worker token is known, so the example above serves only
   refusals. Nothing is read from `.dev.vars`, and the test bindings are refused.
 

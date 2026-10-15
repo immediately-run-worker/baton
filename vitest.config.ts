@@ -10,6 +10,7 @@ import { exportJWK, generateKeyPair } from 'jose';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { makeKey } from './test/lib/sshKeys.ts';
 
 /** The test credentials (R-BTN-13): tokens, their hashes and their policy — the shapes the
  *  TOKEN_HASHES and CREDENTIALS Worker secrets take in production (R3-1208). The `test`
@@ -58,6 +59,16 @@ const textModules: Plugin = {
 const NODE_ONLY = ['test/unit/local-queue.test.ts', 'test/unit/boundary-host.test.ts'];
 const host = (name: string) => ({ '#host': resolve(import.meta.dirname, `test/hosts/${name}.ts`) });
 
+/** The test SSH keys (R-BTN-13 as amended, R3-1239): one of each type, made per run, seeded
+ *  through BATON_KEYS as production seeds its own; their private halves exist only in the
+ *  TEST_SSH_KEYS binding the harness signs with. */
+const sshKeys = await Promise.all([
+  makeKey('ssh-ed25519', 'vm-ed'),
+  makeKey('ecdsa-sha2-nistp256', 'vm-p256'),
+  makeKey('sk-ssh-ed25519@openssh.com', 'vm-sk-ed'),
+  makeKey('sk-ecdsa-sha2-nistp256@openssh.com', 'vm-sk-p256'),
+]);
+
 const keys = await testKeys();
 const bindings = {
   BATON_TEST_BINDINGS: 'true',
@@ -69,6 +80,8 @@ const bindings = {
   OWNER_EMAILS: 'owner@example.com',
   TOKEN_HASHES: JSON.stringify(Object.fromEntries(Object.entries(TEST_TOKENS).map(([id, t]) => [id, sha(t)]))),
   CREDENTIALS: JSON.stringify(CREDENTIALS),
+  BATON_KEYS: JSON.stringify(sshKeys.map((k) => ({ key: k.publicKey, name: k.name, allowed_capabilities: VENUE }))),
+  TEST_SSH_KEYS: JSON.stringify(sshKeys),
 };
 
 export default defineConfig({

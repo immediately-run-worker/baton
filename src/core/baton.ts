@@ -12,6 +12,7 @@ import { priceFor } from '../shared/sessionUsage.mjs';
 import { familyOf } from '../shared/baton.mjs';
 import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
 import { WorkerApi } from './workerApi';
+import { verifyRequest, withBody } from './auth';
 import { Claims } from './claims';
 import { Cutover } from './cutover';
 import { Mirror } from './mirror';
@@ -42,7 +43,7 @@ export class BatonCore {
   /** The dispatch call; tests replace it (as they replace `now`) to see what would be sent. */
   dispatcher: (workflow: Workflow) => Promise<unknown>;
   /** §3: a signature check (R3-1239) or a hook call (R3-1236) is awaited through this, so
-   *  another request may run meanwhile on both hosts alike (R-BTN-55). No caller yet. */
+   *  another request may run meanwhile on both hosts alike (R-BTN-55). */
   readonly outside: <T>(work: () => Promise<T>) => Promise<T>;
 
   constructor(private readonly ports: Ports) {
@@ -66,6 +67,7 @@ export class BatonCore {
   async start(): Promise<void> {
     this.migrate();
     this.store.transaction(() => this.registry.seed(this.ports.config));
+    await this.workers.seedKeys();
     if ((await this.ports.scheduler.get()) == null) await this.ports.scheduler.set(this.now() + ALARM_EVERY_MS);
   }
 
@@ -192,6 +194,18 @@ export class BatonCore {
     }
   }
 
+  /** A signed request (R3-1239), verified whole by the one verifier: the key its keyid names
+   *  among the keys in force, the SSHSIG in the `baton-request` namespace, `created` within 5
+   *  minutes of this clock — then its nonce, unseen for that key. The crypto runs outside the
+   *  turn (§3); the nonce is checked and written after it. Returns the request with its body
+   *  put back and the credential: the key's fingerprint. */
+  private async verifySigned(req: Request): Promise<{ req: Request; cred: string }> {
+    const now = this.now();
+    const v = await this.outside(() => verifyRequest(req, (fp) => this.workers.publicKey(fp), { origin: this.ports.config.BATON_ORIGIN, now }));
+    this.workers.acceptNonce(v.keyid, v.nonce);
+    return { req: withBody(req, v.body), cred: v.keyid };
+  }
+
   /** The worker and owner routes of R3-1211. The front has verified the principal and passes
    *  it in `X-Baton-Credential` (a worker token's credential) or `X-Baton-Owner` (the Access
    *  email); it strips both from every incoming request first. */
@@ -199,8 +213,13 @@ export class BatonCore {
     const p = url.pathname;
     const m = req.method;
     const owner = req.headers.get('X-Baton-Owner');
-    const cred = req.headers.get('X-Baton-Credential');
+    let cred = req.headers.get('X-Baton-Credential');
     const secret = req.headers.get('X-Worker-Secret');
+    if (req.headers.has('X-Baton-Signed')) {
+      // R-BTN-13 as amended: the front checked the request's shape, @authority and digest; the
+      // key, the signature and the clock are checked here, and the nonce in this turn.
+      ({ req, cred } = await this.verifySigned(req));
+    }
     const tx = <T>(f: () => T): T => this.store.transaction(f);
     if (p.startsWith('/v1/runner/')) {
       if (!cred) throw new BatonError('unauthenticated', 'no worker principal');

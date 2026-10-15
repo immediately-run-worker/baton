@@ -5,6 +5,7 @@ import { importJWK, SignJWT } from 'jose';
 import roadmapPr from './fixtures/courses/roadmap-pr/course.json';
 import { ACTIVITY_KINDS } from '../src/core/validate';
 import { call as hostCall, config as env, tick as hostTick, withCore } from '#host';
+import { signedRequest, type SignOptions, type TestKey } from './lib/sshKeys';
 
 export { HOST, withCore } from '#host';
 
@@ -110,6 +111,21 @@ export function workerCall(path: string, { cred = 'vm-a', secret, body, method }
   const headers: Record<string, string> = { Authorization: `Bearer ${TOKENS[cred]}`, 'Content-Type': 'application/json' };
   if (secret) headers['X-Worker-Secret'] = secret;
   return call(path, { method: method ?? (body === undefined ? 'GET' : 'POST'), headers, body: body === undefined ? undefined : JSON.stringify(body) });
+}
+
+/** The run's test SSH keys (vitest.config.ts), by the name each registers: `vm-ed`,
+ *  `vm-p256`, `vm-sk-ed`, `vm-sk-p256` (R-BTN-13 as amended, R3-1239). */
+export const SSH_KEYS: Record<string, TestKey> = Object.fromEntries((JSON.parse(env.TEST_SSH_KEYS ?? '[]') as TestKey[]).map((k) => [k.name, k]));
+
+/** A worker call signed with test key `name` (R-BTN-13): `created` is the core's clock unless
+ *  given; a body is JSON. Returns the request too, to replay it. */
+export async function signedCall(name: string, path: string, o: Omit<SignOptions, 'body'> & { body?: unknown; secret?: string; url?: string } = {}) {
+  const created = o.created ?? Math.floor((await withCore((c) => c.now())) / 1000);
+  const headers: Record<string, string> = o.secret ? { 'X-Worker-Secret': o.secret } : {};
+  const req = await signedRequest(SSH_KEYS[name], o.url ?? ORIGIN + path, { ...o, created, headers, body: o.body === undefined ? undefined : JSON.stringify(o.body) });
+  const replay = req.clone();
+  const res = await hostCall(req);
+  return { res, replay };
 }
 
 /** A heartbeat body with sensible defaults for `cred`'s host. */

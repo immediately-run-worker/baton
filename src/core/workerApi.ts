@@ -5,12 +5,13 @@
 // by the shadow report, whose rows the unique indexes guard.
 import { BatonError } from './http';
 import { logEvent } from './db';
+import { NONCE_TTL_MS, parseSshKey } from './auth';
 import { DEFAULT_TRANSCRIPT_REPOS, repositoryOf, transcriptReposOf } from './registry';
 
 export { DEFAULT_TRANSCRIPT_REPOS };
 import { capabilitiesOf } from '../shared/vocabulary.mjs';
 import {
-  checkAck, checkActivity, checkHeartbeat, checkMessage, checkShadowReport, checkSuspension, bad,
+  checkAck, checkActivity, checkHeartbeat, checkMessage, checkShadowReport, checkSuspension, bad, HOSTNAME,
   type ActivityReport, type Heartbeat,
 } from './validate';
 
@@ -88,14 +89,86 @@ export class WorkerApi {
       const allowed = JSON.stringify([...(p.allowed_capabilities ?? [])].sort());
       this.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, revoked_at) VALUES (?, ?, ?, ?)
                  ON CONFLICT (id) DO UPDATE SET hostname = excluded.hostname, allowed_capabilities = excluded.allowed_capabilities,
-                   revoked_at = CASE WHEN excluded.revoked_at IS NULL THEN NULL ELSE COALESCE(credentials.revoked_at, excluded.revoked_at) END`,
+                   revoked_at = CASE WHEN excluded.revoked_at IS NULL THEN NULL ELSE COALESCE(credentials.revoked_at, excluded.revoked_at) END
+                 WHERE credentials.kind = 'token'`,
         cid, p.hostname, allowed, Object.hasOwn(hashes, cid) ? null : now);
     }
     // A credential dropped from the policy is revoked too.
     const listed = Object.keys(policy);
-    // (`legacy` is the cutover import's own credential, with no token: never revoked here.)
-    this.exec(`UPDATE credentials SET revoked_at = ? WHERE revoked_at IS NULL AND id != 'legacy' AND id NOT IN (SELECT value FROM json_each(?))`, now, JSON.stringify(listed));
+    // (Only token credentials: `legacy`, the cutover import's own, and the SSH keys are not this
+    // mirror's.)
+    this.exec(`UPDATE credentials SET revoked_at = ? WHERE revoked_at IS NULL AND kind = 'token' AND id NOT IN (SELECT value FROM json_each(?))`, now, JSON.stringify(listed));
     this.exec(`INSERT INTO baton_settings (key, value) VALUES ('credentials_marker', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, marker);
+  }
+
+  // ── SSH keys (R-BTN-13 as amended; R3-1239) ──────────────────────────────────────────────
+
+  /** Seed the worker keys from `BATON_KEYS` — a JSON array of `{key, name,
+   *  allowed_capabilities}`, the key an OpenSSH public key line — until R3-1240's owner grants
+   *  replace it. Each key's credential is its fingerprint. Seeding never brings a revoked key
+   *  back (a key is revoked for good; a machine gets a new one), and a key the list no longer
+   *  names is revoked. The whole list is checked before anything is written: a malformed entry,
+   *  a key twice, or two keys for one name throws, as a malformed registry seed does. */
+  async seedKeys(): Promise<number> {
+    const raw = this.c.config.BATON_KEYS;
+    const marker = fnv1a(raw ?? '');
+    if (this.setting('keys_marker') === marker) return 0;
+    let list: unknown = [];
+    try {
+      if (raw) list = JSON.parse(raw);
+    } catch {
+      throw new Error('BATON_KEYS is not JSON');
+    }
+    if (!Array.isArray(list)) throw new Error('BATON_KEYS must be a JSON array');
+    const keys: { id: string; public_key: string; name: string; allowed: string }[] = [];
+    for (const [i, e] of list.entries()) {
+      const at = `BATON_KEYS[${i}]`;
+      if (!e || typeof e !== 'object') throw new Error(`${at} must be an object`);
+      const { key, name, allowed_capabilities } = e as Record<string, unknown>;
+      if (typeof key !== 'string') throw new Error(`${at}.key must be an OpenSSH public key`);
+      const parsed = await parseSshKey(key);
+      if (typeof name !== 'string' || !HOSTNAME.test(name)) throw new Error(`${at}.name must be a hostname`);
+      if (!Array.isArray(allowed_capabilities) || allowed_capabilities.some((c) => typeof c !== 'string' || !/^[a-z0-9-]{1,64}$/.test(c))) {
+        throw new Error(`${at}.allowed_capabilities must be capability names`);
+      }
+      if (keys.some((k) => k.id === parsed.fingerprint)) throw new Error(`${at}: the key is listed twice`);
+      if (keys.some((k) => k.name === name)) throw new Error(`${at}: ${name} already has a key (one key per name)`);
+      // Only the type and the base64: a comment is a label for people, never stored.
+      keys.push({ id: parsed.fingerprint, public_key: `${parsed.type} ${key.trim().split(' ')[1]}`, name, allowed: JSON.stringify([...allowed_capabilities].sort()) });
+    }
+    const now = this.c.now();
+    this.c.store.transaction(() => {
+      // Revoke first, so a name whose key changed is free for its new key.
+      this.exec(`UPDATE credentials SET revoked_at = ? WHERE kind = 'worker' AND revoked_at IS NULL AND id NOT IN (SELECT value FROM json_each(?))`, now, JSON.stringify(keys.map((k) => k.id)));
+      for (const k of keys) {
+        const held = this.rows<{ id: string }>(`SELECT id FROM credentials WHERE kind = 'worker' AND revoked_at IS NULL AND hostname = ? AND id != ?`, k.name, k.id)[0];
+        if (held) throw new Error(`BATON_KEYS: ${k.name} already has a key in force (one key per name)`);
+        this.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, kind, public_key) VALUES (?, ?, ?, 'worker', ?)
+                   ON CONFLICT (id) DO UPDATE SET hostname = excluded.hostname, allowed_capabilities = excluded.allowed_capabilities
+                   WHERE credentials.kind = 'worker' AND credentials.revoked_at IS NULL`, k.id, k.name, k.allowed, k.public_key);
+      }
+      this.exec(`INSERT INTO baton_settings (key, value) VALUES ('keys_marker', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value`, marker);
+    });
+    return keys.length;
+  }
+
+  /** The public key a fingerprint names, if it is registered and not revoked. */
+  publicKey(fingerprint: string): string | null {
+    return this.rows<{ public_key: string }>(
+      'SELECT public_key FROM credentials WHERE id = ? AND public_key IS NOT NULL AND revoked_at IS NULL', fingerprint)[0]?.public_key ?? null;
+  }
+
+  /** R-BTN-13: a nonce seen for this key within 10 minutes is a replay. Every signed request
+   *  inserts one row and prunes what has aged out (§3's write budget). */
+  acceptNonce(fingerprint: string, nonce: string): void {
+    const now = this.c.now();
+    this.c.store.transaction(() => {
+      this.exec('DELETE FROM request_nonces WHERE seen_at < ?', now - NONCE_TTL_MS);
+      if (this.rows('SELECT 1 FROM request_nonces WHERE key_fingerprint = ? AND nonce = ?', fingerprint, nonce).length) {
+        throw new BatonError('unauthenticated', 'this nonce was already used: a replayed request');
+      }
+      this.exec('INSERT INTO request_nonces (key_fingerprint, nonce, seen_at) VALUES (?, ?, ?)', fingerprint, nonce, now);
+    });
   }
 
   // ── workers (§5, §10.2) ─────────────────────────────────────────────────────────────────

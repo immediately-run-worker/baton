@@ -1,0 +1,74 @@
+{
+  "ed25519-post": {
+    "publicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID9I4fFTqgx//oubaZuPsLdyoG8fnXNgtMYRJ80T+sNA fixture-ed25519",
+    "method": "POST",
+    "url": "https://baton.immediately.run/v1/runner/heartbeat",
+    "body": "{\"a\":1}",
+    "headers": {
+      "Content-Digest": "sha-256=:AVq9f1zFei3ZS3WQ8ErYCEJzkF7jPsXOvq5iJ2qX+GI=:",
+      "Signature-Input": "sig1=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\");created=1792065600;nonce=\"dhoIahSOQe0ipSM-u7u5Rw\";keyid=\"SHA256:S/TIeBhlIKh4GpPy9rg+HRB8dpxu9rDkEqRCZF5AkQM\";tag=\"baton-request\"",
+      "Signature": "sig1=:U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgP0jh8VOqDH/+i5tpm4+wt3Kgbx+dc2C0xhEnzRP6w0AAAAANYmF0b24tcmVxdWVzdAAAAAAAAAAGc2hhNTEyAAAAUwAAAAtzc2gtZWQyNTUxOQAAAEB5dO+NI5pR2cHERyyq/njTgRE0Eaey3lZWwVM+DfkBem+66p8DQR81WEWjm3DVWzuRpeN8WVjjeqoKp08h1vcI:"
+    },
+    "created": 1792065600
+  },
+  "ed25519-get": {
+    "publicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID9I4fFTqgx//oubaZuPsLdyoG8fnXNgtMYRJ80T+sNA fixture-ed25519",
+    "method": "GET",
+    "url": "https://baton.immediately.run/v1/runner/mode?repository=docs",
+    "body": "",
+    "headers": {
+      "Content-Digest": "sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:",
+      "Signature-Input": "sig1=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\");created=1792065600;nonce=\"UW5vkY8CbnMeZ1vHcGD1Kw\";keyid=\"SHA256:S/TIeBhlIKh4GpPy9rg+HRB8dpxu9rDkEqRCZF5AkQM\";tag=\"baton-request\"",
+      "Signature": "sig1=:U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgP0jh8VOqDH/+i5tpm4+wt3Kgbx+dc2C0xhEnzRP6w0AAAAANYmF0b24tcmVxdWVzdAAAAAAAAAAGc2hhNTEyAAAAUwAAAAtzc2gtZWQyNTUxOQAAAEChi1O2ypQADH2IdiD/sgk96eBz20Nl9kl1MrV+e7/hYakdOpAaKXBeej/YrIvNIXQpUqT2ut74VGiNLo/bklcK:"
+    },
+    "created": 1792065600
+  },
+  "ed25519-git": {
+    "publicKey": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAID9I4fFTqgx//oubaZuPsLdyoG8fnXNgtMYRJ80T+sNA fixture-ed25519",
+    "method": "GET",
+    "url": "https://baton.immediately.run/v1/runner/mode?repository=docs",
+    "body": "",
+    "headers": {
+      "Content-Digest": "sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:",
+      "Signature-Input": "sig1=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\");created=1792065600;nonce=\"jC9oqHMB9_ttKzOgiretNA\";keyid=\"SHA256:S/TIeBhlIKh4GpPy9rg+HRB8dpxu9rDkEqRCZF5AkQM\";tag=\"baton-request\"",
+      "Signature": "sig1=:U1NIU0lHAAAAAQAAADMAAAALc3NoLWVkMjU1MTkAAAAgP0jh8VOqDH/+i5tpm4+wt3Kgbx+dc2C0xhEnzRP6w0AAAAADZ2l0AAAAAAAAAAZzaGE1MTIAAABTAAAAC3NzaC1lZDI1NTE5AAAAQDyk+6XKiJtxTSW4whqWB9LnOMzEKXVpZSedXocQNLHOfMThtg5t110QjKLKokRCG5dTJBr44uSO2fO4CC5VCwI=:"
+    },
+    "created": 1792065600
+  },
+  "ecdsa-post": {
+    "publicKey": "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDogEnukIxldRDBEFjZF8cJoRHaKfzMeKabEnBOaddlW+JlnuQPvlHMv0EVS3wRLWwfeNzF2kmx02b3jzMdgNE8= fixture-ecdsa",
+    "method": "POST",
+    "url": "https://baton.immediately.run/v1/runner/heartbeat",
+    "body": "{\"a\":1}",
+    "headers": {
+      "Content-Digest": "sha-256=:AVq9f1zFei3ZS3WQ8ErYCEJzkF7jPsXOvq5iJ2qX+GI=:",
+      "Signature-Input": "sig1=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\");created=1792065600;nonce=\"-d_ehMX2TshN8RsMOEk1eg\";keyid=\"SHA256:QKv3flcDpiimIG1BkvXgKsYYdWvwDBYPI9nz3NbscSk\";tag=\"baton-request\"",
+      "Signature": "sig1=:U1NIU0lHAAAAAQAAAGgAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAAhuaXN0cDI1NgAAAEEEOiASe6QjGV1EMEQWNkXxwmhEdop/Mx4ppsScE5p12Vb4mWe5A++Ucy/QRVLfBEtbB943MXaSbHTZvePMx2A0TwAAAA1iYXRvbi1yZXF1ZXN0AAAAAAAAAAZzaGE1MTIAAABkAAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAABJAAAAIFBPJoPx5FjlSmdlNMgwCihZMaAG0zrD5Sj+8fRm2swmAAAAIQDCjjfOLwS+zgxmtHfcOiYz70yaeWOMsadqIl5E1ZVpNA==:"
+    },
+    "created": 1792065600
+  },
+  "ecdsa-get": {
+    "publicKey": "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDogEnukIxldRDBEFjZF8cJoRHaKfzMeKabEnBOaddlW+JlnuQPvlHMv0EVS3wRLWwfeNzF2kmx02b3jzMdgNE8= fixture-ecdsa",
+    "method": "GET",
+    "url": "https://baton.immediately.run/v1/runner/mode?repository=docs",
+    "body": "",
+    "headers": {
+      "Content-Digest": "sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:",
+      "Signature-Input": "sig1=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\");created=1792065600;nonce=\"AvxoGHPHhIfYMzeeGSiTDg\";keyid=\"SHA256:QKv3flcDpiimIG1BkvXgKsYYdWvwDBYPI9nz3NbscSk\";tag=\"baton-request\"",
+      "Signature": "sig1=:U1NIU0lHAAAAAQAAAGgAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAAhuaXN0cDI1NgAAAEEEOiASe6QjGV1EMEQWNkXxwmhEdop/Mx4ppsScE5p12Vb4mWe5A++Ucy/QRVLfBEtbB943MXaSbHTZvePMx2A0TwAAAA1iYXRvbi1yZXF1ZXN0AAAAAAAAAAZzaGE1MTIAAABkAAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAABJAAAAIHcbVw6Gpwl5a2BdPxu7yPjbim9mwNja+3QCzOO5VoasAAAAIQCQa5zaZYo33OIdpp61hYec0L/x2Ij2Tzrp+JjVFQE8JA==:"
+    },
+    "created": 1792065600
+  },
+  "ecdsa-git": {
+    "publicKey": "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBDogEnukIxldRDBEFjZF8cJoRHaKfzMeKabEnBOaddlW+JlnuQPvlHMv0EVS3wRLWwfeNzF2kmx02b3jzMdgNE8= fixture-ecdsa",
+    "method": "GET",
+    "url": "https://baton.immediately.run/v1/runner/mode?repository=docs",
+    "body": "",
+    "headers": {
+      "Content-Digest": "sha-256=:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=:",
+      "Signature-Input": "sig1=(\"@method\" \"@authority\" \"@path\" \"@query\" \"content-digest\");created=1792065600;nonce=\"eAgbZ_NV0_0ZKgbcVauRBg\";keyid=\"SHA256:QKv3flcDpiimIG1BkvXgKsYYdWvwDBYPI9nz3NbscSk\";tag=\"baton-request\"",
+      "Signature": "sig1=:U1NIU0lHAAAAAQAAAGgAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAAhuaXN0cDI1NgAAAEEEOiASe6QjGV1EMEQWNkXxwmhEdop/Mx4ppsScE5p12Vb4mWe5A++Ucy/QRVLfBEtbB943MXaSbHTZvePMx2A0TwAAAANnaXQAAAAAAAAABnNoYTUxMgAAAGMAAAATZWNkc2Etc2hhMi1uaXN0cDI1NgAAAEgAAAAgXVsCuiF+cWmCDzdEhmjpsMruV9u1c5h7lIxQdKPctl0AAAAgdJUAoYlZDHUKZ8sBrO7IVjc3vw25I+5ss1VHBEIsEfY=:"
+    },
+    "created": 1792065600
+  }
+}
