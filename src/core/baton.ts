@@ -72,6 +72,8 @@ export class BatonCore {
     this.store.transaction(() => this.registry.seed(this.ports.config));
     await this.seedKeys();
     if ((await this.ports.scheduler.get()) == null) await this.ports.scheduler.set(this.now() + ALARM_EVERY_MS);
+    // A trailing webhook dispatch owed from before a restart keeps its time (round 1, 1-A-4).
+    await this.armBy(this.webhooks.nextTrailing());
   }
 
   /** The worker keys from BATON_KEYS (R3-1239). A list that cannot be seeded changes nothing
@@ -233,7 +235,11 @@ export class BatonCore {
           return json(this.store.transaction(() => this.mirror.foreignClaim(repo.id, body)));
         }
       }
-      if (req.method === 'POST' && url.pathname === '/v1/github/webhook') return json(await this.delivery(req));
+      if (req.method === 'POST' && url.pathname === '/v1/github/webhook') {
+        // §11: 204, and nothing of Baton's in the App's delivery log (round 1, 1-A-0).
+        await this.delivery(req);
+        return new Response(null, { status: 204 });
+      }
       if (req.method === 'GET' && url.pathname === '/v1/ui/state') return json(this.uiState());
       const routed = await this.workerRoute(req, url);
       if (routed) return routed;

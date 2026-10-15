@@ -9,6 +9,7 @@
 // per 30 seconds, plus one trailing dispatch when a window that suppressed a delivery closes.
 import { BatonError } from './http';
 import { equalBytes, readCapped } from './auth';
+import { GIT_REPO } from './validate';
 import type { Store } from './ports';
 
 /** The events the App subscribes to (R-BTN-73; `check_suite` dropped after the sixth review). */
@@ -36,7 +37,6 @@ export interface Delivery {
 }
 
 const DELIVERY_ID = /^[A-Za-z0-9-]{1,64}$/;
-const FULL_NAME = /^[A-Za-z0-9_.-]{1,100}\/[A-Za-z0-9_.-]{1,100}$/;
 const enc = new TextEncoder();
 
 /** `X-Hub-Signature-256` of `body` under `secret`: `sha256=` and the HMAC's hex. */
@@ -73,7 +73,7 @@ export function pickDelivery(event: string | null, id: string | null, payload: u
   if (!event || !(WEBHOOK_EVENTS as readonly string[]).includes(event)) return null;
   if (!id || !DELIVERY_ID.test(id)) return null;
   const repository = str(at(at(payload, 'repository'), 'full_name'));
-  if (!repository || !FULL_NAME.test(repository)) return null;
+  if (!repository || !GIT_REPO.test(repository)) return null;
   const d: Delivery = { event: event as WebhookEvent, id, repository };
   if (event === 'workflow_run') {
     const path = str(at(at(payload, 'workflow_run'), 'path'));
@@ -128,7 +128,8 @@ export class Webhooks {
                            ON CONFLICT (repository_id) DO UPDATE SET last_dispatch_at = excluded.last_dispatch_at, trailing_at = NULL`, id, now);
         out.now.push(id);
       } else {
-        this.c.store.exec('UPDATE webhook_dispatch SET trailing_at = ? WHERE repository_id = ?', row.last_dispatch_at + DISPATCH_WINDOW_MS, id);
+        // One write per window, not one per suppressed delivery (§3's write budget).
+        this.c.store.exec('UPDATE webhook_dispatch SET trailing_at = ? WHERE repository_id = ? AND trailing_at IS NULL', row.last_dispatch_at + DISPATCH_WINDOW_MS, id);
         out.trailing.push(id);
       }
     }
@@ -146,15 +147,19 @@ export class Webhooks {
     return false;
   }
 
-  /** The registered repositories whose tickets name `full` — their home, or their `repos:`
-   *  (owner/name once the sync resolves them; docs' interim post sends short names, matched
-   *  against the repository's own name, as branch-holder does). */
+  /** The registered repositories whose tickets name `full` — their home, or their `repos:`:
+   *  owner/name once the sync resolves them, and meanwhile docs' interim short names, read as
+   *  that name under the home repository's own owner — so another owner's repository of the
+   *  same name names nothing (round 1, 1-B-1). */
   private targets(full: string, registered: Registered[]): string[] {
-    const name = full.slice(full.indexOf('/') + 1);
+    const slash = full.indexOf('/');
+    const owner = full.slice(0, slash);
+    const name = full.slice(slash + 1);
     const out = new Set(registered.filter((r) => r.github.toLowerCase() === full).map((r) => r.id));
     for (const r of this.rows<{ repository_id: string }>(
-      `SELECT DISTINCT t.repository_id FROM tickets t, json_each(t.repos) j
-       WHERE lower(j.value) IN (?, ?)`, full, name)) {
+      `SELECT DISTINCT t.repository_id FROM tickets t JOIN repositories p ON p.id = t.repository_id, json_each(t.repos) j
+       WHERE lower(j.value) = ?
+          OR (lower(j.value) = ? AND instr(j.value, '/') = 0 AND lower(substr(p.github, 1, instr(p.github, '/') - 1)) = ?)`, full, name, owner)) {
       if (registered.some((g) => g.id === r.repository_id)) out.add(r.repository_id);
     }
     return [...out].sort();
@@ -163,6 +168,9 @@ export class Webhooks {
   /** The alarm: the repositories whose trailing dispatch is due, each starting a new window. */
   dueTrailing(): string[] {
     const now = this.c.now();
+    // A repository retired inside its window owes nothing (round 1, 1-B-5).
+    this.c.store.exec(`UPDATE webhook_dispatch SET trailing_at = NULL WHERE trailing_at IS NOT NULL
+                       AND repository_id IN (SELECT id FROM repositories WHERE retired_at IS NOT NULL)`);
     const due = this.rows<{ repository_id: string }>('SELECT repository_id FROM webhook_dispatch WHERE trailing_at IS NOT NULL AND trailing_at <= ? ORDER BY repository_id', now).map((r) => r.repository_id);
     for (const id of due) this.c.store.exec('UPDATE webhook_dispatch SET last_dispatch_at = ?, trailing_at = NULL WHERE repository_id = ?', now, id);
     return due;

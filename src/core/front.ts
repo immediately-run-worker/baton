@@ -3,7 +3,7 @@
 // forwards the API to the core — through the Durable Object on Cloudflare, through the request
 // queue locally (R-BTN-55). Every response leaves with the security headers.
 import { verifyOwner, verifyRequest, verifySyncToken, verifyWorker, checkStateChanging, withBody } from './auth';
-import { BatonError, errorResponse, json, withSecurityHeaders } from './http';
+import { BatonError, errorResponse, withSecurityHeaders } from './http';
 import { pickDelivery, verifyDelivery } from './webhook';
 import type { Config } from './ports';
 import page from '../ui/index.html';
@@ -44,7 +44,7 @@ async function route(req: Request, env: Config, to: Forward): Promise<Response> 
       // A form-encoded or broken body is not a delivery Baton reads.
     }
     const d = pickDelivery(req.headers.get('X-GitHub-Event'), req.headers.get('X-GitHub-Delivery'), payload);
-    if (!d) return json({ outcome: 'dropped' });
+    if (!d) return new Response(null, { status: 204 });
     return forward(new Request(req.url, { method: 'POST' }), to, { 'X-Baton-Webhook': JSON.stringify(d) });
   }
   if (pathname.startsWith('/v1/runner/')) {

@@ -83,7 +83,7 @@ After the first heartbeat a worker also presents the per-session secret it regis
 ## GitHub App webhooks
 
 `POST /v1/github/webhook` takes the GitHub App's deliveries (R-BTN-73): `push`, `pull_request`,
-`pull_request_review`, `issue_comment` and `workflow_run`, as JSON. The Worker verifies
+`pull_request_review`, `issue_comment` and `workflow_run`, as JSON, and answers `204` (§11). The Worker verifies
 `X-Hub-Signature-256` with the secret `BATON_GITHUB_WEBHOOK_SECRET` before reading anything
 (no secret, no delivery is accepted), reads only the event, the delivery id,
 `repository.full_name`, `workflow_run.path` and a push's `pusher.name` and

@@ -5,7 +5,7 @@ import { describe, it, expect } from 'vitest';
 import { env } from 'cloudflare:test';
 import { deliverySignature, pickDelivery, verifyDelivery, Webhooks } from '../../src/core/webhook';
 import { front } from '../../src/core/front';
-import { ORIGIN, withCore } from '../helpers';
+import { armedAt, ORIGIN, withCore } from '../helpers';
 
 const SECRET = env.BATON_GITHUB_WEBHOOK_SECRET!;
 const enc = new TextEncoder();
@@ -108,6 +108,8 @@ describe('the core: self-filter, repository map, window (R-BTN-73)', () => {
       const later = new Webhooks({ store: c.store, now: () => 6_000_000 });
       expect(later.receive(d({ repository: 'IMMEDIATELY-RUN/Sandbox' }))).toEqual({ outcome: 'dispatched', now: ['docs'], trailing: [] });
       expect(later.receive(d({ repository: 'immediately-run/other' }))).toEqual({ outcome: 'dispatched', now: [], trailing: [] });
+      // A short name is read under the home repository's owner: another owner's baton names nothing (1-B-1).
+      expect(later.receive(d({ repository: 'someone-else/baton' }))).toEqual({ outcome: 'dispatched', now: [], trailing: [] });
     });
   });
 
@@ -127,6 +129,48 @@ describe('the core: self-filter, repository map, window (R-BTN-73)', () => {
       expect(at(0).nextTrailing()).toBe(60_000);
       expect(at(60_000).receive(d({}))).toMatchObject({ now: ['docs'], trailing: [] });
       expect(at(0).nextTrailing()).toBeNull();
+    });
+  });
+
+  it('the alarm fires at the earliest trailing dispatch still owed, after a tick and after a restart (1-A-1, 1-A-4)', async () => {
+    // Times ahead of the real clock: an alarm armed in the past fires (and clears) at once.
+    const B = Math.ceil(Date.now() / 1000) * 1000 + 600_000;
+    await withCore(async (c) => {
+      c.registry.register({ id: 'ops', github: 'immediately-run/ops', default_branch: 'main', sync_workflow: '.github/workflows/sync.yml' });
+      c.store.exec(`INSERT INTO webhook_dispatch (repository_id, last_dispatch_at, trailing_at) VALUES ('docs', ?, ?), ('ops', ?, ?)`, B - 30_000, B, B - 20_000, B + 10_000);
+      c.dispatcher = async () => true;
+      c.now = () => B;
+      await c.alarm();
+    });
+    // docs' was sent; ops' is still owed, sooner than the next 60-second tick.
+    expect(await armedAt()).toBe(B + 10_000);
+    await withCore(async (c) => {
+      c.store.exec(`UPDATE webhook_dispatch SET trailing_at = ? WHERE repository_id = 'ops'`, B + 15_000);
+      await (c as unknown as { ports: { scheduler: { set(at: number): Promise<void> } } }).ports.scheduler.set(B + 60_000);
+      await c.start();
+    });
+    expect(await armedAt()).toBe(B + 15_000);
+  });
+
+  it('a repository retired inside its window owes no trailing dispatch (1-B-5)', async () => {
+    await withCore((c) => {
+      c.registry.register({ id: 'ops', github: 'immediately-run/ops', default_branch: 'main', sync_workflow: '.github/workflows/sync.yml' });
+      c.store.exec(`INSERT INTO webhook_dispatch (repository_id, last_dispatch_at, trailing_at) VALUES ('ops', 0, 30000)`);
+      c.store.exec(`UPDATE repositories SET retired_at = 1 WHERE id = 'ops'`);
+      const w = new Webhooks({ store: c.store, now: () => 30_000 });
+      expect(w.dueTrailing()).toEqual([]);
+      expect(w.nextTrailing()).toBeNull();
+    });
+  });
+
+  it('a suppressed delivery writes its window’s trailing time once (1-A-3)', async () => {
+    await withCore((c) => {
+      const at = (now: number) => new Webhooks({ store: c.store, now: () => now });
+      at(0).receive(d({}));
+      at(5_000).receive(d({}));
+      at(9_000).receive(d({}));
+      // The trailing time is the first suppression's window close, unchanged by later ones.
+      expect(c.store.exec(`SELECT trailing_at FROM webhook_dispatch WHERE repository_id = 'docs'`).one()).toEqual({ trailing_at: 30_000 });
     });
   });
 
