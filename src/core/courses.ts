@@ -5,6 +5,7 @@
 // under Needs you; with no previous one there is nothing to keep, so the post is refused.
 import { validateCourse, type CourseViolation } from './course';
 import { BatonError } from './http';
+import { FREE_TEXT_MAX } from './text';
 import type { Store } from './ports';
 import { COURSE_ID, COURSE_VERSION_MAX, COURSES_MAX } from './validate';
 
@@ -20,6 +21,17 @@ export const COURSE_FILE_MAX_BYTES = 64 * 1024;
 export const REGISTRY_MAX = COURSES_MAX;
 /** Step kinds per course. */
 const STEP_KINDS_MAX = 64;
+
+/** Violations kept per refused file: the dashboard shows the first, the owner fixes the file. */
+export const REFUSAL_VIOLATIONS_MAX = 20;
+
+/** A violation as stored and shown (§10.4): its path and message repeat the file's own keys, so
+ *  each is cut to free-text length with every control, bidi, `<`, `>`, `{` and `}` replaced. */
+function safeText(v: string): string {
+  return [...v].slice(0, FREE_TEXT_MAX).map((ch) => (/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u202a-\u202e\u2066-\u2069<>{}]/.test(ch) ? '?' : ch)).join('');
+}
+export const storedViolations = (vs: CourseViolation[]) =>
+  vs.slice(0, REFUSAL_VIOLATIONS_MAX).map((v) => ({ rule: v.rule, path: safeText(v.path), message: safeText(v.message) }));
 
 export interface RegistryEntry {
   id: string;
@@ -124,13 +136,13 @@ export class Courses {
         : validateCourse(e.course);
       if (violations.length) {
         if (!this.get(repo, e.id)) {
-          throw new BatonError('invalid-params', `registry: ${e.id}'s course file fails R-BTN-69 and no earlier one is in force — ${violations.slice(0, 3).map((v) => `${v.path || '(file)'}: ${v.message}`).join('; ')}`);
+          throw new BatonError('invalid-params', `registry: ${e.id}'s course file fails R-BTN-69 and no earlier one is in force — ${storedViolations(violations).slice(0, 3).map((v) => `${v.path || '(file)'}: ${v.message}`).join('; ')}`);
         }
         this.c.store.exec(
           `INSERT INTO course_refusals (repository_id, course_id, version, snapshot_sha, refused_at, violations) VALUES (?, ?, ?, ?, ?, ?)
            ON CONFLICT (repository_id, course_id) DO UPDATE SET version = excluded.version, snapshot_sha = excluded.snapshot_sha,
              refused_at = excluded.refused_at, violations = excluded.violations`,
-          repo, e.id, e.version, sha, now, JSON.stringify(violations));
+          repo, e.id, e.version, sha, now, JSON.stringify(storedViolations(violations)));
         refused.push(e.id);
         continue;
       }

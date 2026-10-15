@@ -240,9 +240,13 @@ export class Claims {
     }
     // Rule 9 is per course now: say `stale-skills` when it alone stood between this worker and
     // a ticket, so the worker knows to restart from a pulled checkout (R-BTN-22).
+    // Only tickets of courses the worker declares count: a course it does not run at all is not
+    // its to restart for, so that stays no-eligible-ticket (round 3, 3-A-1). A worker declaring
+    // no course at all is stale on every course (its sidecar predates R-BTN-22's change).
     if (this.candidates(w, now, 20, false).some((id) => {
       const item = this.item(id)!;
-      return this.eligible(w, item, now, shared).code === RULE_CODES[9];
+      return (!w.courses.length || w.courses.some((c) => c.repository === item.repository && c.course === item.course))
+        && this.eligible(w, item, now, shared).code === RULE_CODES[9];
     })) {
       throw new BatonError('stale-skills', 'this worker does not declare the ready tickets’ courses at their min_worker_version — it declares an older version or none (R-BTN-22, R-BTN-65)', { rule: 9 });
     }

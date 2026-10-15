@@ -220,6 +220,10 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     expect((await candidates(w1.id)).filter((t) => t.startsWith('ops:'))).toEqual([]);
     expect((await candidates(w2.id)).filter((t) => t.startsWith('ops:'))).toEqual(['ops:R3-9001', 'ops:T-1']);
     expect(await claimItem('vm-b', w1.secret, { ticket_id: 'ops:T-1' })).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
+    // With every docs ticket claimed, W1 is not told to restart for ops' course it never runs.
+    await rows(`UPDATE tickets SET node = 'blocked' WHERE repository_id = 'docs'`);
+    expect(await claimItem('vm-b', w1.secret)).toMatchObject({ status: 404, json: { code: 'no-eligible-ticket' } });
+    await rows(`UPDATE tickets SET node = 'ready-autonomous' WHERE repository_id = 'docs' AND rank IS NOT NULL`);
     // A runbook change older workers would misbehave under.
     await opsCall('/v1/sync/board', payload('e'.repeat(40), OPS_SHA, { ...opsBoard, registry: [runbook(2)] }));
     expect((await beat('vm-a', w2.secret, BOTH)).json.stale_courses).toEqual([{ repository: 'ops', course: 'runbook', version: 1, min_worker_version: 2 }]);

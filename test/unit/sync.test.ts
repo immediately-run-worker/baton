@@ -123,6 +123,22 @@ describe('the course registry on a board post (R-BTN-48, R-BTN-69)', () => {
     expect(await rows(`SELECT version, json_extract(violations, '$[0].rule') AS rule FROM course_refusals`)).toEqual([{ version: 4, rule: 'bound' }]);
   });
 
+  it('a refused file’s violations are stored bounded and safe to show (round 3, 3-A-0)', async () => {
+    await syncCall('/v1/sync/board', payload(A, null, board.states.A));
+    const key = `<b>\u0007${'k'.repeat(25_000)}`;
+    const hostile = { start: 'filed', stations: Object.fromEntries(Array.from({ length: 30 }, (_, i) => [`${key}${i}`, {}])) };
+    const res = await syncCall('/v1/sync/board', payload(board.shas.B, A, board.states.B, { registry: [course(4, 4, { course: hostile })] }));
+    expect(await res.json()).toMatchObject({ ok: true, courses_refused: ['roadmap-pr'] });
+    const [r] = await rows<{ violations: string }>(`SELECT violations FROM course_refusals`);
+    const vs = JSON.parse(r.violations) as { path: string; message: string }[];
+    expect(vs.length).toBeLessThanOrEqual(20);
+    for (const v of vs) {
+      expect([...v.path].length).toBeLessThanOrEqual(500);
+      expect([...v.message].length).toBeLessThanOrEqual(500);
+      expect(v.path + v.message).not.toMatch(/[\u0000-\u001f<>{}]/);
+    }
+  });
+
   it('the registry is the whole registry: a course it no longer lists leaves, unless a ticket still names it', async () => {
     const { B, C, D } = board.shas;
     await syncCall('/v1/sync/board', payload(A, null, board.states.A, { registry: [course(3), extra] }));
