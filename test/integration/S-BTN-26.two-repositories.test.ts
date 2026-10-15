@@ -279,6 +279,8 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     expect(await ask('claude/T-1-fix', w1.secret)).toMatchObject({ held_by_other: true });
     expect(await ask('claude/t-1-fix', w1.secret)).toMatchObject({ held_by_other: true }); // GitHub branch case
     expect(await ask('claude/T-1-fix#2', w1.secret)).toMatchObject({ held_by_other: true }); // any legal git name (1-A-1)
+    // git's own spellings, as a pre-push hook has them (round 2, 2-A-0).
+    expect(await ask('refs/heads/claude/T-1-fix', w1.secret, 'immediately-run/sandbox.git')).toMatchObject({ tickets: ['docs:T-1', 'ops:T-1'], held_by_other: true });
     expect(await ask('claude/T-1-fix', w2.secret)).toMatchObject({ held_by_other: false }); // its own claim
     // A branch no pattern maps, or a repository neither ticket lists, maps to nothing.
     expect(await ask('claude/T-1')).toMatchObject({ tickets: [] });

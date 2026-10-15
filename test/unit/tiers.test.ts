@@ -72,12 +72,13 @@ describe('tiers per repository (R-BTN-66)', () => {
       const res = await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { secret_hash: await sha256('s'), tier_ceilings }) });
       expect([res.status, ((await res.json()) as { code: string }).code]).toEqual([400, 'invalid-params']);
     }
-    // One for a repository Baton does not serve is set aside and reported, never the heartbeat
+    // One for a repository Baton does not serve is reported, never refusing the heartbeat
     // (round 1, 1-A-5): a refused heartbeat would cost the worker its leases everywhere.
     const res = await workerCall('/v1/runner/heartbeat', { body: hbBody('vm-a', { secret_hash: await sha256('s'), tier_ceilings: { nope: 'small', ops: 'small' } }) });
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ tier_ceilings_ignored: ['nope'] });
-    expect(await rows(`SELECT tier_ceilings FROM workers WHERE hostname = 'vm-a'`)).toEqual([{ tier_ceilings: '{"ops":"small"}' }]);
+    expect(await res.json()).toMatchObject({ tier_ceilings_unregistered: ['nope'] });
+    // Kept (round 2, 2-A-1): once nope registers, the worker is not widened to its top.
+    expect(await rows(`SELECT tier_ceilings FROM workers WHERE hostname = 'vm-a'`)).toEqual([{ tier_ceilings: '{"nope":"small","ops":"small"}' }]);
   });
 
   it('a ticket re-tiered above its holder’s ceiling in that ladder ends stale-board', async () => {

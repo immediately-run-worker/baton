@@ -219,8 +219,9 @@ export class BatonCore {
       if (m === 'GET' && p === '/v1/runner/branch-holder') {
         // §6.3: a push to an item branch asks who holds the tickets it maps to; machine key alone,
         // or with a secret so the caller's own claim is not "another".
-        const gitRepo = url.searchParams.get('repo') ?? '';
-        const branch = url.searchParams.get('branch') ?? '';
+        // A pre-push hook has git's spellings: refs/heads/<branch> and owner/name.git.
+        const gitRepo = (url.searchParams.get('repo') ?? '').replace(/\.git$/, '');
+        const branch = (url.searchParams.get('branch') ?? '').replace(/^refs\/heads\//, '');
         if (!GIT_REPO.test(gitRepo)) throw new BatonError('invalid-params', 'repo: must be owner/name');
         if (!GIT_BRANCH.test(branch)) throw new BatonError('invalid-params', 'branch: must be a branch name');
         const caller = secret ? await this.workers.authWorker(cred, secret) : null;

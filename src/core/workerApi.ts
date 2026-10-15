@@ -147,14 +147,14 @@ export class WorkerApi {
   async heartbeat(credentialId: string, secretHeader: string | null, body: unknown) {
     const hb = checkHeartbeat(body, this.transcriptRepos());
     // R-BTN-66: a per-repository ceiling names a tier of that registered repository's ladder.
-    // One for a repository Baton does not serve (unknown or retired) is set aside and reported,
-    // never the heartbeat: a refused heartbeat would cost the worker its leases everywhere.
+    // One for a repository Baton does not serve (unknown or retired) is kept and reported, never
+    // refusing the heartbeat — which would cost the worker its leases everywhere — and, once that
+    // repository registers, holds if its ladder has the name and is its bottom if not (ceilingIn).
     const ignoredCeilings: string[] = [];
     for (const [repo, tier] of Object.entries(hb.tier_ceilings)) {
       const r = this.rows<{ tiers: string }>('SELECT tiers FROM repositories WHERE id = ? AND retired_at IS NULL', repo)[0];
       if (!r) {
         ignoredCeilings.push(repo);
-        delete hb.tier_ceilings[repo];
         continue;
       }
       const ladder = JSON.parse(r.tiers) as string[];
@@ -170,7 +170,7 @@ export class WorkerApi {
       courses: hb.courses.map((c) => `${c.repository}:${c.course}@${c.version}`).sort(),
     }));
     const answer = this.c.store.transaction(() => this.heartbeatTx(credentialId, presented, settingsHash, hb));
-    return ignoredCeilings.length ? { ...answer, tier_ceilings_ignored: ignoredCeilings } : answer;
+    return ignoredCeilings.length ? { ...answer, tier_ceilings_unregistered: ignoredCeilings } : answer;
   }
 
   private heartbeatTx(credentialId: string, presented: string | null, settingsHash: string, hb: Heartbeat) {

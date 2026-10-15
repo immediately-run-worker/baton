@@ -65,7 +65,9 @@ interface ItemFacts {
 const DEFAULT_BRANCH_PATTERN = 'claude/{ticket}-*';
 /** Whether `branch` is `pattern` with `{ticket}` = `local` and `{repository}` = `repository`,
  *  `*` matching any run of characters, compared case-insensitively as GitHub branch names are
- *  typed. A linear wildcard match, not a regex: a pattern's stars cannot make it backtrack. */
+ *  typed. A wildcard match, not a regex: it returns to the last star only, so it takes at most
+ *  |branch| × |pattern| steps, never the exponential backtracking a pattern's stars can force on
+ *  a RegExp. */
 export function branchMatches(pattern: string, branch: string, local: string, repository: string): boolean {
   const p = pattern.replace(/\{ticket\}|\{repository\}/g, (m) => (m === '{ticket}' ? local : repository)).toLowerCase();
   // `*` in a local id or repository id cannot occur (LOCAL_ID, REPOSITORY_ID), so every star is the pattern's.

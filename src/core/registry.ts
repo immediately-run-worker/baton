@@ -5,12 +5,14 @@
 // repository Baton already knows. The sync principal is bound to one repository here.
 import { BatonError } from './http';
 import type { Config, Store } from './ports';
-import { GIT_BRANCH, GIT_REPO, REPOSITORY_ID, TIER_NAME } from './validate';
+import { GIT_REPO, REPOSITORY_ID, TIER_NAME } from './validate';
 
 export { REPOSITORY_ID, TICKET_ID, qualify, repositoryOf, localOf } from './validate';
 
 const GITHUB = GIT_REPO;
-const BRANCH = GIT_BRANCH;
+/** A default branch, registered by the administrator: stricter than any branch a push may name
+ *  (GIT_BRANCH), as it goes unencoded into the dashboard's GitHub links. */
+const BRANCH = /^(?!.*\.\.)[A-Za-z0-9._/-]{1,100}$/;
 const WORKFLOW = /^\.github\/workflows\/[A-Za-z0-9._-]{1,100}\.ya?ml$/;
 const TIER = TIER_NAME;
 const DEFAULT_TIERS = ['routine', 'judgement', 'critical'];
