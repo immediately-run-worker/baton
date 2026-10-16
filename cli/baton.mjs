@@ -3,7 +3,8 @@
 // the one management path. Each command builds one request — `plan`, pure, so it is tested on its
 // own — and signs it with the key `-i` names; Baton validates it with the functions of
 // src/core/admin.ts on either host. Nothing here holds a rule of its own: a refusal is Baton's,
-// printed as it came.
+// printed as it came. `baton run` (§6.13 R-BTN-72) is the worker loop: it lives in src/runner
+// (TypeScript, node-only), so scripts/baton-run.mjs bundles it first, the way start-local does.
 //
 //   baton admin -i KEY repo add <forge path> --owner-key PUB[,PUB…] [--id ID (default: the path's last segment)]
 //                [--forge github|gitlab|gitea|git] [--remote URL] [--web-base URL] [--default-branch main]
@@ -31,7 +32,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { signHeaders, signingKey } from './sign.mjs';
 
-const DEFAULT_URL = 'https://baton.immediately.run';
+export const DEFAULT_URL = 'https://baton.immediately.run';
 const UNITS = { m: 60_000, h: 3_600_000, d: 86_400_000 };
 
 /** argv after the command: flags (each `--name value`, or a bare boolean) and positionals. The
@@ -239,6 +240,12 @@ export async function send(url, p, keyFile, fetchImpl = fetch) {
 }
 
 async function main(argv) {
+  if (argv[0] === 'run') {
+    // §6.13: the runner is TypeScript under src/runner; bundle it (a checkout runs the CLI with
+    // its devDependencies), then run it in this process's stead.
+    const { runMain } = await import('../scripts/baton-run.mjs');
+    return runMain(argv.slice(1));
+  }
   const [role, ...rest] = argv;
   const { flags } = parseArgs(rest.filter((_, i, a) => a[i] === '-i' || a[i - 1] === '-i' || a[i] === '--url' || a[i - 1] === '--url'));
   const args = rest.filter((_, i, a) => !(a[i] === '-i' || a[i - 1] === '-i' || a[i] === '--url' || a[i - 1] === '--url'));

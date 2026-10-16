@@ -1,0 +1,21 @@
+{
+  "start": "filed",
+  "start_leg": "build",
+  "end": ["merged"],
+  "short_waits": ["ci"],
+  "stations": {
+    "filed": { "label": "Filed, not started" },
+    "built": { "label": "Built" },
+    "checked": { "label": "Checked" },
+    "adjudicated": { "label": "Adjudicated" },
+    "merged": { "label": "Merged" }
+  },
+  "legs": {
+    "build": { "from": ["filed"], "to": "built" },
+    "check": { "from": ["built"], "to": "checked" },
+    "gate": { "from": ["checked"], "to": "adjudicated", "max_runs": 1 },
+    "adjudicate": { "from": ["checked"], "to": "adjudicated" },
+    "rework": { "from": ["adjudicated"], "to": "checked", "max_runs": 3 },
+    "merge": { "from": ["checked", "adjudicated"], "to": "merged" }
+  }
+}

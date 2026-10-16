@@ -31,9 +31,11 @@
     "test/global-setup.ts",
     "test/lib",
     "src/local",
+    "src/runner",
     "test/hosts/local.ts",
     "test/unit/local-queue.test.ts",
     "test/unit/boundary-host.test.ts",
-    "test/unit/cli.test.ts"
+    "test/unit/cli.test.ts",
+    "test/integration/S-BTN-41.runner.test.ts"
   ]
 }
