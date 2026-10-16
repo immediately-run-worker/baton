@@ -12,7 +12,8 @@
 // of the projection. A step the model has no action for — a claim the harness wrote itself, a
 // course file that is not the model's, a required bar changed under a run — ends the part of
 // the trace the model can judge; the checked prefix and the reason are printed for every trace,
-// and nothing is filtered to make a trace pass.
+// every such stop is pinned in test/integration/trace-scope.json (a new or moved one fails), and
+// nothing is filtered to make a trace pass. `--write-scope` rewrites that list from a run.
 //
 //   node scripts/check-traces.mjs [trace files or directories]   (default: test/.traces)
 import { spawn } from 'node:child_process';
@@ -25,6 +26,8 @@ const OUT = join(ROOT, 'test', '.traces', '.qnt');
 
 // ── the model's course and constants (model/baton.qnt) ───────────────────────────────────
 export const START = 'filed';
+/** R-BTN-35's git statuses that end an item (src/core/claims.ts GIT_ENDS). */
+const GIT_ENDS = ['done', 'superseded', 'deferred', 'deprioritized'];
 export const LEGS = ['implement', 'review', 'fix', 'adjudicate', 'merge'];
 export const FROM = { implement: ['filed'], review: ['pr-open', 'fixed'], fix: ['reviewed'], adjudicate: ['reviewed'], merge: ['reviewed', 'adjudicated'] };
 export const TO = { implement: 'pr-open', review: 'reviewed', fix: 'fixed', adjudicate: 'adjudicated', merge: 'merged' };
@@ -160,6 +163,7 @@ export function translate(trace) {
     slots: { 1: { phase: 'idle', obs: 0, voided: false, at: 0 }, 2: { phase: 'idle', obs: 0, voided: false, at: 0 } },
     ids: {},
     nextId: 1,
+    claimTier: {}, // each claim's ticket tier when it was made (R-BTN-35's re-tier)
   };
   const out = [];
   let prev = empty;
@@ -195,12 +199,12 @@ function translateStep(step, P, env, k) {
   };
   for (const [id, d] of Object.entries(Q.claims)) {
     const c = P.claims[id];
-    // R-BTN-35's other "taken away": a re-tier above the holder's ceiling, or docs' interim
-    // status — only when the post shows one (round 1, 1-A-3)
+    // R-BTN-35's other "taken away": a re-tier since the claim, or docs' interim status at one
+    // that ends the item (claims.ts GIT_ENDS) — only when the post shows one (round 1, 1-A-3).
+    // The status may have been posted earlier, by a reading not numbered after the claim.
     if (c?.status === 'active' && d.endReason === 'released:stale-board' && Q.tickets[d.ticket]?.present) {
-      const before = P.tickets[d.ticket];
       const after = Q.tickets[d.ticket];
-      if (before && (before.tier !== after.tier || before.status !== after.status)) {
+      if (GIT_ENDS.includes(after.status) || (id in env.claimTier && env.claimTier[id] !== after.tier)) {
         return { end: `claim ${id} released stale on its ticket's re-tier or interim status (R-BTN-35; tiers are not modelled)` };
       }
       return { reject: `claim ${id} released stale with its ticket still posted, neither withdrawn nor re-tiered` };
@@ -283,6 +287,7 @@ function translateStep(step, P, env, k) {
       if (!sameTags(d.worker)) return { end: `worker ${d.worker} claims with other tags than at its first claim (the model’s TAGS are constant)` };
       if (d.leg !== '' || d.finished.length || d.status !== 'active') return { reject: `claim ${id} created already advanced or ended` };
       env.ids[id] = env.nextId++;
+      env.claimTier[id] = Q.tickets[d.ticket]?.tier ?? null;
       acts.push(`heartbeat(${w})`, `claimStart(${w}, ${q(d.ticket)})`, `claimFinish(${w}, "order")`);
       continue;
     }
@@ -291,9 +296,13 @@ function translateStep(step, P, env, k) {
     if (c.status === 'active' && d.status === 'active' && (d.leg !== c.leg || d.finished.length !== c.finished.length)) {
       if (!/\/advance$/.test(origin)) return { reject: `claim ${id}'s legs changed by ${origin}` };
       if (!sameTags(d.worker)) return { end: `worker ${d.worker} advances with other tags than at its first claim (the model’s TAGS are constant)` };
+      // the bars are the ones the holder SENT (round 1, 1-B-2): a store that kept others is rejected
+      const sent = step.body?.bars ?? []; // absent is none (validate.ts)
+      if (!Array.isArray(sent)) return { reject: `claim ${id} advanced by a request whose bars are not a list` };
+      if (!sameSet(sent, d.legBars)) return { reject: `claim ${id}'s leg stored bars ${JSON.stringify(d.legBars)}, not the ${JSON.stringify(sent)} the holder sent` };
       acts.push(`heartbeat(${w})`);
       if (c.leg !== '') acts.push(`pushEvidence(${w}, false)`);
-      acts.push(`advance(${w}, ${q(d.leg)}, ${qSet(d.legBars)}, false)`);
+      acts.push(`advance(${w}, ${q(d.leg)}, ${qSet(sent)}, false)`);
     } else if (c.status === 'active' && d.status !== 'active' && /\/end$/.test(origin)) {
       const reached = d.finished.length > c.finished.length;
       acts.push(`heartbeat(${w})`);
@@ -539,7 +548,34 @@ function traceFiles(args) {
   return files.sort();
 }
 
+// ── the truncation allowlist (round 1, 1-B-5) ────────────────────────────────────────────
+// Every trace the model cannot judge to its end is listed in test/integration/trace-scope.json
+// with the step it stops at and the reason, so a new truncation, a moved one, or a trace the
+// checker judges nothing of fails the run instead of passing quietly.
+export const SCOPE = join(ROOT, 'test', 'integration', 'trace-scope.json');
+const keyOf = (r) => `${r.scenario} › ${r.test}`;
+
+/** The scope errors for accepted results against the allowlist; `whole` also checks stale entries. */
+export function scopeErrors(results, scope, whole = true) {
+  const errors = [];
+  const seen = new Set();
+  for (const r of results) {
+    const key = keyOf(r);
+    seen.add(key);
+    if (!r.ok) continue;
+    const want = scope[key];
+    if (r.checked === 0) errors.push(`${key}: no step checked (the model judges nothing of it)`);
+    if (!r.end) { if (want) errors.push(`${key}: listed as stopping at step ${want.at}, but is judged whole — remove the entry`); continue; }
+    if (!want) errors.push(`${key}: stops at step ${r.end.index} (${r.end.reason}), which trace-scope.json does not list`);
+    else if (want.at !== r.end.index || want.reason !== r.end.reason) errors.push(`${key}: stops at step ${r.end.index} (${r.end.reason}), not the listed step ${want.at} (${want.reason})`);
+  }
+  if (whole) for (const key of Object.keys(scope)) if (!seen.has(key)) errors.push(`${key}: listed in trace-scope.json, but no accepted trace has that name`);
+  return errors;
+}
+
 async function main(args) {
+  const writeScope = args.includes('--write-scope');
+  args = args.filter((a) => a !== '--write-scope');
   const files = traceFiles(args);
   if (!files.length) {
     console.error('check-traces: no traces — run the scenarios first (npm test writes test/.traces/)');
@@ -567,7 +603,15 @@ async function main(args) {
   }
   for (const f of readdirSync(OUT)) if (f.startsWith(`${process.pid}-`)) rmSync(join(OUT, f), { force: true });
   console.log(`\n${results.length} traces: ${results.length - bad} accepted (${full} whole), ${bad} rejected`);
-  return bad ? 1 : 0;
+  if (writeScope) {
+    const scope = Object.fromEntries(results.filter((r) => r.ok && r.end).map((r) => [keyOf(r), { at: r.end.index, reason: r.end.reason }]).sort(([a], [b]) => (a < b ? -1 : 1)));
+    writeFileSync(SCOPE, `${JSON.stringify(scope, null, 2)}\n`);
+    console.log(`wrote ${relative(ROOT, SCOPE)}: ${Object.keys(scope).length} truncated traces`);
+    return bad ? 1 : 0;
+  }
+  const errors = scopeErrors(results, existsSync(SCOPE) ? JSON.parse(readFileSync(SCOPE, 'utf8')) : {}, !args.length);
+  for (const e of errors) console.log(`✗ scope: ${e}`);
+  return bad || errors.length ? 1 : 0;
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

@@ -53,7 +53,11 @@ The model checks the design; three checks hold the code to it.
   rejection names the scenario, the step, the model action and the field. A step the model has
   no action for — a claim the harness wrote, cutover's legacy claims, a course file that is not
   the model's — ends the part of the trace the model can judge; every trace prints its checked
-  steps and why it stopped.
+  steps and why it stopped. Each such stop is pinned, step and reason, in
+  `test/integration/trace-scope.json`: a new or moved stop, a stale entry, or a trace with no
+  step checked fails the run (`node scripts/check-traces.mjs --write-scope` rewrites the list,
+  and the diff is the reviewed step). A step no model action explains, and that is no named
+  unmodelled mechanism, rejects the trace.
 - **Model-based tests** (`test/model/replay.test.ts`, in `npm test`). 200 traces drawn from
   `replay.qnt` (half from every actor, half from the happy path's) drive the core on the local
   host, comparing its projection with the trace's state after every step. `REPLAY_TRACES` sets
@@ -187,6 +191,10 @@ invariants the evidence is the simulation and the regression runs, not the proof
   order; the merge across them is advice, not safety.
 - **Course changes and renames** (R-BTN-64): a renamed name resolves to the same edge; a removed
   one ends the claim `released:course-changed`, a release the model already has.
+- **The retry policy** (§6.10, R-BTN-23): a backoff after a failed attempt, and the hold at the
+  third, are a time gate on `claimStart` and a hold the owner's `setHold` already stands for;
+  S-BTN-5, -6 and -7 cover them. The model-based tests turn the policy off so a drawn re-claim
+  after a reap meets only the model's gates (found by R3-1244's 1000-draw run).
 - **Tiers, grants and requires** (rules 4–7): column comparisons with no interleaving of their
   own; matching tests cover them (G-BTN-40).
 - **R-BTN-39** (where a ticket is, replayed from git) is the sync's `syncRead` taking any git

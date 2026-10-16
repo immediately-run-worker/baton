@@ -1016,17 +1016,24 @@ export class Claims {
         .map((l) => ({ leg: l.leg, reached: l.to_station }))];
   }
 
-  /** R-BTN-10: a `done` end is confirmed by the closure a snapshot reported when that snapshot's
-   *  observation is greater than the claim's own (its claim or latest advance) — usually before the
-   *  end call, since the holder pushes the archive first (R-BTN-8). */
+  /** R-BTN-10: a `done` end is confirmed by the closure a snapshot reported, or the end station it
+   *  placed the ticket at, when that snapshot's observation is greater than the claim's own (its
+   *  claim or latest advance) — usually before the end call, since the holder pushes first (R-BTN-8). */
   private confirmByClosure(claimId: number) {
-    const c = this.rows<{ ticket_id: string }>(
-      `SELECT c.ticket_id FROM claims c JOIN closed_tickets k ON k.ticket_id = c.ticket_id
-       WHERE c.id = ? AND c.status = 'completed' AND c.confirmed_at IS NULL AND c.end_reason = 'done'
-         AND k.closed_as = 'done' AND k.observation > c.claim_observation`, claimId)[0];
+    const c = this.rows<{ ticket_id: string; course_id: string | null; claim_observation: number }>(
+      `SELECT ticket_id, course_id, claim_observation FROM claims
+       WHERE id = ? AND status = 'completed' AND confirmed_at IS NULL AND end_reason = 'done'`, claimId)[0];
     if (!c) return false;
+    const closed = this.rows(`SELECT 1 FROM closed_tickets WHERE ticket_id = ? AND closed_as = 'done' AND observation > ?`, c.ticket_id, c.claim_observation).length > 0;
+    // …or the ticket at an end station in such a reading, when the ticket is still posted: the
+    // holder pushed the merge, the sync read it, and only then the end arrived (G-BTN-44; found
+    // by R3-1244's model-based tests — the judge already credits the same reading posted later)
+    const st = closed ? null : this.rows<{ station: string }>('SELECT station FROM ticket_stations WHERE ticket_id = ? AND observation > ?', c.ticket_id, c.claim_observation)[0];
+    const g = st && c.course_id ? this.stations.graph(repositoryOf(c.ticket_id), c.course_id) : null;
+    const atEnd = !!st && !!g && g.ends.has(st.station) && this.rows('SELECT 1 FROM tickets WHERE id = ?', c.ticket_id).length > 0;
+    if (!closed && !atEnd) return false;
     this.exec('UPDATE claims SET confirmed_at = ? WHERE id = ?', this.c.now(), claimId);
-    this.event('confirmed', 'sync', { by: 'closure' }, c.ticket_id, claimId);
+    this.event('confirmed', 'sync', { by: closed ? 'closure' : 'end-station' }, c.ticket_id, claimId);
     return true;
   }
 

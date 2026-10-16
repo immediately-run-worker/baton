@@ -6,7 +6,7 @@
 // another worker in between. (A stale checkout posting nothing, and the schedule covering a lost
 // delivery, are the CLI's and the workflow's: S-BTN-13 and R-BTN-73.) Runs on both hosts.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { advance, claimItem, claimRow, cutover, endClaim, Git, placed, recommended, register, rows, setClock, syncCall } from '../helpers';
+import { advance, claimItem, claimRow, cutover, endClaim, Git, observe, placed, recommended, register, rows, setClock, syncCall } from '../helpers';
 
 const T0 = Date.parse('2026-10-16T12:00:00Z');
 let git: Git;
@@ -79,6 +79,36 @@ describe('S-BTN-40 slow and stale syncs, end to end', () => {
     await endClaim('vm-a', w1.secret, c.claim_id, { end_reason: 'done', reached: 'pr-open' });
     expect((await claimRow(c.claim_id)).confirmed_at).toBeNull();
     // The next snapshot, observed after the end, has the ticket absent: that confirms it.
+    expect(await git.refresh()).toMatchObject({ confirmed: 1 });
+  });
+  it('a merge the sync read after the advance and posted before the done confirms it at once (R3-1244: found by the model-based tests)', async () => {
+    const loop: [string, string][] = [['implement', 'pr-open'], ['review', 'reviewed']];
+    git.place('T-1', placed('reviewed', loop, [['merge', 'ready']]));
+    await git.refresh();
+    const w1 = await register('vm-a');
+    const { json: c } = await claimItem('vm-a', w1.secret);
+    expect((await advance('vm-a', w1.secret, c.claim_id, { leg: 'merge' })).status).toBe(200);
+    // the holder pushes the merge, the sync reads and posts it, and only then /end arrives
+    git.place('T-1', placed('merged', [...loop, ['merge', 'merged']], []));
+    expect(await git.refresh()).toMatchObject({ status: 200 });
+    expect((await endClaim('vm-a', w1.secret, c.claim_id, { end_reason: 'done', reached: 'merged' })).status).toBe(200);
+    expect(await claimRow(c.claim_id)).toMatchObject({ status: 'completed', end_reason: 'done', confirmed_at: T0 });
+    expect(await rows(`SELECT json_extract(detail_json, '$.by') AS by FROM events WHERE kind = 'confirmed' AND claim_id = ?`, c.claim_id)).toEqual([{ by: 'end-station' }]);
+  });
+
+  it('a merged station read before the advance confirms nothing at the end', async () => {
+    const loop: [string, string][] = [['implement', 'pr-open'], ['review', 'reviewed']];
+    git.place('T-1', placed('reviewed', loop, [['merge', 'ready']]));
+    await git.refresh();
+    const w1 = await register('vm-a');
+    const { json: c } = await claimItem('vm-a', w1.secret);
+    const n = (await observe()).json.observation; // the sync starts reading…
+    expect((await advance('vm-a', w1.secret, c.claim_id, { leg: 'merge' })).status).toBe(200); // …the holder advances
+    git.place('T-1', placed('merged', [...loop, ['merge', 'merged']], []));
+    expect(await git.post({ observation: n })).toMatchObject({ status: 200 });
+    expect((await endClaim('vm-a', w1.secret, c.claim_id, { end_reason: 'done', reached: 'merged' })).status).toBe(200);
+    expect((await claimRow(c.claim_id)).confirmed_at).toBeNull();
+    // a reading after the end that shows it merged does (G-BTN-44)
     expect(await git.refresh()).toMatchObject({ confirmed: 1 });
   });
 });

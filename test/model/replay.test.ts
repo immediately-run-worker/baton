@@ -92,6 +92,10 @@ async function setup(): Promise<Run> {
   // must bar a family. Set before the trace, as the instance's constant.
   await rows(`UPDATE repositories SET required_bars = ? WHERE id = 'docs'`,
     JSON.stringify([{ course: 'roadmap-pr', leg: '*', except: ['implement', 'review', 'adjudicate'], tag_prefix: 'family:' }]));
+  // The retry policy (§6.10, R-BTN-23) is not modelled: a reaped claim's ticket is claimable again
+  // at once and never held for attempts. Written past checkRetry's floors on purpose — no owner
+  // can set it, so a drawn re-claim after a reap meets the model's gates and nothing else.
+  await rows(`UPDATE repositories SET retry = ? WHERE id = 'docs'`, JSON.stringify({ backoff_ms: [0], max_failed: 1000 }));
   // The board the model starts from: both tickets filed, nothing posted against them. One post
   // puts them there, so Baton's observation numbers run one ahead of the model's.
   const res = await syncCall('/v1/sync/board', { registry: [course()], sha: '0'.repeat(40), parent_sha: null, tickets: [ticket('T-1', { rank: 1 }), ticket('T-2', { rank: 2 })],

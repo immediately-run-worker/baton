@@ -7,7 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { toItf, type ClaimView, type Projection, type Step } from '../integration/trace';
-import { checkTrace } from '../../scripts/check-traces.mjs';
+import { checkTrace, scopeErrors } from '../../scripts/check-traces.mjs';
 import { closureText, declarations, hashOf } from '../../scripts/check-model-links.mjs';
 import { readFileSync } from 'node:fs';
 
@@ -95,5 +95,22 @@ describe('model:links hashes what an action rests on (round 1, 1-A-6)', () => {
     expect(hash(judge, 'syncPost')).not.toBe(hash(src, 'syncPost'));
     // and an unrelated action keeps its hash
     expect(hash(judge, 'setHold')).toBe(hash(src, 'setHold'));
+  });
+});
+
+describe('every truncated trace is pinned in trace-scope.json (round 1, 1-B-5)', () => {
+  const r = (test: string, checked: number, end: { index: number; reason: string } | null, ok = true) => ({ scenario: 'S', test, ok, checked, end });
+  const why = 'the harness wrote a claim (a state Baton did not reach)';
+  it('accepts a whole trace and a truncation listed with its step and reason', () => {
+    expect(scopeErrors([r('whole', 4, null), r('cut', 3, { index: 3, reason: why })], { 'S › cut': { at: 3, reason: why } })).toEqual([]);
+  });
+  it('fails an unlisted truncation, a moved one, a changed reason, a stale entry and a trace with nothing checked', () => {
+    expect(scopeErrors([r('cut', 3, { index: 3, reason: why })], {})).toEqual([expect.stringContaining('does not list')]);
+    expect(scopeErrors([r('cut', 2, { index: 2, reason: why })], { 'S › cut': { at: 3, reason: why } })).toEqual([expect.stringContaining('not the listed step 3')]);
+    expect(scopeErrors([r('cut', 3, { index: 3, reason: 'other' })], { 'S › cut': { at: 3, reason: why } })).toEqual([expect.stringContaining('not the listed step 3')]);
+    expect(scopeErrors([r('whole', 4, null)], { 'S › whole': { at: 3, reason: why } })).toEqual([expect.stringContaining('judged whole')]);
+    expect(scopeErrors([], { 'S › gone': { at: 3, reason: why } })).toEqual([expect.stringContaining('no accepted trace')]);
+    expect(scopeErrors([], { 'S › gone': { at: 3, reason: why } }, false)).toEqual([]);
+    expect(scopeErrors([r('cut', 0, { index: 0, reason: why })], { 'S › cut': { at: 0, reason: why } })).toEqual([expect.stringContaining('no step checked')]);
   });
 });
