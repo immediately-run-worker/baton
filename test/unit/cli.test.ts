@@ -66,6 +66,12 @@ describe('plan: one request per command', () => {
     expect(() => plan('admin', ['repo', 'set', 'docs', '--remot', 'x'], key)).toThrow('--remot: not a flag');
     expect(() => plan('owner', ['grant', 'docs', '--key', PUB, '--capabilites', 'agent-venue'], key)).toThrow('--capabilites: not a flag');
     expect(() => plan('admin', ['open', '--force', 'yes'], key)).toThrow('not a flag');
+    // Adjudicated: one dash, a typographic dash and a stray positional are refused too.
+    expect(() => plan('admin', ['grant', 'docs', '--key', PUB, '-capabilities', 'a,b'], key)).toThrow('-capabilities: not a flag');
+    expect(() => plan('admin', ['repo', 'set', 'docs', '--weight', '2', '\u2014tiers', 'a,b'], key)).toThrow('not a flag');
+    expect(() => plan('admin', ['repo', 'add', 'o/Docs', '--owner-key', PUB, '-cut-over'], key)).toThrow('not a flag');
+    expect(() => plan('owner', ['grant', 'docs', 'extra', '--key', PUB], key)).toThrow('extra: this command takes no further argument');
+    expect(() => plan('admin', ['repo', 'set', 'docs', 'stray', '--weight', '2'], key)).toThrow('stray: this command takes no further argument');
     expect(() => plan('admin', ['repo', 'add', 'o/r', '--owner-key', PUB, '--ci-identity', 'circle'], key)).toThrow('--ci-identity');
   });
 

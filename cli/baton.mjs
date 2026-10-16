@@ -37,13 +37,17 @@ const UNITS = { m: 60_000, h: 3_600_000, d: 86_400_000 };
 /** argv after the command: flags (each `--name value`, or a bare boolean) and positionals. The
  *  `--required-bar` groups keep their order, so each takes the flags that follow it. With
  *  `allowed`, a flag the command does not take is refused — never silently dropped (round 3, 3-A-1). */
-export function parseArgs(argv, booleans = [], allowed = null) {
+export function parseArgs(argv, booleans = [], allowed = null, positionals = Infinity) {
   const flags = {};
   const positional = [];
   const groups = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (!a.startsWith('--') && a !== '-i') {
+      // A command's own flags are refused misspelled with one dash or a typographic dash, and a
+      // positional it does not take is refused — never silently dropped (round 3, 3-A-1, adjudicated).
+      if (allowed && /^[-\u2010-\u2015\u2212]/.test(a)) throw new Error(`${a}: not a flag of this command (flags are --name)`);
+      if (positional.length >= positionals) throw new Error(`${a}: this command takes no further argument`);
       positional.push(a);
       continue;
     }
@@ -92,7 +96,7 @@ export function plan(role, argv, readKey = (p) => (/^(ssh|sk|ecdsa)-/.test(p) ? 
       const [sub, target, ...more] = rest;
       if (sub === 'add') {
         const { flags } = parseArgs(more, ['cut-over'], ['id', 'forge', 'remote', 'web-base', 'default-branch', 'sync-workflow', 'mirror-workflow', 'ci-identity',
-          'sync-key', 'mirror-key', 'weight', 'tiers', 'owner-key']);
+          'sync-key', 'mirror-key', 'weight', 'tiers', 'owner-key'], 0);
         const path = need(target, 'the repository (its forge path, owner/name)');
         const keys = [...(list(flags['sync-key']) ?? []).map((k) => ({ public_key: readKey(k), role: 'sync' })), ...(list(flags['mirror-key']) ?? []).map((k) => ({ public_key: readKey(k), role: 'mirror' }))];
         return { method: 'POST', path: '/v1/admin/repositories', body: {
@@ -106,7 +110,7 @@ export function plan(role, argv, readKey = (p) => (/^(ssh|sk|ecdsa)-/.test(p) ? 
       }
       if (sub === 'set') {
         const { flags } = parseArgs(more, [], ['weight', 'tiers', 'remote', 'web-base', 'sync-workflow', 'mirror-workflow', 'ci-identity',
-          'add-owner-key', 'add-sync-key', 'add-mirror-key', 'remove-sync-key']);
+          'add-owner-key', 'add-sync-key', 'add-mirror-key', 'remove-sync-key'], 0);
         const add = [...(list(flags['add-sync-key']) ?? []).map((k) => ({ public_key: readKey(k), role: 'sync' })), ...(list(flags['add-mirror-key']) ?? []).map((k) => ({ public_key: readKey(k), role: 'mirror' }))];
         const workflow = (v) => (v === 'none' ? null : v);
         const body = {
@@ -121,51 +125,51 @@ export function plan(role, argv, readKey = (p) => (/^(ssh|sk|ecdsa)-/.test(p) ? 
         return { method: 'POST', path: '/v1/admin/repositories', body };
       }
       if (sub === 'retire') {
-        parseArgs(more, [], []);
+        parseArgs(more, [], [], 0);
         return { method: 'POST', path: '/v1/admin/repositories', body: { id: need(target, 'the repository id'), retire: true } };
       }
       throw new Error('baton admin repo add|set|retire');
     }
     if (cmd === 'grant') {
-      const { flags, positional } = parseArgs(rest, [], GRANT_FLAGS);
+      const { flags, positional } = parseArgs(rest, [], GRANT_FLAGS, 1);
       return { method: 'POST', path: '/v1/admin/grants', body: grantBody(flags, readKey, { repository: need(positional[0], 'the repository id') }) };
     }
     if (cmd === 'probe' && rest[0] === 'add') {
-      const { flags } = parseArgs(rest.slice(1), [], ['key', 'label', 'instances']);
+      const { flags } = parseArgs(rest.slice(1), [], ['key', 'label', 'instances'], 0);
       return { method: 'POST', path: '/v1/admin/probes', body: { public_key: readKey(need(flags.key, '--key')), label: need(flags.label, '--label'), instances: list(flags.instances) ?? [] } };
     }
     if (cmd === 'revoke') {
-      parseArgs(rest.slice(1), [], []);
+      parseArgs(rest.slice(1), [], [], 0);
       return { method: 'POST', path: `/v1/admin/keys/${encodeURIComponent(need(rest[0], 'the key fingerprint'))}/revoke`, body: {} };
     }
     if (cmd === 'open') {
-      parseArgs(rest, [], []);
+      parseArgs(rest, [], [], 0);
       return { method: 'POST', path: '/v1/admin/login-links', body: {} };
     }
     throw new Error('baton admin repo|grant|probe|revoke|open');
   }
   if (role === 'owner') {
     if (cmd === 'grant') {
-      const { flags, positional } = parseArgs(rest, [], GRANT_FLAGS);
+      const { flags, positional } = parseArgs(rest, [], GRANT_FLAGS, 1);
       return { method: 'POST', path: `/v1/owner/${need(positional[0], 'the repository id')}/grants`, body: grantBody(flags, readKey, {}) };
     }
     if (cmd === 'revoke') {
-      parseArgs(rest.slice(2), [], []);
+      parseArgs(rest.slice(2), [], [], 0);
       return { method: 'POST', path: `/v1/owner/${need(rest[0], 'the repository id')}/grants/${encodeURIComponent(need(rest[1], 'the key fingerprint'))}/revoke`, body: {} };
     }
     if (cmd === 'owners') {
-      const { flags, positional } = parseArgs(rest, [], ['add', 'remove']);
+      const { flags, positional } = parseArgs(rest, [], ['add', 'remove'], 1);
       const repo = need(positional[0], 'the repository id');
       if (flags.add) return { method: 'POST', path: `/v1/owner/${repo}/owners`, body: { public_key: readKey(flags.add) } };
       if (flags.remove) return { method: 'POST', path: `/v1/owner/${repo}/owners`, body: { fingerprint: flags.remove, remove: true } };
       throw new Error('baton owner owners REPO --add PUB | --remove FINGERPRINT');
     }
     if (cmd === 'bar' && rest[0] === 'lift') {
-      parseArgs(rest.slice(3), [], []);
+      parseArgs(rest.slice(3), [], [], 0);
       return { method: 'POST', path: `/v1/owner/${need(rest[1], 'the repository id')}/bars/${need(rest[2], 'the bar id')}/lift`, body: {} };
     }
     if (cmd === 'bar') {
-      const { flags, positional } = parseArgs(rest, ['release-holders'], ['course', 'tag', 'legs', 'applies', 'starts-at', 'ends-at', 'reason']);
+      const { flags, positional } = parseArgs(rest, ['release-holders'], ['course', 'tag', 'legs', 'applies', 'starts-at', 'ends-at', 'reason'], 1);
       return { method: 'POST', path: `/v1/owner/${need(positional[0], 'the repository id')}/bars`, body: {
         course: need(flags.course, '--course'), tag: need(flags.tag, '--tag'), ...(flags.legs ? { legs: list(flags.legs) } : {}),
         applies: need(flags.applies, '--applies'), ...(flags['starts-at'] ? { starts_at: time(flags['starts-at'], '--starts-at') } : {}),
@@ -174,7 +178,7 @@ export function plan(role, argv, readKey = (p) => (/^(ssh|sk|ecdsa)-/.test(p) ? 
       } };
     }
     if (cmd === 'settings') {
-      const { flags, positional, groups } = parseArgs(rest, ['no-required-bars'], ['required-bar', 'course', 'except', 'tag-prefix', 'retry', 'max-failed', 'transcript-repos', 'unblocked-workflow']);
+      const { flags, positional, groups } = parseArgs(rest, ['no-required-bars'], ['required-bar', 'course', 'except', 'tag-prefix', 'retry', 'max-failed', 'transcript-repos', 'unblocked-workflow'], 1);
       const body = {};
       if (flags['no-required-bars']) {
         if (groups.length) throw new Error('--no-required-bars clears them: name no --required-bar beside it');
