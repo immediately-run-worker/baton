@@ -31,10 +31,59 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
+  # Which of the model's jobs this change needs. The model reads only model/ (and quint, from
+  # package.json); every other change still runs npm test's 1,000-sample model check above.
+  # A push whose base is unknown (a new branch, a force-push) runs both.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      model: ${{ steps.diff.outputs.model }}
+      verify: ${{ steps.diff.outputs.verify }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          BASE: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            echo "base unknown: running every model job"
+            echo "model=true" >> "$GITHUB_OUTPUT"; echo "verify=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          files=$(git diff --name-only "$BASE...HEAD")
+          printf '%s\n' "$files"
+          hit() { printf '%s\n' "$files" | grep -q -E "$1" && echo true || echo false; }
+          echo "model=$(hit '^(model/|src/core/|package(-lock)?\.json$|\.github/workflows/ci\.yml$)')" >> "$GITHUB_OUTPUT"
+          verify=$(hit '^(model/|\.github/workflows/ci\.yml$)')
+          # A Quint upgrade can change the proof's outcome; any other dependency bump cannot.
+          quint() { git show "$1:package-lock.json" 2>/dev/null | jq -r '.packages["node_modules/@informalsystems/quint"].version // ""'; }
+          if [ "$(quint "$BASE")" != "$(quint HEAD)" ]; then echo "quint: $(quint "$BASE") → $(quint HEAD)"; verify=true; fi
+          echo "verify=$verify" >> "$GITHUB_OUTPUT"
+
   # The formal model of Baton's core (R3-1243, BATON_SPEC R-BTN-68): the fast checks
-  # (typecheck, regression runs, simulation, witnesses) and Apalache's bounded proof of the
-  # safety invariants. Apalache needs a JVM.
+  # (typecheck, regression runs, simulation, witnesses), when model/, src/core/ or the
+  # dependencies change.
   model:
+    needs: changes
+    if: needs.changes.outputs.model == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run model          # the item's 10,000 samples; npm test runs 1,000
+
+  # Apalache's bounded proof of the safety invariants, when model/ or the Quint version
+  # changes: it reads nothing else. Apalache needs a JVM.
+  model-verify:
+    needs: changes
+    if: needs.changes.outputs.verify == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -48,5 +97,4 @@ jobs:
           distribution: temurin
           java-version: 21
       - run: npm ci
-      - run: npm run model          # the item's 10,000 samples; npm test runs 1,000
       - run: npm run model:verify
