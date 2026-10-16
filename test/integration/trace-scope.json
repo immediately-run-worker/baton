@@ -1,0 +1,70 @@
+{
+  "S-BTN-11.scheduled-suspension › S-BTN-8 / S-BTN-9 server halves > no-new-work: the heartbeat returns the suspension; the holder keeps its claim and gets no release": {
+    "at": 3,
+    "reason": "the harness wrote a claim (a state Baton did not reach)"
+  },
+  "S-BTN-11.scheduled-suspension › S-BTN-8 / S-BTN-9 server halves > stop: each holder on the account is sent a release with reason provider-suspended; another account’s is not": {
+    "at": 4,
+    "reason": "the harness wrote a claim (a state Baton did not reach)"
+  },
+  "S-BTN-12.completion-confirmation › S-BTN-12 completion confirmation > completed before the sync: unclaimable until a sync sees it landed, then claimable": {
+    "at": 7,
+    "reason": "claim 1 confirmed by the interim post's confirmations (docs' interim shape, not modelled)"
+  },
+  "S-BTN-16.cutover › S-BTN-16 cutover (server) > G-BTN-19: the session the note names asks to adopt; the claim moves only when the owner confirms": {
+    "at": 6,
+    "reason": "claim 1 imported at cutover (a legacy claim; §13 step 3, not modelled)"
+  },
+  "S-BTN-16.cutover › S-BTN-16 cutover (server) > a note with no holder: any session may ask; the owner still decides; a session holding another item cannot adopt": {
+    "at": 5,
+    "reason": "claim 1 imported at cutover (a legacy claim; §13 step 3, not modelled)"
+  },
+  "S-BTN-16.cutover › S-BTN-16 cutover (server) > an unadopted legacy claim is reaped at its reap_after, not counted as a failed attempt": {
+    "at": 4,
+    "reason": "claim 1 imported at cutover (a legacy claim; §13 step 3, not modelled)"
+  },
+  "S-BTN-16.cutover › S-BTN-16 cutover (server) > shadow until the owner cuts over; the in-flight git claim is imported as a legacy claim": {
+    "at": 5,
+    "reason": "claim 1 imported at cutover (a legacy claim; §13 step 3, not modelled)"
+  },
+  "S-BTN-26.two-repositories › S-BTN-26 two repositories (registry half) > one repository’s sync confirms no completion of another’s (R-BTN-47)": {
+    "at": 6,
+    "reason": "claim 1 confirmed by the interim post's confirmations (docs' interim shape, not modelled)"
+  },
+  "S-BTN-26.two-repositories › S-BTN-26 two repositories (registry half) > two in-progress tickets of one local id with no holder: both legacy claims stay adoptable": {
+    "at": 4,
+    "reason": "claim 1 imported at cutover (a legacy claim; §13 step 3, not modelled)"
+  },
+  "S-BTN-36.observations › S-BTN-36 (observation half) > a claim is made stale only by a reading numbered after it": {
+    "at": 7,
+    "reason": "claim 1 released stale on its ticket's re-tier or interim status (R-BTN-35; tiers are not modelled)"
+  },
+  "S-BTN-36.observations › S-BTN-36 (observation half) > a held force post judges claims too, so staleness does not stall for the hold (round 2, 2-A-0)": {
+    "at": 7,
+    "reason": "claim 1 released stale on its ticket's re-tier or interim status (R-BTN-35; tiers are not modelled)"
+  },
+  "S-BTN-36.observations › S-BTN-36 (observation half) > a refresh at the head judges a claim the post that moved the head could not (round 1, 1-B-1)": {
+    "at": 7,
+    "reason": "claim 1 released stale on its ticket's re-tier or interim status (R-BTN-35; tiers are not modelled)"
+  },
+  "S-BTN-36.observations › S-BTN-36 (observation half) > an end is confirmed by the interim post’s confirmations only in a reading numbered after it": {
+    "at": 8,
+    "reason": "claim 1 confirmed by the interim post's confirmations (docs' interim shape, not modelled)"
+  },
+  "S-BTN-37.course-renames › S-BTN-37 a course changes under a claim (renames) > a file that no longer has the claim’s station: the heartbeat says unknown": {
+    "at": 5,
+    "reason": "a roadmap-pr course file other than the model’s (R-BTN-64, course changes: not modelled)"
+  },
+  "S-BTN-37.course-renames › S-BTN-37 a course changes under a claim (renames) > a renamed leg carries its claims, its runs and old names over": {
+    "at": 8,
+    "reason": "a roadmap-pr course file other than the model’s (R-BTN-64, course changes: not modelled)"
+  },
+  "S-BTN-39.limits › S-BTN-39 limits agents cannot change > an owner bar on every course, claims only, from +1 h: new Go claims are refused, a held one still advances": {
+    "at": 6,
+    "reason": "worker 1 advances with other tags than at its first claim (the model’s TAGS are constant)"
+  },
+  "S-BTN-40.slow-syncs › S-BTN-40 slow and stale syncs, end to end > a closure reported before the claim’s latest advance does not confirm a later done: only a newer one does": {
+    "at": 7,
+    "reason": "the harness wrote a claim (a state Baton did not reach)"
+  }
+}

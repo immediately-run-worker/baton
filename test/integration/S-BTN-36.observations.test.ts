@@ -2,7 +2,9 @@
 // R3-1231 part 3 delivers: a reading is judged by the number Baton handed out before the sync read
 // anything. Must hold: an older reading arriving after a newer one is refused stale-observation
 // and changes nothing; an end is confirmed, and a claim made stale, only by a reading numbered
-// above the counter's value when that end or claim happened. The station half (R3-1232): a
+// above the counter's value when that end or claim happened — except that a `done` is also
+// confirmed by a closure or an end station in a reading numbered above the claim's latest claim
+// or advance, even one read before the end (R-BTN-10 as amended 2026-10-16; S-BTN-40). The station half (R3-1232): a
 // suspension is confirmed by the path the first snapshot observed after it places the ticket on,
 // never by ancestry, and the next claimant starts at git's station.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
@@ -38,7 +40,7 @@ describe('S-BTN-36 (observation half)', () => {
     expect(await rows('SELECT id, row_hash FROM tickets ORDER BY id')).toEqual(before);
   });
 
-  it('an end is confirmed only by a reading numbered after it', async () => {
+  it('an end is confirmed by the interim post’s confirmations only in a reading numbered after it', async () => {
     const { secret } = await register('vm-a');
     const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' });
     const n = (await observe()).json.observation; // the sync's run starts reading…
@@ -49,6 +51,23 @@ describe('S-BTN-36 (observation half)', () => {
     // The next run's number is above the end's: it may judge it.
     expect(await (await syncCall('/v1/sync/board', payload(sha.A, sha.A, board.states.A, { confirmations: confirm }))).json()).toMatchObject({ ok: true, confirmed: 1 });
     expect((await claimRow(c.claim_id)).confirmed_at).toBe(T0);
+  });
+
+  it('a regression is judged only by a reading numbered after the claim’s latest advance (R3-1244: found by the model-based tests)', async () => {
+    const git = new Git().add('T-1', {}, placed('pr-open', [['implement', 'pr-open']], [['review', 'ready']]));
+    git.head = await head(); // over the fixture board beforeEach posted
+    expect(await git.post()).toMatchObject({ status: 200 });
+    const { secret } = await register('vm-a');
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:T-1' });
+    const n = (await observe()).json.observation; // the sync starts reading…
+    expect((await advance('vm-a', secret, c.claim_id, { leg: 'review' })).status).toBe(200); // …the holder advances…
+    git.place('T-1', placed('filed', [], [['implement', 'ready']])); // …and git has gone back
+    expect(await git.post({ observation: n })).toMatchObject({ status: 200 });
+    // the reading began before the advance: it cannot judge the claim
+    expect((await rows<{ regressed_since: number | null }>('SELECT regressed_since FROM claims WHERE id = ?', c.claim_id))[0].regressed_since).toBeNull();
+    // a reading numbered after it can
+    await git.refresh();
+    expect((await rows<{ regressed_since: number | null }>('SELECT regressed_since FROM claims WHERE id = ?', c.claim_id))[0].regressed_since).not.toBeNull();
   });
 
   it('a claim is made stale only by a reading numbered after it', async () => {

@@ -40,6 +40,9 @@ How Baton differs from a durable-execution engine such as Temporal, and where ea
 | `cli/` | `baton admin …` and `baton owner …` (`baton.mjs`): one request per command, signed with the key file `-i` names by `ssh-keygen -Y sign` (`sign.mjs`) |
 | `src/shared/` | **Vendored** from docs `scripts/lib/` — never edit here (R-BTN-37); `batonSync.mjs` is the board sync's own decision code, which S-BTN-13 drives |
 | `test/unit/`, `test/integration/` | Vitest; `S-BTN-n` scenarios in `integration/`. Project `cloudflare` runs everything in the Workers runtime; project `local` runs every scenario again on the local host, plus the Node-only tests |
+| `test/integration/trace.ts` | R3-1244: every scenario's run on the local host as a trace — one step per request or alarm tick, with the state projection the formal model has — written to `test/.traces/` |
+| `test/model/replay.test.ts` | R3-1244: traces drawn from `model/replay.qnt` drive the core, compared with the model's state at every step |
+| `scripts/check-traces.mjs`, `scripts/check-model-links.mjs` | R3-1244: replay each scenario's trace through `model/baton.qnt` (`npm run traces`); check that every model action and its implementation name each other, with current hashes (`npm run model:links`) |
 | `test/hosts/` | The two hosts the harness drives, behind one interface (`#host`) |
 | `test/lib/fixtureRepo.mjs` | The harness's stand-in for `docs/main`: a real bare git repo |
 
@@ -49,6 +52,8 @@ How Baton differs from a durable-execution engine such as Temporal, and where ea
   (or `cloudflare`) runs one.
 - `npm run start:local -- --db <path> --port <n>` — Baton as a local process (below).
 - `npm run typecheck` — the Worker, the local host and the Node scripts.
+- `npm run model:links`, `npm run traces` — the code against the formal model (R3-1244; `model/README.md`).
+  `npm test` runs both after the suite, and the model's own checks.
 - `npm run vendor` — re-copy `baton.mjs`, `vocabulary.mjs` and `sessionUsage.mjs` from a sibling `../docs`
   checkout (or `DOCS_DIR`) and rewrite `src/shared/manifest.json`. Do this in a PR here after
   docs changes any of them.
@@ -203,3 +208,8 @@ on the account, plus Zone: Read and Workers Routes: Edit on the `immediately.run
 
 With a sibling docs checkout present, the suite also fails when `src/shared/` or the board
 fixtures have drifted from docs.
+
+## License
+
+Copyright 2026 Peter Neumark. Baton is licensed under the [Apache License, Version 2.0](LICENSE);
+see [NOTICE](NOTICE).

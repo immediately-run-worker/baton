@@ -23,6 +23,12 @@ module baton {
   const MAX_CLAIMS: int          // bounds the state space
   const GIT_BUDGET: int          // foreign pushes, regressions and withdrawals per run
   const OWNER_BUDGET: int        // holds, owner bars and force-reaps per run
+  // Set by the instance too, so a scenario's trace replays with its own workers' tags and its
+  // repository's required bar (R3-1244); the checked instances keep R3-1243's values.
+  const FAMILIES: Set[str]       // the tags a required bar's prefix covers (R-BTN-67)
+  const TAGS: str -> Set[str]    // each worker's tags (R-BTN-60)
+  const REQUIRED: Set[str]       // the legs the required bar covers (R-BTN-67)
+  const MAX_TIME: int            // ticks a run may last
 
   // ---- the course: roadmap-pr's course.json (BATON_SPEC §2e, R-BTN-69) ----
   pure val START = "filed"
@@ -53,15 +59,11 @@ module baton {
   pure val TIMEOUT = 4
   pure val MARGIN = 2
   pure val MAX_DRIFT = 1
-  pure val MAX_TIME = 12
 
-  // ---- tags (R-BTN-60): course-defined strings core only compares ----
-  pure val FAMILIES = Set("family:a", "family:b")
-  pure val TAGS: str -> Set[str] = Map("w1" -> Set("family:a"), "w2" -> Set("family:b"),
-                                       "w3" -> Set("family:a"))
-  // docs' required bar {course: 'roadmap-pr', leg: '*', except: [implement, review,
-  // adjudicate], tag_prefix: 'family:'} (R-BTN-67): the legs it covers
-  pure val REQUIRED = LEGS.exclude(Set("implement", "review", "adjudicate"))
+  // ---- tags (R-BTN-60): course-defined strings core only compares; FAMILIES, TAGS and
+  // REQUIRED are constants above. R3-1243's instances: families a and b, w1 and w3 of a, w2 of
+  // b, and docs' required bar {course: 'roadmap-pr', leg: '*', except: [implement, review,
+  // adjudicate], tag_prefix: 'family:'} (R-BTN-67), covering fix and merge.
 
   // ---- path helpers ----
   pure def stationOf(p: List[str]): str = p.foldl(START, (s, l) => TO.get(l))
@@ -182,10 +184,12 @@ module baton {
     (st.syncs.get(s).phase == "numbered" or st.syncs.get(s).phase == "read") and not(st.syncs.get(s).voided)
 
   // ---- init ----
+  // @impl external — an empty Baton, migrated (src/core/baton.ts#start)
   action init = {
     nondet d = WORKERS.setOfMaps(0.to(MAX_DRIFT)).oneOf()
     initWith(d)
   }
+  // @impl external — an empty Baton, migrated, with each worker's clock drift
   action initWith(d: str -> int): bool = all {
     st' = {
       gitPath: TICKETS.mapBy(t => List()), withdrawn: TICKETS.mapBy(t => false),
@@ -209,6 +213,7 @@ module baton {
 
   // ---- claims, around the hook's await (§3, R-BTN-52, R-BTN-55) ----
   // Phase 1: the candidate is computed synchronously; the hook call begins.
+  // @impl src/core/claims.ts#claim
   action claimStart(w: str, t: str): bool = all {
     workerFree(w), st.nextId <= MAX_CLAIMS, claimableBy(t, w),
     st' = st.with("pending", st.pending.set(w, t)),
@@ -216,6 +221,7 @@ module baton {
   // Phase 3: the hook returned `refuse`, `order` (no refusal) or `fail` (R-BTN-52: core's
   // default order, no advice). Every gate is re-checked in one transaction against the state
   // as it is now; a candidate another request took meanwhile is refused.
+  // @impl src/core/claims.ts#claim
   action claimFinish(w: str, hook: str): bool = {
     val t = st.pending.get(w)
     all {
@@ -247,6 +253,7 @@ module baton {
   // The push is git's, not Baton's: the worker acts on the claim IT believes it holds, so a
   // worker whose lease Baton has reaped can still push — unless its own fence check stops it
   // (R-BTN-26). `actedAfterLoss` records a push for a claim Baton reaped without a fence.
+  // @impl external — the holder pushes to git (R-BTN-8)
   action pushEvidence(w: str, lands: bool): bool = all {
     workerCanAct(w), not(st.pushed.get(w)),
     val c = st.claims.get(st.localClaim.get(w))
@@ -265,6 +272,7 @@ module baton {
   // gates that bind a holder hold (§7.2): the hold check of rule 3, rule 8 with claim+advance
   // owner bars and the holder's own `bars`, the required bar over posted plus holder bars,
   // and the hook's refusal (`hookRefuses`). No leg state is checked: the holder's word.
+  // @impl src/core/claims.ts#advance
   action advance(w: str, leg: str, bars: Set[str], hookRefuses: bool): bool = all {
     workerCanAct(w), workerClaim(w).size() == 1,
     val c = theClaim(w)
@@ -292,8 +300,12 @@ module baton {
   }
 
   // R-BTN-71, §6.5: an end names the station really reached — the running leg's `to` when
-  // its evidence was pushed and `reached`, else its `from`. kind: done (at an end station
-  // only), suspended or release.
+  // its evidence was pushed and `reached`, else its `from`. kind: done, suspended or release.
+  // A `done` may come from any station: the runner also ends done when git shows the ticket
+  // closed, the leg having archived it (§11, R-BTN-72), which Baton cannot see at the end — it
+  // confirms a done only by an end station or a closure (R-BTN-10, G-BTN-44). (R3-1244: the
+  // scenario traces found the model narrower than the spec here; it required an end station.)
+  // @impl src/core/claims.ts#end
   action endClaim(w: str, kind: str, reached: bool): bool = all {
     workerCanAct(w), workerClaim(w).size() == 1,
     val c = theClaim(w)
@@ -305,7 +317,6 @@ module baton {
     // when that snapshot's observation is greater than the claim's own
     val closedEarly = done and atEnd(st.posted.get(c.ticket)) and st.lastAccepted > c.claimObs
     all {
-      not(done) or ENDS.contains(stn),
       st' = st.with("claims", st.claims.set(c.id, c.with("station", stn).with("finished", fin)
                 .with("leg", "")
                 .with("status", if (kind == "release") "released" else "completed")
@@ -318,23 +329,29 @@ module baton {
   }
 
   // ---- workers dying, and the lease (§6.3, §6.6) ----
+  // @impl external — a worker's machine
   action crash(w: str): bool = all {
     st.up.get(w),
     st' = st.with("up", st.up.set(w, false)).with("pending", st.pending.set(w, "")),
   }
+  // @impl external — a worker's machine
   action sleep(w: str): bool = all {
     st.up.get(w), not(st.asleep.get(w)),
     st' = st.with("asleep", st.asleep.set(w, true)),
   }
+  // @impl external — a worker's machine
   action wake(w: str): bool = all {
     st.asleep.get(w),
     st' = st.with("asleep", st.asleep.set(w, false)),
   }
+  // @impl external — time
   action tick: bool = all {
     st.now < MAX_TIME,
     st' = st.with("now", st.now + 1),
   }
   // §6.3: the sidecar's heartbeat renews the lease, and tells the worker what it holds.
+  // @impl src/core/workerApi.ts#heartbeat
+  // @impl src/core/claims.ts#fenced
   action heartbeat(w: str): bool = all {
     st.up.get(w), not(st.asleep.get(w)),
     if (workerClaim(w).size() == 1) {
@@ -352,6 +369,7 @@ module baton {
     },
   }
   // R-BTN-4, §6.6: the alarm reaps a claim whose lease ran out — its worker dead or silent.
+  // @impl src/core/claims.ts#alarm
   action alarmReap(i: int): bool = all {
     st.claims.keys().contains(i),
     val c = st.claims.get(i)
@@ -364,6 +382,7 @@ module baton {
   }
   // A dead worker restarts once the alarm has reaped its claim and any fence of its own has
   // timed out (below).
+  // @impl external — a worker restarting
   action reapDead(w: str): bool = all {
     not(st.up.get(w)), workerClaim(w).size() == 0, not(workerFenced(w)),
     st' = st.with("up", st.up.set(w, true)).with("asleep", st.asleep.set(w, false))
@@ -371,6 +390,7 @@ module baton {
   }
   // R-BTN-19: the owner force-reaps a live worker's claim; the ticket is not re-issued until
   // the worker reports `fence-cleared` (or dies and times out, above).
+  // @impl src/core/claims.ts#forceReap
   action forceReap(w: str): bool = all {
     st.ownerBudget > 0, st.up.get(w), workerClaim(w).size() == 1,
     val c = theClaim(w)
@@ -381,6 +401,7 @@ module baton {
   // R-BTN-19: a fence also clears when its worker has been silent past its own timeout — dead
   // or asleep — measured by time, never by knowing it is dead (baton#10 round 2, 2-A-0). The
   // worker is not told; if it wakes, its own fence check (R-BTN-26) must stop it.
+  // @impl src/core/claims.ts#alarm
   action fenceTimeout(i: int): bool = all {
     st.claims.keys().contains(i),
     val c = st.claims.get(i)
@@ -390,6 +411,7 @@ module baton {
     },
   }
   // R-BTN-6, R-BTN-26: the worker learns its lease is lost, kills its tool calls and reports.
+  // @impl src/core/claims.ts#fenced
   action fenceCleared(w: str): bool = all {
     st.up.get(w), not(st.asleep.get(w)), workerFenced(w),
     st' = st.with("claims", st.claims.keys().mapBy(i => {
@@ -399,20 +421,24 @@ module baton {
   }
 
   // ---- the owner (§8, R-BTN-67, §6.7) ----
+  // @impl src/core/claims.ts#setOverride
   action setHold(t: str, h: bool): bool = all {
     st.ownerBudget > 0, st.held.get(t) != h,
     st' = st.with("held", st.held.set(t, h)).with("ownerBudget", st.ownerBudget - 1),
   }
+  // @impl src/core/admin.ts#setBar
   action setOwnerBar(tag: str, applies: str): bool = all {
     st.ownerBudget > 0,
     st' = st.with("ownerBars", st.ownerBars.union(Set({ tag: tag, applies: applies })))
             .with("ownerBudget", st.ownerBudget - 1),
   }
+  // @impl src/core/admin.ts#liftBar
   action liftOwnerBars: bool = all {
     st.ownerBars.size() > 0,
     st' = st.with("ownerBars", Set()),
   }
   // §6.7: an unconfirmed completion is flagged; the owner confirms it.
+  // @impl src/core/claims.ts#resolve
   action ownerResolve(i: int): bool = all {
     st.claims.keys().contains(i),
     st.claims.get(i).status == "completed", not(st.claims.get(i).confirmed),
@@ -421,12 +447,14 @@ module baton {
   }
 
   // ---- git: any pusher writes anything (R-BTN-66) ----
+  // @impl external — git: any pusher (R-BTN-66)
   action foreignPush(t: str, leg: str): bool = all {
     st.gitBudget > 0, FROM.get(leg).contains(stationOf(st.gitPath.get(t))),
     st' = st.with("gitPath", st.gitPath.set(t, st.gitPath.get(t).append(leg)))
             .with("gitBudget", st.gitBudget - 1),
   }
   // a PR closed, a branch deleted, a review dismissed: the path loses its last leg
+  // @impl external — git: any pusher (R-BTN-66)
   action regress(t: str): bool = {
     val g = st.gitPath.get(t)
     all {
@@ -436,6 +464,7 @@ module baton {
               .with("gitRegressedEver", st.gitRegressedEver.set(t, true)),
     }
   }
+  // @impl external — git: any pusher (R-BTN-66)
   action withdraw(t: str): bool = all {
     st.gitBudget > 0, not(st.withdrawn.get(t)), not(atEnd(st.gitPath.get(t))),
     st' = st.with("withdrawn", st.withdrawn.set(t, true)).with("gitBudget", st.gitBudget - 1),
@@ -443,6 +472,7 @@ module baton {
 
   // ---- the sync: number first, then read, then post (§7.1, R-BTN-62) ----
   // R-BTN-62 as amended 2026-10-15: no number while another is outstanding (`sync-busy`).
+  // @impl src/core/observations.ts#observe
   action syncNumber(s: int): bool = all {
     st.syncs.get(s).phase == "idle", SLOTS.forall(o => not(outstanding(o))),
     st' = st.with("counter", st.counter + 1)
@@ -452,6 +482,7 @@ module baton {
   }
   // The course's sync reads git and computes any barred tags consistent with it (here, any
   // set of families on the writing legs — course logic is nondeterministic, R-BTN-50).
+  // @impl external — the repository's sync reads git and computes the bars
   action syncRead(s: int, bars: str -> Set[str]): bool = all {
     st.syncs.get(s).phase == "numbered",
     st' = st.with("syncs", st.syncs.set(s, st.syncs.get(s).with("phase", "read")
@@ -468,8 +499,11 @@ module baton {
       else if (c.regressed and extendsPath(expected(c), snap)) c.with("regressed", false)
       else c
     } else if (c.status == "completed" and not(c.confirmed) and obs > c.endObs) {
-      val ok = if (c.kind == "done") atEnd(snap)
-               else c.endedRegressed or extendsPath(expected(c), snap)
+      // a done by an end station, or by the ticket's absence from a later snapshot (G-BTN-44); a
+      // withdrawn ticket posts no path, so it confirms no suspension (R3-1244's model-based
+      // tests found the model reading a withdrawn ticket's last path)
+      val ok = if (c.kind == "done") atEnd(snap) or gone
+               else not(gone) and (c.endedRegressed or extendsPath(expected(c), snap))
       if (ok) c.with("confirmed", true).with("confirmObs", obs) else c
     } else if (c.status == "completed" and not(c.confirmed) and c.kind == "done"
                and obs > c.claimObs and atEnd(snap)) {
@@ -478,11 +512,17 @@ module baton {
 
   // R-BTN-62: Baton voids a number left outstanding too long (10 minutes); the run may still
   // read and post, and its post is refused.
+  // @impl src/core/observations.ts#observe
+  // @impl src/core/observations.ts#use
   action syncVoid(s: int): bool = all {
     outstanding(s),
     st' = st.with("syncs", st.syncs.set(s, st.syncs.get(s).with("voided", true))),
   }
   // A post is accepted whole only when its number is greater than the last accepted.
+  // @impl src/core/baton.ts#board
+  // @impl src/core/observations.ts#use
+  // @impl src/core/claims.ts#judge
+  // @impl src/core/claims.ts#staleBoard
   action syncPost(s: int): bool = {
     val r = st.syncs.get(s)
     all {
@@ -499,6 +539,7 @@ module baton {
     }
   }
 
+  // @impl external — the model's scheduler: every actor
   action step = {
     nondet w = WORKERS.oneOf()
     nondet t = TICKETS.oneOf()
@@ -524,10 +565,20 @@ module baton {
     }
   }
 
+  // The happy path's done: once the claim stands at an end station, as the runner ends it (§11).
+  // @impl external — the model's scheduler: endClaim's happy-path case
+  action endDoneAtEnd(w: str): bool = all {
+    workerClaim(w).size() == 1,
+    val c = theClaim(w)
+    ENDS.contains(if (c.leg != "" and st.pushed.get(w)) TO.get(c.leg) else c.station),
+    endClaim(w, "done", true),
+  }
+
   // The happy path's actors only — claims, legs, pushes that land, ends, syncs, git's own
   // regressions — so random runs reach the deep states (merges, fix loops, regressions,
   // confirmations) that the full `step` rarely gets to in 40 steps. Every run of it is a run
   // of `step`, so a violation here is a real one.
+  // @impl external — the model's scheduler: the happy path's actors
   action progressStep = {
     nondet w = WORKERS.oneOf()
     nondet t = TICKETS.oneOf()
@@ -535,7 +586,7 @@ module baton {
     nondet postBars = TICKETS.setOfMaps(Set(Set("family:b"))).oneOf()
     any {
       claimStart(w, t), claimFinish(w, "order"),
-      pushEvidence(w, true), advance(w, leg, Set("family:b"), false), endClaim(w, "done", true),
+      pushEvidence(w, true), advance(w, leg, Set("family:b"), false), endDoneAtEnd(w),
       syncNumber(1), syncRead(1, postBars), syncPost(1), regress(t),
     }
   }
