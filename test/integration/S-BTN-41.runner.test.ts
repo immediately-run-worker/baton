@@ -263,6 +263,34 @@ describe('S-BTN-41 the runner', () => {
     expect(home.evidence().at(-1)).toMatch(/^handoff build/); // the leg that ran writes it
   }, 30_000);
 
+  it('a home with no .baton/baton.json serves its single course directory (docs today)', async () => {
+    home.leg('check', `return { suspend: true, reached: 'checked' };`);
+    rmSync(join(home.dir, '.baton', 'baton.json'));
+    home.commit();
+    await home.post({ 'T-1': placed('built', [['build', 'built']], [['check', 'ready']]) });
+    const out = await makeRunner().runOnce();
+    expect(out).toMatchObject({ end_reason: 'suspended:checked' }); // ran, not stale-board
+    expect(await rows('SELECT end_reason FROM claims')).toEqual([{ end_reason: 'suspended:checked' }]);
+  }, 30_000);
+
+  it('a lease lost during the short wait stops it at once, no hand-off', async () => {
+    home.leg('build', `return { reached: 'built', next: 'check' };`);
+    home.commit();
+    await home.post({ 'T-1': placed('filed', [], [['build', 'ready']]) });
+    const runner = makeRunner();
+    runner.start();
+    const done = runner.runOnce();
+    await until(() => rows(`SELECT 1 FROM claim_legs WHERE leg = 'build'`));
+    await home.post({ 'T-1': placed('built', [['build', 'built']], [['check', 'waiting', 'ci']]) });
+    await until(() => rows(`SELECT 1 FROM claim_legs WHERE leg = 'check'`));
+    // The lease goes while the wait holds it: no waiting out the 30 minutes, no hand-off.
+    const claim = (await rows<{ id: number }>('SELECT id FROM claims'))[0].id;
+    const reap = await ownerCall(`/v1/ui/claims/${claim}/reap`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: ORIGIN }, body: JSON.stringify({ confirm: true }) });
+    expect(reap.status).toBe(200);
+    expect(await done).toMatchObject({ end_reason: 'released:lease-lost', reached: 'built' });
+    expect(home.evidence().some((l) => l.startsWith('handoff'))).toBe(false);
+  }, 30_000);
+
   it('a snapshot the checkout lacks is fetched once, and the claim runs (R-BTN-34)', async () => {
     // The runner's home is a clone of the course-only root: the legs commit the claim is
     // decided on does not exist in it yet, so the one bounded fetch must bring it.
@@ -361,14 +389,14 @@ describe('S-BTN-41 the runner', () => {
     const send = await ownerCall('/v1/ui/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: ORIGIN }, body: JSON.stringify({ kind: 'release', to_worker_id: worker, payload: { ticket_id: 'docs:T-1', reason: 'requested' } }) });
     expect(send.status).toBe(200);
     // It names that the leg reached its to — validated and closed like any result (R-BTN-83),
-    // the marker before the hand-off — and releases naming the queued leg.
+    // the marker before the hand-off — and releases naming a leg leaving where it rests.
     expect(await done).toMatchObject({ end_reason: 'released:requested', reached: 'checked' });
     expect(home.evidence().some((l) => l.includes('aborted:release'))).toBe(true);
     const lines = home.evidence();
     expect(lines.indexOf('close check')).toBeLessThan(lines.indexOf('handoff check'));
     expect(home.markers().at(-1)).toMatchObject({ leg: 'check', reached: 'checked' });
     expect(await rows('SELECT end_reason, status FROM claims')).toEqual([{ end_reason: 'released:requested', status: 'released' }]);
-    expect((await rows<{ resume_json: string }>('SELECT resume_json FROM claims'))[0].resume_json).toMatch(/"next":"check"/); // the leg itself queued (R-BTN-83)
+    expect((await rows<{ resume_json: string }>('SELECT resume_json FROM claims'))[0].resume_json).toMatch(/"next":"merge"/); // the script's own word (R-BTN-83)
     // The message is acknowledged once acted on (§9).
     await until(() => rows(`SELECT 1 FROM messages WHERE status = 'acknowledged'`));
   }, 30_000);

@@ -41,8 +41,9 @@ export function courseOf(home: string, sha: string): string {
     throw new Error(`.baton/baton.json at ${sha.slice(0, 10)} names no course`);
   }
   // The same test the startup declaration uses: a course is a directory carrying course.json
-  // (a README beside them is not a course).
-  const names = git(home, ['ls-tree', '--name-only', `${sha}:.baton/courses/`]).split('\n').filter((l) => l.endsWith('/')).map((l) => l.replace(/\/$/, ''));
+  // (a README beside them is not a course). `-d` lists trees only — `--name-only` prints their
+  // names bare, with no trailing slash to filter on.
+  const names = git(home, ['ls-tree', '-d', '--name-only', `${sha}:.baton/courses/`]).split('\n').filter(Boolean);
   const courses = names.filter((n) => readAt(home, sha, `.baton/courses/${n}/course.json`) != null);
   if (courses.length !== 1) throw new Error(`the home repository runs ${courses.length} courses and .baton/baton.json names none: ${courses.join(', ') || '(none)'}`);
   return courses[0];
