@@ -37,6 +37,13 @@ describe('the policy, pure', () => {
       .toEqual(['capability', 'spec', null]);
   });
 
+  it('an owner’s policy: its backoffs in turn, the last repeating, held at its max_failed (R-BTN-23)', () => {
+    const policy = { backoff_ms: [10 * 60_000, 2 * H], max_failed: 4 };
+    expect([0, 1, 2, 3, 4].map((n) => afterFailure(n, policy))).toEqual([
+      null, { retryAfterMs: 10 * 60_000 }, { retryAfterMs: 2 * H }, { retryAfterMs: 2 * H }, { hold: 'attempts-exhausted' }]);
+    expect(afterFailure(1, { backoff_ms: [H], max_failed: 1 })).toEqual({ hold: 'attempts-exhausted' });
+  });
+
   it('a resume record takes branches, PRs, rounds and the last activity from activities only', () => {
     const r = resumeRecord('released:cannot-finish:transient', 5, [
       { kind: 'push', seq: null, label: null, started_at: 1, ended_at: 2, outcome: 'succeeded', detail_json: JSON.stringify({ branch: 'claude/r3-1-x', sha: 'abc' }) },

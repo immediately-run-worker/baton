@@ -10,7 +10,7 @@
 
 export type CourseRule =
   | 'shape' | 'unknown-key' | 'id' | 'unknown-station' | 'start-leg' | 'unreachable' | 'no-end'
-  | 'unbounded-cycle' | 'input' | 'bound' | 'renamed-from';
+  | 'unbounded-cycle' | 'input' | 'bound' | 'renamed-from' | 'required-bar';
 
 export interface CourseViolation {
   rule: CourseRule;

@@ -6,6 +6,9 @@
   "engines": {
     "node": ">=22.13"
   },
+  "bin": {
+    "baton": "cli/baton.mjs"
+  },
   "scripts": {
     "test": "vitest run && MODEL_SAMPLES=1000 npm run model",
     "test:baton": "vitest run",

@@ -4,7 +4,7 @@
 // server answers as the Worker does; a local start refuses the test bindings.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
 import type { AddressInfo } from 'node:net';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { claimItem, cutover, hbBody, payload, register, rows, setClock, sha256, syncCall } from '../helpers';
@@ -12,7 +12,7 @@ import { current } from '../hosts/local';
 import { RequestQueue } from '../../src/local/queue';
 import { MAX_BODY, serve } from '../../src/local/server';
 import { openStore } from '../../src/local/store';
-import { concreteHost, localConfig, main } from '../../src/local/main';
+import { adminKeysFrom, concreteHost, localConfig, main } from '../../src/local/main';
 import { SECURITY_HEADERS } from '../../src/core/http';
 
 const board = inject('board');
@@ -224,5 +224,25 @@ describe('a local start', () => {
     const c = localConfig({ OWNER_EMAILS: 'a@example.com' }, 'http://127.0.0.1:8787');
     expect(c).toMatchObject({ BATON_ORIGIN: 'http://127.0.0.1:8787', OWNER_EMAILS: 'a@example.com' });
     expect(c.BATON_TEST_BINDINGS).toBeUndefined();
+  });
+});
+
+describe('--admin-keys (R-BTN-57; round 3, 3-A-4)', () => {
+  it('is read on every call: a key taken out of the file is no administrator at the next request', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'baton-admin-keys-'));
+    try {
+      const file = join(dir, 'admins');
+      const a = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGq4c1kq3OcHmu0dQ1xI8j1bnvJmK2xLqPq0T8cQ3pLs a';
+      writeFileSync(file, `${a}\n`);
+      const keys = adminKeysFrom(file);
+      expect(keys.list()).toHaveLength(1);
+      writeFileSync(file, '');
+      expect(keys.list()).toEqual([]);
+      rmSync(file);
+      expect(keys.list()).toEqual([]); // unreadable: no administrator
+      expect(adminKeysFrom(undefined).list()).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

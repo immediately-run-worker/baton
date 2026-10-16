@@ -330,3 +330,34 @@ export async function advance(cred: keyof typeof TOKENS, secret: string, claimId
   const res = await workerCall(`/v1/runner/claims/${claimId}/advance`, { cred, secret, body });
   return { status: res.status, json: (await res.json()) as Record<string, any> };
 }
+
+// ── administration (R3-1240) ──────────────────────────────────────────────────────────────
+
+/** BATON_ADMIN_KEYS for this test (R-BTN-57): the core reads the port on every call. */
+export function setAdminKeys(...keys: TestKey[]) {
+  return withCore((c) => {
+    (c as unknown as { ports: { adminKeys: { list: () => string[] } } }).ports.adminKeys = { list: () => keys.map((k) => k.publicKey) };
+  });
+}
+
+/** A request signed by `key` (an administrator's or an owner's), at the core's clock. */
+export async function keyCall(key: TestKey, path: string, body?: unknown, method?: string) {
+  const created = Math.floor((await withCore((c) => c.now())) / 1000);
+  const res = await hostCall(await signedRequest(key, ORIGIN + path, { created, method, body: body === undefined ? undefined : JSON.stringify(body) }));
+  return { status: res.status, json: (await res.json()) as Record<string, any> };
+}
+
+/** A dashboard session minted from an administrator's key (R-BTN-57): its `Cookie` header value. */
+export async function adminSession(key: TestKey): Promise<string> {
+  const token = (await keyCall(key, '/v1/admin/login-links', {})).json.url.split('#')[1];
+  const res = await hostCall(new Request(`${ORIGIN}/v1/login`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: ORIGIN }, body: JSON.stringify({ token }) }));
+  return res.headers.get('Set-Cookie')!.split(';')[0];
+}
+
+/** A dashboard request under a session cookie. */
+export function sessionCall(cookie: string, path: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set('Cookie', cookie);
+  if (init.method && init.method !== 'GET') headers.set('Origin', ORIGIN);
+  return hostCall(new Request(ORIGIN + path, { ...init, headers }));
+}

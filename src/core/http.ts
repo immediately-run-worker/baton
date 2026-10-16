@@ -44,3 +44,6 @@ export function withSecurityHeaders(res: Response): Response {
   for (const [k, v] of Object.entries(SECURITY_HEADERS)) out.headers.set(k, v);
   return out;
 }
+
+/** R-BTN-16: the one cookie Baton reads — its own dashboard session (R-BTN-57). */
+export const SESSION_COOKIE = '__Host-baton_session';

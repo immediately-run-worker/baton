@@ -431,6 +431,8 @@ export interface End {
   next: string | null;
   detail: string | null;
   ended_at_sha: string | null;
+  /** `released:<reason>` naming no §6.5 reason: an owner bar's (R-BTN-67), checked by the claims. */
+  owner_bar: boolean;
 }
 
 /** §6.5's ends: `done`, `suspended:<station>` and `released:<reason>`, each with an optional
@@ -445,6 +447,7 @@ export function checkEnd(body: unknown): End {
   const reason = r as string;
   let status: 'completed' | 'released';
   let suspended_at: string | null = null;
+  let ownerBar = false;
   if (reason === 'done') {
     status = 'completed';
   } else if (reason.startsWith('suspended:') && COURSE_ID.test(reason.slice(10))) {
@@ -452,6 +455,9 @@ export function checkEnd(body: unknown): End {
     suspended_at = reason.slice(10);
   } else if (reason.startsWith('released:') && RELEASE_END_REASONS.includes(reason.slice(9) as never)) {
     status = 'released';
+  } else if (reason.startsWith('released:') && COURSE_ID.test(reason.slice(9)) && !reason.slice(9).startsWith('cannot-finish')) {
+    status = 'released';
+    ownerBar = true;
   } else {
     bad('end_reason', 'must be done, suspended:<station> or released:<a §6.5 reason>');
   }
@@ -463,7 +469,7 @@ export function checkEnd(body: unknown): End {
   if (ptr !== undefined && ptr !== null && !isPointer(ptr)) bad('ended_at_sha', 'must be a commit sha or an https URL of at most 1000 characters');
   const sha = (ptr as string | undefined | null) ?? null;
   if (status! === 'released' && sha) bad('ended_at_sha', 'only a completed end points at its evidence');
-  return { end_reason: reason, status: status!, suspended_at, reached: reached ?? suspended_at, next, detail, ended_at_sha: sha };
+  return { end_reason: reason, status: status!, suspended_at, reached: reached ?? suspended_at, next, detail, ended_at_sha: sha, owner_bar: ownerBar };
 }
 
 export interface Advance {

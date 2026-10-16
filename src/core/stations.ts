@@ -8,6 +8,7 @@ import { logEvent } from './db';
 import { extendsPath, graphOf, onGraph, type Graph, type Step } from './graph';
 import type { PostedStation } from './board';
 import type { Store } from './ports';
+import { meetsRequiredBar, requiredBarCovers, type RequiredBar } from './admin';
 import { qualify } from './validate';
 
 /** What one snapshot showed of one ticket, against the previous accepted one. */
@@ -22,7 +23,7 @@ export interface Seen {
 export class Stations {
   private graphs = new Map<string, Graph | null>();
 
-  constructor(private readonly c: { store: Store; now: () => number }) {}
+  constructor(private readonly c: { store: Store; now: () => number; requiredBars?: (repo: string) => RequiredBar[] }) {}
 
   private rows<T>(q: string, ...p: unknown[]): T[] {
     return this.c.store.exec<T>(q, ...p).toArray();
@@ -96,7 +97,7 @@ export class Stations {
       // file from its start.
       const fine = prev ? extendsPath(g!, prev, st.path, g!.start) || st.path.length < prev.length : onGraph(g!, st.path);
       if (!fine) this.offGraph(repo, id, { observation, why: prev ? 'the path does not extend the previous one by edges' : 'the path does not follow the course file from its start', path: st.path, previous: prev });
-      this.write(id, g!, st, sha, observation, at);
+      this.write(id, g!, st, sha, observation, at, this.c.requiredBars?.(repo) ?? [], t.course_id);
       seen.set(id, { station: st.station, path: st.path, prev, bars: st.bars });
     }
     for (const c of closed) {
@@ -132,7 +133,7 @@ export class Stations {
     return null;
   }
 
-  private write(id: string, g: Graph, st: PostedStation, sha: string, observation: number, at: number) {
+  private write(id: string, g: Graph, st: PostedStation, sha: string, observation: number, at: number, required: RequiredBar[], course: string) {
     const before = new Map(this.rows<{ leg: string; state: string; ready_since: number | null; waiting_since: number | null }>(
       'SELECT leg, state, ready_since, waiting_since FROM ticket_next_legs WHERE ticket_id = ?', id).map((r) => [r.leg, r]));
     this.exec(`INSERT INTO ticket_stations (ticket_id, station, path, path_len, to_end, next_leg, next_source, handoff_url, snapshot_sha, observation)
@@ -142,7 +143,11 @@ export class Stations {
                  snapshot_sha = excluded.snapshot_sha, observation = excluded.observation`,
       id, st.station, JSON.stringify(st.path), st.path.length, g.toEnd.get(st.station) ?? 0, st.next_leg, st.next_source, st.handoff_url, sha, observation);
     this.exec('DELETE FROM ticket_next_legs WHERE ticket_id = ?', id);
-    for (const n of st.next) {
+    for (const posted of st.next) {
+      // R-BTN-67: a leg a required bar covers whose posted bars hold no tag with its prefix is
+      // stored waiting on `policy` — the board still moves — and listed under Needs you.
+      const unmet = required.some((r) => requiredBarCovers(r, course, posted.leg, g) && !meetsRequiredBar(r, Object.hasOwn(st.bars, posted.leg) ? st.bars[posted.leg] : []));
+      const n = unmet ? { leg: posted.leg, state: 'waiting' as const, waiting_on: 'policy' } : posted;
       const b = before.get(n.leg);
       // Age (the default order's fourth key) runs from the first snapshot that showed the leg
       // ready, and an unbroken wait from the first that showed it waiting.

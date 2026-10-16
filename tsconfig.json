@@ -33,6 +33,7 @@
     "src/local",
     "test/hosts/local.ts",
     "test/unit/local-queue.test.ts",
-    "test/unit/boundary-host.test.ts"
+    "test/unit/boundary-host.test.ts",
+    "test/unit/cli.test.ts"
   ]
 }

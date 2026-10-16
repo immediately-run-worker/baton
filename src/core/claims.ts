@@ -13,6 +13,7 @@ import { ceilingIn, repositoryOf, transcriptReposOf } from './registry';
 import { GATE_CODES, gatesFor, type GateContext, type GateLeg, type GateTicket, type GateVerdict, type Phase } from './gates';
 import { extendsPath, leaves, resolveLeg, resolveStation, runsOf, type Step } from './graph';
 import type { Seen, Stations } from './stations';
+import { meetsRequiredBar, requiredBarCovers, type Admin } from './admin';
 import type { Row, SqlValue, Store } from './ports';
 const EXPEDITE_BOUND = 2; // §7.2 rule 2, advice
 /** §2e: a claim regressed this long is listed under Needs you. */
@@ -30,6 +31,8 @@ export interface Ctx {
   now: () => number;
   /** Where each ticket is, and its course's graph (R-BTN-70). */
   stations: Stations;
+  /** The owners' bars and settings (R-BTN-66, R-BTN-67). */
+  admin: Admin;
   /** §12: ask for the ticket's repository's sync or mirror to be dispatched once this
    *  request's transaction has committed. */
   dispatch?: (kind: 'mirror' | 'sync', ticketId: string) => void;
@@ -50,6 +53,9 @@ interface WorkerFacts {
   courses: { repository: string; course: string; version: number }[];
   /** R-BTN-60: what rule 8 matches. */
   tags: string[];
+  credential_id: string;
+  /** R-BTN-58: its key's grants by repository, or null for a key no owner granted (gates.ts). */
+  grants: Record<string, { capabilities: string[]; max_tier: number | null }> | null;
 }
 
 interface ItemFacts {
@@ -180,15 +186,26 @@ export class Claims {
   // ── what matching reads ─────────────────────────────────────────────────────────────────
 
   private worker(id: number): WorkerFacts {
-    const w = this.rows<Omit<WorkerFacts, 'declared' | 'courses' | 'tier_ceilings' | 'tags'> & { tier_ceilings: string }>(
-      `SELECT id, kind, incarnation, tier_ceiling, tier_ceilings, lease_timeout_ms, last_seen_at, last_activity_at
-       FROM workers WHERE id = ?`, id)[0];
+    const w = this.rows<Omit<WorkerFacts, 'declared' | 'courses' | 'tier_ceilings' | 'tags' | 'grants'> & { tier_ceilings: string; created_by: string | null }>(
+      `SELECT w.id, w.kind, w.incarnation, w.tier_ceiling, w.tier_ceilings, w.lease_timeout_ms, w.last_seen_at, w.last_activity_at, w.credential_id, c.created_by
+       FROM workers w JOIN credentials c ON c.id = w.credential_id WHERE w.id = ?`, id)[0];
     if (!w) throw new BatonError('unauthenticated', 'no such worker');
     const declared = this.rows<{ declared: string }>('SELECT DISTINCT declared FROM worker_capabilities WHERE worker_id = ? ORDER BY declared', id).map((r) => r.declared);
     const courses = this.rows<{ repository: string; course: string; version: number }>(
       'SELECT repository_id AS repository, course_id AS course, version FROM worker_courses WHERE worker_id = ? ORDER BY repository_id, course_id', id);
     const tags = this.rows<{ tag: string }>('SELECT tag FROM worker_tags WHERE worker_id = ? ORDER BY tag', id).map((r) => r.tag);
-    return { ...w, tier_ceilings: JSON.parse(w.tier_ceilings) as Record<string, string>, declared, courses, tags };
+    const { created_by, ...facts } = w;
+    return { ...facts, tier_ceilings: JSON.parse(w.tier_ceilings) as Record<string, string>, declared, courses, tags, grants: this.grantsOf(w.credential_id, created_by) };
+  }
+
+  /** R-BTN-58: a granted key's grants in force by repository. A key an owner or administrator
+   *  registered works only where it is granted; a bearer token or a BATON_KEYS seed key is not
+   *  granted at all and keeps its interim reach until the seed retires (null). */
+  private grantsOf(credential: string, createdBy: string | null): WorkerFacts['grants'] {
+    if (!createdBy || !/^(owner|admin):/.test(createdBy)) return null;
+    return Object.fromEntries(this.rows<{ repository_id: string; capabilities: string; max_tier: number | null }>(
+      'SELECT repository_id, capabilities, max_tier FROM worker_grants WHERE credential_id = ? AND revoked_at IS NULL', credential)
+      .map((g) => [g.repository_id, { capabilities: JSON.parse(g.capabilities) as string[], max_tier: g.max_tier }]));
   }
 
   /** A ticket's filter fields and where the head snapshot places it (R-BTN-33, R-BTN-70). */
@@ -220,7 +237,11 @@ export class Claims {
 
   /** The worker's ceiling in `repo`'s ladder, by name (rule 5). */
   private ceiling(w: WorkerFacts, repo: string): string {
-    return ceilingIn(repo, this.ladder(repo), w.tier_ceilings, w.tier_ceiling);
+    const ladder = this.ladder(repo);
+    const declared = ceilingIn(repo, ladder, w.tier_ceilings, w.tier_ceiling);
+    // R-BTN-58: a grant's max_tier caps what the key may take there.
+    const cap = w.grants?.[repo]?.max_tier;
+    return cap != null && cap < ladder.indexOf(declared) ? ladder[Math.max(0, Math.min(cap, ladder.length - 1))] : declared;
   }
 
   /** The counter's last number handed out for `repo` (R-BTN-62): recorded with a claim, an
@@ -230,10 +251,21 @@ export class Claims {
   }
 
   /** The leg as the head snapshot posted it for the ticket, and its barred tags (R-BTN-70). */
-  private postedLeg(ticketId: string, leg: string): GateLeg {
-    const n = this.rows<{ state: 'ready' | 'waiting' }>('SELECT state FROM ticket_next_legs WHERE ticket_id = ? AND leg = ?', ticketId, leg)[0];
-    const bars = this.rows<{ tag: string }>('SELECT tag FROM ticket_bars WHERE ticket_id = ? AND leg = ? ORDER BY tag', ticketId, leg).map((r) => r.tag);
-    return { name: leg, state: n?.state ?? null, bars };
+  private postedLeg(item: ItemFacts, leg: string, phase: Phase): GateLeg {
+    const n = this.rows<{ state: 'ready' | 'waiting' }>('SELECT state FROM ticket_next_legs WHERE ticket_id = ? AND leg = ?', item.id, leg)[0];
+    const posted = this.rows<{ tag: string }>('SELECT tag FROM ticket_bars WHERE ticket_id = ? AND leg = ? ORDER BY tag', item.id, leg).map((r) => r.tag);
+    return { name: leg, state: n?.state ?? null, bars: [...new Set([...posted, ...this.ownerBarTags(item, leg, phase)])] };
+  }
+
+  /** R-BTN-67: the tags the owner bars in force bar from `leg` of the ticket — its course's bars and
+   *  those for `*`, on every leg or on the legs they name (followed through `renamed_from`); at an
+   *  advance only those that apply at advances. */
+  private ownerBarTags(item: ItemFacts, leg: string, phase: Phase): string[] {
+    const g = this.stations.graph(item.repository, item.course);
+    return this.c.admin.bars([item.repository], this.c.now())
+      .filter((b) => (b.course === '*' || b.course === item.course) && (phase === 'claim' || b.applies === 'claim+advance')
+        && (!b.legs.length || b.legs.some((l) => (g ? resolveLeg(g, l) ?? l : l) === leg)))
+      .map((b) => b.tag);
   }
 
   /** `gatesFor`'s inputs for one ticket (§7.2), from Baton's own tables (R-BTN-33). */
@@ -249,7 +281,7 @@ export class Claims {
       lastEndObservation: this.rows<{ n: number | null }>('SELECT MAX(end_observation) AS n FROM claims WHERE ticket_id = ?', item.id)[0]?.n ?? -1,
       holderBars: opts.holderBars,
     };
-    return gatesFor({ declared: w.declared, tier_ceiling: this.ceiling(w, item.repository), tags: w.tags, courses: w.courses }, ticket, this.postedLeg(item.id, leg), phase, facts);
+    return gatesFor({ declared: w.declared, tier_ceiling: this.ceiling(w, item.repository), tags: w.tags, courses: w.courses, grants: w.grants }, ticket, this.postedLeg(item, leg, phase), phase, facts);
   }
 
   /** Rule 2's count (advice): active Baton claims on expedited tickets, not git in-progress. */
@@ -290,17 +322,25 @@ export class Claims {
                                 OR (c.status = 'reaped' AND c.fence_pending = 1)))                             -- rule 3
            AND NOT EXISTS (SELECT 1 FROM ticket_overrides o WHERE o.ticket_id = w.id
                            AND (o.hold = 1 OR o.retry_after > :now))                                          -- rules 3, 10
+           AND (:granted = 0 OR EXISTS (SELECT 1 FROM worker_grants g WHERE g.credential_id = :credential
+                                        AND g.repository_id = w.repository_id AND g.revoked_at IS NULL))      -- rule 7
            AND NOT EXISTS (SELECT 1 FROM ticket_requires r WHERE r.ticket_id = w.id
-                           AND r.name NOT IN (SELECT capability FROM worker_capabilities WHERE worker_id = :worker))  -- rule 4
+                           AND (r.name NOT IN (SELECT capability FROM worker_capabilities WHERE worker_id = :worker)
+                                OR (:granted = 1 AND r.name NOT IN (SELECT j.value FROM worker_grants g, json_each(g.capabilities) j
+                                                                    WHERE g.credential_id = :credential AND g.repository_id = w.repository_id
+                                                                      AND g.revoked_at IS NULL))))             -- rule 4, within the grant
            AND COALESCE(w.tier_position, json_array_length(p.tiers) - 1)
                <= json_extract(:ceiling, '$."' || w.repository_id || '"')                                      -- rule 5, per repository
-           AND (:human_operator OR w.operator_only = 0)                                                       -- rule 6
+           AND (w.operator_only = 0 OR (:human_operator AND (:granted = 0 OR EXISTS (
+                  SELECT 1 FROM worker_grants g, json_each(g.capabilities) j WHERE g.credential_id = :credential
+                    AND g.repository_id = w.repository_id AND g.revoked_at IS NULL AND j.value = 'human-operator'))))  -- rule 6
            AND (:rule9 = 0 OR EXISTS (SELECT 1 FROM worker_courses f JOIN courses k ON k.repository_id = f.repository_id AND k.id = f.course_id
                                       WHERE f.worker_id = :worker AND f.repository_id = w.repository_id AND f.course_id = w.course_id
                                         AND f.version >= k.min_worker_version)))                              -- rule 9
        WHERE n > :page * 50 AND n <= (:page + 1) * 50
        ORDER BY repository_id, course_id, n`,
-      { worker: w.id, now: this.c.now(), ceiling: JSON.stringify(this.ceilingPositions(w)), human_operator: w.declared.includes('human-operator') ? 1 : 0, rule9: rule9 ? 1 : 0, page });
+      { worker: w.id, now: this.c.now(), ceiling: JSON.stringify(this.ceilingPositions(w)), human_operator: w.declared.includes('human-operator') ? 1 : 0, rule9: rule9 ? 1 : 0, page,
+        granted: w.grants ? 1 : 0, credential: w.credential_id });
   }
 
   /** The worker's ceiling's position in every repository's ladder: the query's rule 5. */
@@ -308,7 +348,7 @@ export class Claims {
     const out: Record<string, number> = {};
     for (const r of this.rows<{ id: string; tiers: string }>('SELECT id, tiers FROM repositories WHERE retired_at IS NULL')) {
       const ladder = JSON.parse(r.tiers) as string[];
-      out[r.id] = ladder.indexOf(ceilingIn(r.id, ladder, w.tier_ceilings, w.tier_ceiling));
+      out[r.id] = ladder.indexOf(this.ceiling(w, r.id));
     }
     return out;
   }
@@ -570,6 +610,11 @@ export class Claims {
       const ran = [...(JSON.parse(c.start_path) as Step[]).map((s) => s.leg), ...this.rows<{ leg: string }>('SELECT leg FROM claim_legs WHERE claim_id = ?', claimId).map((r) => r.leg)];
       if (runsOf(g, leg, ran) >= max) throw new BatonError('not-eligible', `max-runs: ${leg} has run ${max} times`, { rule: 1, rule_code: 'max-runs' });
     }
+    // R-BTN-67: a leg a required bar covers needs a tag with its prefix among its posted bars and
+    // the holder's own; else the advance is refused `policy` and the claim is unchanged.
+    const posted = this.rows<{ tag: string }>('SELECT tag FROM ticket_bars WHERE ticket_id = ? AND leg = ?', c.ticket_id, leg).map((r) => r.tag);
+    const unmet = this.c.admin.requiredBars(repo).find((r) => requiredBarCovers(r, item.course, leg, g) && !meetsRequiredBar(r, [...posted, ...b.bars]));
+    if (unmet) throw new BatonError('not-eligible', `policy: ${leg} must bar a ${unmet.tag_prefix} tag (an owner's required bar)`, { rule: 8, rule_code: 'policy' });
     const v = this.gate(this.worker(workerId), item, leg, 'advance', { except: claimId, holderBars: b.bars });
     if (!v.ok) throw this.refusal(c.ticket_id, v, 'advance');
 
@@ -590,6 +635,10 @@ export class Claims {
   end(workerId: number, claimId: number, body: unknown) {
     const e = checkEnd(body);
     const c = this.held(workerId, claimId);
+    // R-BTN-67: `released:<reason>` of an owner bar's reason — an open set, the repository's bars'.
+    if (e.owner_bar && !this.rows('SELECT 1 FROM owner_bars WHERE repository_id = ? AND reason = ?', repositoryOf(c.ticket_id), e.end_reason.slice(9)).length) {
+      throw new BatonError('invalid-params', `end_reason: ${e.end_reason} names no owner bar's reason on ${repositoryOf(c.ticket_id)}`);
+    }
     if (c.status !== 'active') {
       if (c.end_reason === e.end_reason) return { ok: true };
       // R-BTN-8 pushes git first, so a sync can see the ticket closed and release the claim
@@ -730,7 +779,7 @@ export class Claims {
       const failed = this.failedAttempts(item);
       const cls = nonRetryableClass(reason);
       if (cls) return this.hold(item, `non-retryable:${cls}`, 'baton', { claim_id: claimId, attempts: failed });
-      const next = afterFailure(failed.length);
+      const next = afterFailure(failed.length, this.c.admin.retry(repositoryOf(item)));
       if (next && 'hold' in next) {
         this.event('attempts-exhausted', 'baton', { claim_id: claimId, attempts: failed }, item, claimId);
         return this.hold(item, next.hold, 'baton', { claim_id: claimId, attempts: failed });
@@ -1033,7 +1082,10 @@ export class Claims {
         const posted = s.bars[name];
         this.exec('UPDATE claim_legs SET bars_judged = 1 WHERE claim_id = ? AND seq = ?', l.claim_id, l.seq);
         const missing = (JSON.parse(l.bars) as string[]).filter((t) => !posted.includes(t));
-        if (missing.length) this.event('bars-mismatch', 'sync', { seq: l.seq, leg: l.leg, declared_only: missing, observation }, ticketId, l.claim_id);
+        // R-BTN-67: a snapshot that lacks a required bar's prefix for a leg a claim ran on the
+        // holder's bars is listed too.
+        const policy = l.course_id ? this.c.admin.requiredBars(repo).filter((r) => requiredBarCovers(r, l.course_id!, name, g) && !meetsRequiredBar(r, posted)).map((r) => r.tag_prefix) : [];
+        if (missing.length || policy.length) this.event('bars-mismatch', 'sync', { seq: l.seq, leg: l.leg, declared_only: missing, ...(policy.length ? { policy } : {}), observation }, ticketId, l.claim_id);
       }
     }
     return { confirmed, stale_released: stale };
@@ -1102,6 +1154,7 @@ export class Claims {
 
   alarm() {
     const now = this.c.now();
+    this.releaseBarHolders(now);
     // Silent workers: reaped at exactly their clamped timeout (R-BTN-9), never by Date.now().
     const silent = this.rows<{ id: number; ticket_id: string; worker_id: number; kind: string }>(
       `SELECT c.id, c.ticket_id, c.worker_id, w.kind FROM claims c JOIN workers w ON w.id = c.worker_id
@@ -1138,6 +1191,29 @@ export class Claims {
     for (const h of this.rows<{ repository_id: string; sha: string }>('SELECT repository_id, sha FROM held_snapshots WHERE accepted_at IS NULL AND auto_accept_at <= ?', now)) {
       this.exec('UPDATE held_snapshots SET accepted_at = ? WHERE repository_id = ? AND sha = ?', now, h.repository_id, h.sha);
       this.event('snapshot-accepted', 'alarm', { sha: h.sha, held: true, by: 'auto-accept' }, null, null, h.repository_id);
+    }
+  }
+
+  /** R-BTN-67: when a bar with `release_holders` starts, every holder whose worker carries its tag
+   *  and whose claim runs — or is about to run — a matching leg gets a `release` naming the bar's
+   *  reason, once. */
+  private releaseBarHolders(now: number) {
+    for (const b of this.c.admin.bars(null, now).filter((x) => x.release_holders)) {
+      if (this.rows('SELECT 1 FROM owner_bars WHERE id = ? AND holders_released_at IS NULL', b.id).length === 0) continue;
+      const held = this.rows<{ id: number; ticket_id: string; worker_id: number; leg: string | null; course_id: string | null; next_leg: string | null }>(
+        `SELECT c.id, c.ticket_id, c.worker_id, c.leg, c.course_id, s.next_leg FROM claims c
+         JOIN worker_tags t ON t.worker_id = c.worker_id AND t.tag = ?
+         LEFT JOIN ticket_stations s ON s.ticket_id = c.ticket_id
+         WHERE c.status = 'active' AND substr(c.ticket_id, 1, length(?) + 1) = ? || ':'`, b.tag, b.repository_id, b.repository_id);
+      for (const c of held) {
+        if (b.course !== '*' && b.course !== c.course_id) continue;
+        const g = c.course_id ? this.stations.graph(b.repository_id, c.course_id) : null;
+        const leg = c.leg ?? c.next_leg;
+        if (b.legs.length && !(leg && b.legs.some((l) => (g ? resolveLeg(g, l) ?? l : l) === leg))) continue;
+        this.exec(`INSERT INTO messages (kind, payload_json, from_principal, to_worker_id, sent_at, status) VALUES ('release', ?, ?, ?, ?, 'pending')`,
+          JSON.stringify({ ticket_id: c.ticket_id, reason: b.reason, bar: b.id }), `bar:${b.id}`, c.worker_id, now);
+      }
+      this.exec('UPDATE owner_bars SET holders_released_at = ? WHERE id = ?', now, b.id);
     }
   }
 
@@ -1209,6 +1285,8 @@ export class Claims {
       // §2e: a claim git has shown going backwards for 30 minutes.
       regressed: this.rows(`SELECT c.id, c.ticket_id, c.worker_id, c.regressed_since, s.path FROM claims c LEFT JOIN ticket_stations s ON s.ticket_id = c.ticket_id
                             WHERE c.status = 'active' AND c.regressed_since IS NOT NULL AND c.regressed_since <= ? ORDER BY c.regressed_since`, now - REGRESSED_FLAG_MS),
+      // R-BTN-67: a leg an owner's required bar covers that the sync posts without the prefix.
+      policy: this.rows(`SELECT n.ticket_id, n.leg, n.waiting_since FROM ticket_next_legs n WHERE n.state = 'waiting' AND n.waiting_on = 'policy' ORDER BY n.ticket_id, n.leg`),
       // R-BTN-63: the holder and the sync read a leg's bars differently; the sync's reading binds.
       bars_mismatch: this.rows(`SELECT e.claim_id, e.ticket_id, e.at, e.detail_json FROM events e WHERE e.kind = 'bars-mismatch' AND e.at > ? ORDER BY e.seq`, now - BARS_MISMATCH_LISTED_MS),
       held_items: this.rows<{ ticket_id: string; hold_reason: string | null; set_at: number }>(

@@ -9,7 +9,7 @@
 // Two clauses wait for the routes they exercise: the probe's out-of-binding reading for
 // R3-1251 (probes and instances) and the administrator's key for R3-1240 (`/v1/admin/*`).
 import { describe, it, expect, beforeEach } from 'vitest';
-import { HOST, ORIGIN, call, hbBody, register, rows, setClock, sha256, signedCall, SSH_KEYS, withCore } from '../helpers';
+import { HOST, ORIGIN, call, hbBody, keyCall, register, setAdminKeys, rows, setClock, sha256, signedCall, SSH_KEYS, withCore } from '../helpers';
 import { makeKey, signedRequest } from '../lib/sshKeys';
 import { WorkerApi } from '../../src/core/workerApi';
 import { call as hostCall, config } from '#host';
@@ -176,5 +176,14 @@ describe(`S-BTN-30 signed requests (${HOST})`, () => {
   });
 
   it.todo('a probe reading for an instance outside its binding is refused forbidden (R3-1251)');
-  it.todo('an admin request signed by a key not in BATON_ADMIN_KEYS is refused unauthenticated (R3-1240)');
+  it('an admin request signed by a key not in BATON_ADMIN_KEYS is refused unauthenticated (R3-1240)', async () => {
+    const admin = await makeKey('ssh-ed25519', 'admin');
+    const other = await makeKey('ssh-ed25519', 'other');
+    await setAdminKeys(admin);
+    expect((await keyCall(other, '/v1/admin/login-links', {})).json).toMatchObject({ code: 'unauthenticated' });
+    expect((await keyCall(admin, '/v1/admin/login-links', {})).status).toBe(200);
+    // The key leaves the secret: refused at its next request.
+    await setAdminKeys(other);
+    expect((await keyCall(admin, '/v1/admin/login-links', {})).json).toMatchObject({ code: 'unauthenticated' });
+  });
 });
