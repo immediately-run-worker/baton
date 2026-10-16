@@ -83,7 +83,11 @@ export class Stations {
       const prev = prevRow ? (JSON.parse(prevRow.path) as Step[]) : null;
       if (unknown) {
         this.clear(id);
-        this.offGraph(repo, id, { observation, why: unknown });
+        // Once per distinct fault, not on every snapshot that repeats it (the sync posts every
+        // 15 minutes).
+        const last = this.rows<{ why: string | null }>(
+          `SELECT json_extract(detail_json, '$.why') AS why FROM events WHERE ticket_id = ? AND kind = 'off-graph' ORDER BY seq DESC LIMIT 1`, id)[0];
+        if (last?.why !== unknown) this.offGraph(repo, id, { observation, why: unknown });
         continue;
       }
       // §2e: between two snapshots the path extends by edges, or goes backwards (a regression,

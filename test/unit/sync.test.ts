@@ -1,6 +1,6 @@
 // R3-1206 — board sync's compare-and-set (BATON_SPEC §7.1 R-BTN-11; G-BTN-7).
 import { describe, it, expect, inject } from 'vitest';
-import { course, payload, rows, setClock, syncCall } from '../helpers';
+import { course, Git, payload, placed, rows, setClock, syncCall, ticket } from '../helpers';
 
 const board = inject('board');
 const { A, B, C, D } = board.shas;
@@ -153,5 +153,97 @@ describe('the course registry on a board post (R-BTN-48, R-BTN-69)', () => {
     expect([res.status, (await body(res)).code]).toEqual([400, 'invalid-params']);
     expect(await rows(`SELECT id FROM courses`)).toEqual([{ id: 'roadmap-pr' }]);
     expect(await head()).toBe(C);
+  });
+});
+
+describe('the normative board post (§7.1, R3-1232)', () => {
+  const T0 = Date.parse('2026-10-16T12:00:00Z');
+  const fresh = () => {
+    const git = new Git();
+    git.add('T-1').add('T-2', { rank: 1, display: { status: 'in-review', project: 'baton' } }, placed('pr-open', [['implement', 'pr-open']], [['review', 'waiting', 'ci']], { bars: { fix: ['family:qwen'], merge: ['family:qwen'] }, handoff_url: 'https://github.com/immediately-run/docs/pull/2#issuecomment-1' }));
+    return git;
+  };
+
+  it('stores the tickets’ filter fields, where each is, its next legs and its barred tags; display is kept, never read', async () => {
+    await setClock(T0);
+    expect(await fresh().post()).toMatchObject({ status: 200, upserted: 2 });
+    expect(await rows(`SELECT id, path, status, node, queue, expedite, display FROM tickets ORDER BY id`)).toEqual([
+      { id: 'docs:T-1', path: 'content/roadmap/T-1.mdx', status: '', node: '', queue: '', expedite: 0, display: null },
+      { id: 'docs:T-2', path: 'content/roadmap/T-2.mdx', status: '', node: '', queue: '', expedite: 0, display: '{"status":"in-review","project":"baton"}' }]);
+    expect(await rows(`SELECT ticket_id, station, path_len, to_end, next_leg, next_source, handoff_url FROM ticket_stations ORDER BY ticket_id`)).toEqual([
+      { ticket_id: 'docs:T-1', station: 'filed', path_len: 0, to_end: 3, next_leg: 'implement', next_source: 'marker', handoff_url: null },
+      { ticket_id: 'docs:T-2', station: 'pr-open', path_len: 1, to_end: 2, next_leg: 'review', next_source: 'marker', handoff_url: 'https://github.com/immediately-run/docs/pull/2#issuecomment-1' }]);
+    expect(await rows(`SELECT ticket_id, leg, state, waiting_on, ready_since, waiting_since FROM ticket_next_legs ORDER BY ticket_id`)).toEqual([
+      { ticket_id: 'docs:T-1', leg: 'implement', state: 'ready', waiting_on: null, ready_since: T0, waiting_since: null },
+      { ticket_id: 'docs:T-2', leg: 'review', state: 'waiting', waiting_on: 'ci', ready_since: null, waiting_since: T0 }]);
+    expect(await rows(`SELECT leg, tag FROM ticket_bars ORDER BY leg`)).toEqual([{ leg: 'fix', tag: 'family:qwen' }, { leg: 'merge', tag: 'family:qwen' }]);
+  });
+
+  it('ready_since runs from the first snapshot that showed the leg ready', async () => {
+    await setClock(T0);
+    const git = fresh();
+    await git.post();
+    await setClock(T0 + 60_000);
+    git.place('T-2', placed('pr-open', [['implement', 'pr-open']], [['review', 'ready']]));
+    await git.refresh();
+    await setClock(T0 + 120_000);
+    await git.refresh();
+    expect(await rows(`SELECT ticket_id, ready_since FROM ticket_next_legs ORDER BY ticket_id`)).toEqual([
+      { ticket_id: 'docs:T-1', ready_since: T0 }, { ticket_id: 'docs:T-2', ready_since: T0 + 60_000 }]);
+  });
+
+  it('a closure is kept after the ticket goes, with the first observation that reported it, and deleted if the ticket returns', async () => {
+    const git = fresh();
+    await git.post();
+    git.close('T-1', 'done');
+    await git.post();
+    const n = (await rows<{ observation: number }>(`SELECT observation FROM board_head WHERE repository_id = 'docs'`))[0].observation;
+    expect(await rows('SELECT ticket_id, closed_as, observation FROM closed_tickets')).toEqual([{ ticket_id: 'docs:T-1', closed_as: 'done', observation: n }]);
+    expect(await rows(`SELECT 1 FROM ticket_stations WHERE ticket_id = 'docs:T-1'`)).toEqual([]);
+    git.add('T-1');
+    await git.post();
+    expect(await rows('SELECT ticket_id FROM closed_tickets')).toEqual([]);
+  });
+
+  it('a station or leg the course file does not have places the ticket nowhere and logs off-graph; so does a path that skips an edge', async () => {
+    const git = fresh();
+    await git.post();
+    git.place('T-1', placed('nowhere', [], []));
+    await git.post();
+    expect(await rows(`SELECT 1 FROM ticket_stations WHERE ticket_id = 'docs:T-1'`)).toEqual([]);
+    // T-2 jumps from pr-open straight to merged: a step that is no edge of the file — stored (git
+    // wins), and logged.
+    git.place('T-2', placed('merged', [['implement', 'pr-open'], ['merge', 'merged']], []));
+    await git.post();
+    expect(await rows(`SELECT station FROM ticket_stations WHERE ticket_id = 'docs:T-2'`)).toEqual([{ station: 'merged' }]);
+    expect(await rows(`SELECT ticket_id, json_extract(detail_json, '$.why') AS why FROM events WHERE kind = 'off-graph' ORDER BY seq`)).toEqual([
+      { ticket_id: 'docs:T-1', why: 'unknown station nowhere' },
+      { ticket_id: 'docs:T-2', why: 'the path does not extend the previous one by edges' }]);
+  });
+
+  it('a live ticket the post does not place is placed nowhere: never offered on an old station', async () => {
+    const git = fresh();
+    await git.post();
+    delete git.stations['T-1'];
+    await git.post();
+    expect(await rows(`SELECT ticket_id FROM ticket_stations`)).toEqual([{ ticket_id: 'docs:T-2' }]);
+  });
+
+  it('refuses a malformed post whole: both shapes, a station of no ticket, a bad tag, a bad path, an http hand-off', async () => {
+    const git = fresh();
+    const bad = [
+      { ...git.body(A, null), state: { items: [] }, ready: [] },
+      { ...git.body(A, null), stations: { ...git.stations, 'T-9': placed('filed', [], []) } },
+      { ...git.body(A, null), stations: { 'T-1': placed('filed', [], [], { bars: { fix: ['bad tag'] } }) } },
+      { ...git.body(A, null), tickets: [ticket('T-1', { path: '../etc/passwd' })], stations: {} },
+      { ...git.body(A, null), stations: { 'T-1': placed('filed', [], [], { handoff_url: 'http://x' }) } },
+      { ...git.body(A, null), closed: [{ id: 'T-1', as: 'done' }] }, // closed and live at once
+      { ...git.body(A, null), tickets: [ticket('T-1', { requires: 'none' })], stations: {} },
+    ];
+    for (const b of bad) {
+      const res = await syncCall('/v1/sync/board', b);
+      expect([res.status, (await body(res)).code]).toEqual([400, 'invalid-params']);
+    }
+    expect(await head()).toBeNull();
   });
 });

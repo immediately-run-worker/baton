@@ -541,9 +541,10 @@ export class Claims {
       const running = resolveLeg(g, run.leg);
       const outcomes = running ? g.legs.get(running)!.to : [];
       if (!running) throw offGraph(`the running leg ${run.leg} is no longer in the course file`);
-      const reached = b.reached ? resolveStation(g, b.reached) : outcomes.length === 1 ? outcomes[0] : null;
-      if (!reached) throw new BatonError('invalid-params', `reached: required — ${running} has outcomes ${outcomes.join(', ')}`);
-      if (!outcomes.includes(reached)) throw offGraph(`${running} cannot reach ${b.reached}`);
+      // §11: `reached` is required while a leg runs — the holder says which outcome it reached.
+      if (!b.reached) throw new BatonError('invalid-params', `reached: required while ${running} runs — one of ${outcomes.join(', ')}`);
+      const reached = resolveStation(g, b.reached);
+      if (!reached || !outcomes.includes(reached)) throw offGraph(`${running} cannot reach ${b.reached}`);
       at = reached;
     } else {
       if (b.reached && resolveStation(g, b.reached) !== station) throw offGraph(`the claim is at ${station}, running nothing`);

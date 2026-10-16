@@ -300,5 +300,20 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     expect(await ask('claude/T-1-x')).toEqual({ tickets: ['ops:T-1'], held_by_other: false, fence_pending: true });
   });
 
-  it.todo('R3-1232: each repository in its own hook’s or default order, and with 60 ready docs legs ops’ first five still reach the merge (per-group limit)');
+  it('R-BTN-61 (R3-1232): each repository in its own default order, and with 60 ready docs legs ops’ candidates still reach the merge (per-group limit)', async () => {
+    const { id } = await register('vm-a', BOTH);
+    await cutover(1, 'docs');
+    await cutover(1, 'ops');
+    // 60 ready docs tickets, ranked in reverse of their ids, so the order is the rank's alone.
+    const items = Array.from({ length: 60 }, (_, i) => ({ ...fixture, id: `D-${String(i + 1).padStart(2, '0')}`, title: `docs ${i + 1}` }));
+    const ready = items.map((it) => it.id).reverse();
+    expect((await syncCall('/v1/sync/board', payload(sha.B, sha.A, { items, ready }))).status).toBe(200);
+    const got = await recommended(id, 100);
+    // docs (weight 100) above ops (50): all 60, in docs' rank order — 50 read, then a second page
+    // because the group was full — and ops' own two after them, never crowded out of the merge.
+    expect(got.slice(0, 60)).toEqual(ready.map((t) => `docs:${t}`));
+    expect(got.slice(60)).toEqual(['ops:R3-9001', 'ops:T-1']);
+    // ?limit= applies after the merge.
+    expect(await recommended(id, 5)).toEqual(ready.slice(0, 5).map((t) => `docs:${t}`));
+  });
 });

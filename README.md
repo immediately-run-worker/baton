@@ -96,6 +96,26 @@ is `<origin>#sync` or `<origin>#mirror`, from an issuer `BATON_FORGE_SECRETS` li
 (`{"<repository>": {"forge": "gitlab", "gitlab_issuer": "https://gitlab.example.com"}}`). A key
 holds one role: a sync key is never a worker's, nor the reverse.
 
+## Stations and legs
+
+A ticket rests at a **station** of its course file and a **leg** takes it to the next (BATON_SPEC
+§2e). Each repository's sync places its tickets (`stations` in the board post, §7.1): the station,
+the path of legs run so far, the queued leg, each next leg `ready` or `waiting`, and the tags
+barred from each leg; Baton keeps that as a cache (`src/core/stations.ts`) and never computes a
+station. docs' interim post, until R3-1233, places every ticket at its course's start with the
+start leg ready when factory-state calls it ready.
+
+A claim is at a station and runs at most one leg. `POST /v1/runner/claims/{id}/advance
+{reached?, leg, evidence?, bars?}` finishes the running leg at `reached` and starts `leg`, on the
+holder's word: Baton checks the edge and the leg's `max_runs` against the course file
+(`src/core/graph.ts`) and the gates that bind a holder (`src/core/gates.ts`), never the leg's
+state. An end rests at a station — the running leg's outcome, or its `from` if given up — and a
+`suspended:<station>` is confirmed by the first snapshot observed after it whose path extends the
+claim's expected path by edges. Matching (`GET /v1/runner/recommendations`) reads each
+(repository, course) group 50 at a time in the default order — expedite, legs to an end, rank,
+age, id — and merges the groups by weight; the order and the expedite lane's bound are advice,
+recorded when a claim goes against them (`advice-overridden`), never refused.
+
 ## GitHub App webhooks
 
 `POST /v1/github/webhook` takes the GitHub App's deliveries (R-BTN-73): `push`, `pull_request`,

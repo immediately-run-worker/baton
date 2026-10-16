@@ -2,10 +2,11 @@
 // R3-1231 part 3 delivers: a reading is judged by the number Baton handed out before the sync read
 // anything. Must hold: an older reading arriving after a newer one is refused stale-observation
 // and changes nothing; an end is confirmed, and a claim made stale, only by a reading numbered
-// above the counter's value when that end or claim happened. The station half — a suspension
-// confirmed by the station a snapshot places the ticket at — is part 4's (the §7.1 tickets post).
+// above the counter's value when that end or claim happened. The station half (R3-1232): a
+// suspension is confirmed by the path the first snapshot observed after it places the ticket on,
+// never by ancestry, and the next claimant starts at git's station.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { claimItem, claimRow, cutover, endClaim, observe, payload, register, rows, setClock, syncCall } from '../helpers';
+import { advance, claimItem, claimRow, cutover, endClaim, Git, observe, payload, placed, register, rows, setClock, syncCall, tick } from '../helpers';
 
 const board = inject('board');
 const sha = board.shas;
@@ -87,5 +88,49 @@ describe('S-BTN-36 (observation half)', () => {
     expect(await claimRow(c.claim_id)).toMatchObject({ status: 'released', end_reason: 'released:stale-board' });
   });
 
-  it.todo('R3-1232: the station half — a suspension confirmed by the first snapshot observed after it placing the ticket at fixed, never by ancestry; W3’s R-BTN-5 check passes on the ticket in-review at its station');
+});
+
+describe('S-BTN-36 (station half, R3-1232)', () => {
+  it('a suspension at fixed is confirmed by the first snapshot observed after it placing the ticket there, never by ancestry; the next claimant starts at git’s station', async () => {
+    const reviewed: [string, string][] = [['implement', 'pr-open'], ['review', 'reviewed']];
+    const git = new Git();
+    git.head = sha.A; // docs' interim head; from here its sync posts the normative board
+    git.add('T-1', {}, placed('reviewed', reviewed, [['fix', 'ready']]));
+    await git.post();
+    const w1 = await register('vm-a', { lease_timeout_s: 86_400 });
+    const { json: c } = await claimItem('vm-a', w1.secret, { ticket_id: 'docs:T-1' });
+    await advance('vm-a', w1.secret, c.claim_id, { leg: 'fix' });
+    // The fix is pushed to a code repository's branch: docs' main does not move. W1 suspends.
+    const older = (await observe()).json.observation; // a run that stalls past ten minutes
+    await endClaim('vm-a', w1.secret, c.claim_id, { end_reason: 'suspended:fixed', reached: 'fixed', ended_at_sha: 'a'.repeat(40) });
+    await setClock(T0 + 11 * MIN);
+    // The newer run: a refresh of docs' unchanged head, its station read from the PR.
+    git.place('T-1', placed('fixed', [...reviewed, ['fix', 'fixed']], [['review', 'ready']]));
+    expect(await git.refresh()).toMatchObject({ status: 200, unchanged: true, confirmed: 1 });
+    expect((await claimRow(c.claim_id)).confirmed_at).toBe(T0 + 11 * MIN);
+    // The stalled run arrives after it, still at reviewed: refused whole, changing nothing.
+    git.place('T-1', placed('reviewed', reviewed, [['fix', 'ready']]));
+    const late = await syncCall('/v1/sync/board', { ...git.body(git.head!, git.head), observation: older });
+    expect([late.status, ((await late.json()) as { code: string }).code]).toEqual([409, 'stale-observation']);
+    expect(await rows(`SELECT station FROM ticket_stations WHERE ticket_id = 'docs:T-1'`)).toEqual([{ station: 'fixed' }]);
+
+    // W2 claims and is reaped mid-review; W3 claims at git's station, with both attempts.
+    const w2 = await register('vm-b');
+    const { json: c2 } = await claimItem('vm-b', w2.secret, { ticket_id: 'docs:T-1' });
+    expect(c2).toMatchObject({ station: 'fixed', legs: ['review'] });
+    await advance('vm-b', w2.secret, c2.claim_id, { leg: 'review' });
+    await setClock(T0 + 11 * MIN + 900_000);
+    await tick();
+    expect(await claimRow(c2.claim_id)).toMatchObject({ status: 'reaped', end_reason: 'reaped:silent' });
+    git.place('T-1', placed('fixed', [...reviewed, ['fix', 'fixed']], [['review', 'ready']]));
+    await git.refresh();
+    await setClock(T0 + 11 * MIN + 900_000 + 3_600_000); // past the reap's backoff
+    await git.refresh();
+    const w3 = await register('test');
+    const { json: c3 } = await claimItem('test', w3.secret, { ticket_id: 'docs:T-1' });
+    expect(c3).toMatchObject({ station: 'fixed', legs: ['review'] });
+    expect(await rows(`SELECT station FROM ticket_stations WHERE ticket_id = 'docs:T-1'`)).toEqual([{ station: c3.station }]);
+    expect(c3.previous_attempts.map((p: { claim_id: number; legs: { leg: string; outcome: string }[] }) => [p.claim_id, p.legs.map((l) => `${l.leg}:${l.outcome}`)]))
+      .toEqual([[c2.claim_id, ['review:abandoned']], [c.claim_id, ['fix:finished']]]);
+  });
 });
