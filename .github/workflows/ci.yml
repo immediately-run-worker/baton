@@ -20,7 +20,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -55,7 +55,7 @@ jobs:
           files=$(git diff --name-only "$BASE...HEAD")
           printf '%s\n' "$files"
           hit() { printf '%s\n' "$files" | grep -q -E "$1" && echo true || echo false; }
-          echo "model=$(hit '^(model/|src/core/|package(-lock)?\.json$|\.github/workflows/ci\.yml$)')" >> "$GITHUB_OUTPUT"
+          echo "model=$(hit '^(model/|src/core/|test/model/|test/hosts/|test/integration/trace\.ts$|scripts/check-traces\.mjs$|package(-lock)?\.json$|\.github/workflows/ci\.yml$)')" >> "$GITHUB_OUTPUT"
           verify=$(hit '^(model/|\.github/workflows/ci\.yml$)')
           # A Quint upgrade can change the proof's outcome; any other dependency bump cannot.
           quint() { git show "$1:package-lock.json" 2>/dev/null | jq -r '.packages["node_modules/@informalsystems/quint"].version // ""'; }
@@ -63,13 +63,13 @@ jobs:
           echo "verify=$verify" >> "$GITHUB_OUTPUT"
 
   # The formal model of Baton's core (R3-1243, BATON_SPEC R-BTN-68): the fast checks
-  # (typecheck, regression runs, simulation, witnesses), when model/, src/core/ or the
-  # dependencies change.
+  # (typecheck, regression runs, simulation, witnesses) and 1,000 model-drawn traces driving
+  # the core (R3-1244), when model/, src/core/, the replay or the dependencies change.
   model:
     needs: changes
     if: needs.changes.outputs.model == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -78,6 +78,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run model          # the item's 10,000 samples; npm test runs 1,000
+      # R3-1244: more model-drawn traces driving the core than npm test's 200
+      - run: REPLAY_TRACES=1000 npx vitest run --project local test/model/replay.test.ts
 
   # Apalache's bounded proof of the safety invariants, when model/ or the Quint version
   # changes: it reads nothing else. Apalache needs a JVM.
@@ -85,7 +87,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.verify == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

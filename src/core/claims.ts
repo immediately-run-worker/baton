@@ -463,6 +463,8 @@ export class Claims {
 
   /** `POST /v1/runner/claim` (§6.2): idempotent by `request_id`; the lock is the index. The claim
    *  is at the ticket's posted station, running nothing, its path recorded (R-BTN-63). */
+  // @model claimFinish sha256:b34b2786d568
+  // @model claimStart sha256:849465f510ea
   claim(workerId: number, body: unknown) {
     const b = checkClaim(body);
     if (!this.anyCutOver()) throw new BatonError('not-cut-over', 'claims go through git until cutover (R-BTN-28)');
@@ -572,6 +574,7 @@ export class Claims {
    * nothing. The answer carries the latest snapshot's next legs and the course's advice (none
    * until the course's hook, R3-1236).
    */
+  // @model advance sha256:7e3423aa8c7c
   advance(workerId: number, claimId: number, body: unknown) {
     const b = checkAdvance(body);
     const c = this.held(workerId, claimId);
@@ -632,6 +635,7 @@ export class Claims {
   }
 
   /** `POST /v1/runner/claims/{id}/end` (§6.5, R-BTN-8, R-BTN-71). A retried identical end is a no-op. */
+  // @model endClaim sha256:708d379c6ae9
   end(workerId: number, claimId: number, body: unknown) {
     const e = checkEnd(body);
     const c = this.held(workerId, claimId);
@@ -811,6 +815,7 @@ export class Claims {
 
   /** `POST /v1/ui/overrides/{item}` (§8, §11): `{expedite?, hold?}`. Lifting a hold clears its
    *  reason and any backoff, and resets the attempt count (§6.10). */
+  // @model setHold sha256:e391d5465327
   setOverride(owner: string, item: string, body: unknown) {
     const o = checkOverride(body);
     const actor = `owner:${owner}`;
@@ -899,6 +904,8 @@ export class Claims {
 
   /** The heartbeat's `fenced` report (R-BTN-19): clears the fence of a claim reaped while this
    *  worker was alive — only in the incarnation it was reaped in, since a re-key never clears one. */
+  // @model fenceCleared sha256:45a18ae6f8bd
+  // @model heartbeat sha256:e470c1da7177
   fenced(workerId: number, incarnation: number, claimId: number) {
     const c = this.rows<{ ticket_id: string }>(
       `SELECT ticket_id FROM claims WHERE id = ? AND worker_id = ? AND status = 'reaped' AND fence_pending = 1 AND fence_incarnation = ?`,
@@ -914,6 +921,7 @@ export class Claims {
   /** `POST /v1/ui/claims/{id}/reap`: any active claim. A live worker's claim is fence-pending
    *  (R-BTN-19) and the worker is not reaped, so its sidecar can still report the fence; a
    *  silent worker's is reaped as the alarm would. */
+  // @model forceReap sha256:f73043dab8bc
   forceReap(owner: string, claimId: number, body: unknown) {
     checkConfirm(body);
     const c = this.rows<{ id: number; ticket_id: string; worker_id: number; status: string }>('SELECT id, ticket_id, worker_id, status FROM claims WHERE id = ?', claimId)[0];
@@ -930,6 +938,7 @@ export class Claims {
   /** `POST /v1/ui/claims/{id}/resolve` (§6.7): an unconfirmed completion is never confirmed
    *  automatically; the owner confirms it (git does carry it) or releases it (it never landed),
    *  which makes the item claimable again. The commit it named stays in the event. */
+  // @model ownerResolve sha256:2a81ee6cf4b2
   resolve(owner: string, claimId: number, body: unknown) {
     const { action } = checkResolve(body);
     const c = this.rows<{ ticket_id: string; end_reason: string; ended_at_sha: string }>(
@@ -1007,17 +1016,24 @@ export class Claims {
         .map((l) => ({ leg: l.leg, reached: l.to_station }))];
   }
 
-  /** R-BTN-10: a `done` end is confirmed by the closure a snapshot reported when that snapshot's
-   *  observation is greater than the claim's own (its claim or latest advance) — usually before the
-   *  end call, since the holder pushes the archive first (R-BTN-8). */
+  /** R-BTN-10: a `done` end is confirmed by the closure a snapshot reported, or the end station it
+   *  placed the ticket at, when that snapshot's observation is greater than the claim's own (its
+   *  claim or latest advance) — usually before the end call, since the holder pushes first (R-BTN-8). */
   private confirmByClosure(claimId: number) {
-    const c = this.rows<{ ticket_id: string }>(
-      `SELECT c.ticket_id FROM claims c JOIN closed_tickets k ON k.ticket_id = c.ticket_id
-       WHERE c.id = ? AND c.status = 'completed' AND c.confirmed_at IS NULL AND c.end_reason = 'done'
-         AND k.closed_as = 'done' AND k.observation > c.claim_observation`, claimId)[0];
+    const c = this.rows<{ ticket_id: string; course_id: string | null; claim_observation: number }>(
+      `SELECT ticket_id, course_id, claim_observation FROM claims
+       WHERE id = ? AND status = 'completed' AND confirmed_at IS NULL AND end_reason = 'done'`, claimId)[0];
     if (!c) return false;
+    const closed = this.rows(`SELECT 1 FROM closed_tickets WHERE ticket_id = ? AND closed_as = 'done' AND observation > ?`, c.ticket_id, c.claim_observation).length > 0;
+    // …or the ticket at an end station in such a reading, when the ticket is still posted: the
+    // holder pushed the merge, the sync read it, and only then the end arrived (G-BTN-44; found
+    // by R3-1244's model-based tests — the judge already credits the same reading posted later)
+    const st = closed ? null : this.rows<{ station: string }>('SELECT station FROM ticket_stations WHERE ticket_id = ? AND observation > ?', c.ticket_id, c.claim_observation)[0];
+    const g = st && c.course_id ? this.stations.graph(repositoryOf(c.ticket_id), c.course_id) : null;
+    const atEnd = !!st && !!g && g.ends.has(st.station) && this.rows('SELECT 1 FROM tickets WHERE id = ?', c.ticket_id).length > 0;
+    if (!closed && !atEnd) return false;
     this.exec('UPDATE claims SET confirmed_at = ? WHERE id = ?', this.c.now(), claimId);
-    this.event('confirmed', 'sync', { by: 'closure' }, c.ticket_id, claimId);
+    this.event('confirmed', 'sync', { by: closed ? 'closure' : 'end-station' }, c.ticket_id, claimId);
     return true;
   }
 
@@ -1035,11 +1051,17 @@ export class Claims {
    * - R-BTN-63: a holder's declared bars the snapshot posts that leg's bars without log
    *   `bars-mismatch`.
    */
+  // @model syncPost sha256:9c323898f662
   judge(repo: string, observation: number, seen: Map<string, Seen>) {
     let confirmed = 0;
-    for (const c of this.rows<{ id: number; ticket_id: string; end_reason: string; start_path: string; ended_regressed: number; course_id: string | null }>(
-      `SELECT id, ticket_id, end_reason, start_path, ended_regressed, course_id FROM claims
-       WHERE status = 'completed' AND confirmed_at IS NULL AND COALESCE(end_observation, 0) < ? AND substr(ticket_id, 1, length(?) + 1) = ? || ':'`, observation, repo, repo)) {
+    // A `done` is also confirmed by a reading numbered after the claim's latest advance that shows
+    // the ticket at an end station — read before the end, posted after it (G-BTN-44: a closure
+    // "with an observation greater than the claim's"; found by R3-1244's model-based tests).
+    for (const c of this.rows<{ id: number; ticket_id: string; end_reason: string; start_path: string; ended_regressed: number; course_id: string | null; end_observation: number | null }>(
+      `SELECT id, ticket_id, end_reason, start_path, ended_regressed, course_id, end_observation FROM claims
+       WHERE status = 'completed' AND confirmed_at IS NULL
+         AND (COALESCE(end_observation, 0) < ? OR (end_reason = 'done' AND claim_observation < ?))
+         AND substr(ticket_id, 1, length(?) + 1) = ? || ':'`, observation, observation, repo, repo)) {
       if (this.endShown(c, observation)) {
         this.exec('UPDATE claims SET confirmed_at = ? WHERE id = ?', this.c.now(), c.id);
         this.event('confirmed', 'sync', { observation }, c.ticket_id, c.id);
@@ -1050,8 +1072,12 @@ export class Claims {
     }
     const stale = this.staleBoard(repo, observation);
     const now = this.c.now();
+    // R-BTN-62: like staleness, a regression is judged only by a reading numbered after the
+    // claim's latest claim or advance — an older one never saw that progress (found by R3-1244's
+    // model-based tests: the model gates the whole judgement on the number).
     for (const c of this.rows<{ id: number; ticket_id: string; start_path: string; regressed_since: number | null; course_id: string | null }>(
-      `SELECT id, ticket_id, start_path, regressed_since, course_id FROM claims WHERE status = 'active' AND substr(ticket_id, 1, length(?) + 1) = ? || ':'`, repo, repo)) {
+      `SELECT id, ticket_id, start_path, regressed_since, course_id FROM claims
+       WHERE status = 'active' AND claim_observation < ? AND substr(ticket_id, 1, length(?) + 1) = ? || ':'`, observation, repo, repo)) {
       const s = seen.get(c.ticket_id);
       const g = c.course_id ? this.stations.graph(repo, c.course_id) : null;
       if (!s || !g) continue;
@@ -1092,15 +1118,16 @@ export class Claims {
   }
 
   /** R-BTN-10's test of one completed end against the head snapshot. */
-  private endShown(c: { id: number; ticket_id: string; end_reason: string; start_path: string; ended_regressed: number; course_id: string | null }, observation: number): boolean {
+  private endShown(c: { id: number; ticket_id: string; end_reason: string; start_path: string; ended_regressed: number; course_id: string | null; end_observation: number | null }, observation: number): boolean {
     const st = this.rows<{ station: string; path: string; observation: number }>('SELECT station, path, observation FROM ticket_stations WHERE ticket_id = ?', c.ticket_id)[0];
     const live = this.rows('SELECT 1 FROM tickets WHERE id = ?', c.ticket_id).length > 0;
     const g = c.course_id ? this.stations.graph(repositoryOf(c.ticket_id), c.course_id) : null;
     if (c.end_reason === 'done') {
-      if (!live) return true; // absent from a snapshot observed after the end
+      // absent from a snapshot observed after the end
+      if (!live) return (c.end_observation ?? 0) < observation;
       return !!st && st.observation >= observation && !!g && g.ends.has(st.station);
     }
-    if (!c.end_reason.startsWith('suspended:') || !st || st.observation < observation || !g) return false;
+    if (!c.end_reason.startsWith('suspended:') || (c.end_observation ?? 0) >= observation || !st || st.observation < observation || !g) return false;
     if (c.ended_regressed) return true; // git had already overruled the claim (R-BTN-71)
     return extendsPath(g, this.expectedPath(c.id, c.start_path), JSON.parse(st.path) as Step[], g.start);
   }
@@ -1122,6 +1149,7 @@ export class Claims {
    *  or at an interim status that ends the item — ends `released:stale-board`, and the holder is
    *  told. A station that lags the holder's advances is never staleness (§2e). Before cutover git
    *  decides alone and the shadow reports end claims. */
+  // @model syncPost sha256:9c323898f662
   private staleBoard(repo: string, observation: number) {
     if (!this.rows('SELECT 1 FROM repositories WHERE id = ? AND cutover_at IS NOT NULL', repo).length) return 0;
     const active = this.rows<{ id: number; ticket_id: string; worker_id: number; tier_ceiling: string; tier_ceilings: string; kind: string }>(
@@ -1152,6 +1180,8 @@ export class Claims {
 
   // ── the alarm's share (§6.6, §7.1, §9) ──────────────────────────────────────────────────
 
+  // @model alarmReap sha256:4406c2422bfd
+  // @model fenceTimeout sha256:3baeffa51d8c
   alarm() {
     const now = this.c.now();
     this.releaseBarHolders(now);

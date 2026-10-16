@@ -35,3 +35,7 @@ export function tick(): Promise<void> {
 export function reset(): Promise<void> {
   return resetStorage();
 }
+
+/** The local host records each scenario's trace (R3-1244); the two hosts run one core, so this one
+ *  records none. */
+export async function writeTrace(_testPath: string, _test: string): Promise<void> {}

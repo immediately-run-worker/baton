@@ -3,7 +3,9 @@
 // worker and ticket, which made the safety proof's input too large for Apalache.
 module liveness {
   import baton(TICKETS = Set("t1"), WORKERS = Set("w1", "w2"), SLOTS = Set(1),
-               MAX_CLAIMS = 3, GIT_BUDGET = 1, OWNER_BUDGET = 1).* from "./baton"
+               MAX_CLAIMS = 3, GIT_BUDGET = 1, OWNER_BUDGET = 1,
+               FAMILIES = Set("family:a", "family:b"), TAGS = Map("w1" -> Set("family:a"), "w2" -> Set("family:b"), "w3" -> Set("family:a")),
+               REQUIRED = Set("fix", "merge"), MAX_TIME = 12).* from "./baton"
   action linit = init
   action lstep = step
 

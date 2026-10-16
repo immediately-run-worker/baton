@@ -4,3 +4,4 @@ dist/
 .dev.vars
 _apalache-out/
 .local/
+test/.traces/
