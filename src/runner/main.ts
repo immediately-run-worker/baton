@@ -110,9 +110,13 @@ function cacheDir(): string {
 /** R-BTN-34's bounded fetch: one `git fetch origin main` in the home checkout, its failure
  * logged and swallowed — `ensureSha` re-checks and releases `stale-board` when the commit is
  * still missing, which is exactly the bound. */
+/** The fetch's bound: well under the lease's own (§6.3's 4-minute margin), so a stalled fetch
+ * can never cost the lease it was fetching for. */
+export const FETCH_TIMEOUT_MS = 20_000;
+
 export function fetchMain(home: string, log: (l: string) => void = () => {}): void {
   try {
-    execFileSync('git', ['-C', home, 'fetch', 'origin', 'main'], { stdio: 'ignore' });
+    execFileSync('git', ['-C', home, 'fetch', 'origin', 'main'], { stdio: 'ignore', timeout: FETCH_TIMEOUT_MS });
   } catch (e) {
     log(`baton: the snapshot fetch failed (${e instanceof Error ? e.message : String(e)})`);
   }
@@ -134,11 +138,15 @@ export async function runMain(argv: string[], io: { log?: (l: string) => void; f
     return file;
   });
   const log = io.log ?? ((l: string) => process.stdout.write(`${l}\n`));
+  // The runner takes exactly one course per home checkout (the claim response names no course,
+  // so several cannot be told apart at a claim): refuse at startup, loudly, not per claim.
+  const declared = declareCourses(a.home);
+  if (declared.length !== 1) throw new Error(`the home checkout runs ${declared.length} courses; baton run serves exactly one — name it in .baton/baton.json`);
   const runner = new Runner({
     api: new BatonApi({ url: a.url, transport: (req) => fetch(req), auth }, log),
     home: a.home, repository: a.repository, hostname: a.hostname, harness: a.harness, session: a.session,
     tierCeiling: a.tier, capabilities: a.capabilities,
-    courses: declareCourses(a.home),
+    courses: declareCourses(a.home), // one course per home: several are refused above
     stateFile: join(cacheDir(), `${a.session}.json`),
     beatEvery: a.beatEvery, log,
     fetch: io.fetch ?? ((home) => fetchMain(home, log)),

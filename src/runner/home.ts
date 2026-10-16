@@ -40,9 +40,12 @@ export function courseOf(home: string, sha: string): string {
     if (typeof parsed.course === 'string' && /^[a-z][a-z0-9-]{0,39}$/.test(parsed.course)) return parsed.course;
     throw new Error(`.baton/baton.json at ${sha.slice(0, 10)} names no course`);
   }
-  const listing = git(home, ['ls-tree', '--name-only', `${sha}:.baton/courses/`]).split('\n').filter((l) => l && !l.endsWith('/'));
-  if (listing.length !== 1) throw new Error(`the home repository runs ${listing.length} courses and .baton/baton.json names none: ${listing.join(', ') || '(none)'}`);
-  return listing[0].replace(/\/$/, '');
+  // The same test the startup declaration uses: a course is a directory carrying course.json
+  // (a README beside them is not a course).
+  const names = git(home, ['ls-tree', '--name-only', `${sha}:.baton/courses/`]).split('\n').filter((l) => l.endsWith('/')).map((l) => l.replace(/\/$/, ''));
+  const courses = names.filter((n) => readAt(home, sha, `.baton/courses/${n}/course.json`) != null);
+  if (courses.length !== 1) throw new Error(`the home repository runs ${courses.length} courses and .baton/baton.json names none: ${courses.join(', ') || '(none)'}`);
+  return courses[0];
 }
 
 /** A file's bytes at `sha`, or null when the snapshot does not have it. */

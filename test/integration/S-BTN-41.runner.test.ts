@@ -477,8 +477,116 @@ describe('S-BTN-41 the runner', () => {
     home.commit();
     await home.post({ 'T-1': placed('assembled', [], [['check', 'ready']]) }, undefined, { course: CHANGED });
     expect(await done).toMatchObject({ end_reason: 'released:course-changed' });
-    expect(home.evidence().some((l) => l.includes('aborted:course-changed'))).toBe(true);
+    expect(home.evidence().some((l) => l.includes('aborted:release'))).toBe(true); // §6.13's closed signal set
     expect(home.evidence().at(-1)).toMatch(/^handoff check/);
+  }, 30_000);
+
+  it('a script’s own release ends the claim, no evidence pointer on a released end', async () => {
+    home.leg('check', `return { release: 'cannot-finish:capability', reached: 'checked', next: 'merge' };`);
+    home.commit();
+    await home.post({ 'T-1': placed('built', [['build', 'built']], [['check', 'ready']]) });
+    const out = await makeRunner().runOnce();
+    expect(out).toMatchObject({ end_reason: 'released:cannot-finish:capability', reached: 'checked' });
+    expect(await rows('SELECT end_reason, status, ended_at_sha FROM claims')).toEqual([
+      { end_reason: 'released:cannot-finish:capability', status: 'released', ended_at_sha: null },
+    ]);
+    // close still wrote the marker (the position is in git) before handoff; the end carries no sha.
+    const lines = home.evidence();
+    expect(lines.indexOf('close check')).toBeLessThan(lines.indexOf('handoff check'));
+  }, 30_000);
+
+  it('the spool: transcript pointers ride the beat, activity rows post under their own call, and a dropped request loses nothing', async () => {
+    home.leg('check', `return { suspend: true, reached: 'checked' };`);
+    home.commit();
+    await home.post({ 'T-1': placed('built', [['build', 'built']], [['check', 'ready']]) });
+    const runner = makeRunner();
+    await runner.tick(); // registers the worker
+    const stateFile = join(tmpdir(), `baton-runner-${process.pid}-spool.json`);
+    rmSync(stateFile, { force: true });
+    const spooling = makeRunner({ stateFile, session: 'spool' } as Record<string, unknown>);
+    await spooling.tick();
+    // A leg session's records: two transcript pointers and an activity row (§6.8, §6.9).
+    writeFileSync(`${stateFile}.spool.jsonl`, [
+      JSON.stringify({ repo: 'immediately-run/claude-sessions', path: 'claude-code/2026-10-16-x.jsonl', role: 'subagent' }),
+      JSON.stringify({ id: 'act-1', kind: 'orient', label: 'a session orienting', source: 'skill', started_at: clock.now }),
+      JSON.stringify({ repo: 'immediately-run-worker/session-transcripts', path: 'host1/s.md', role: 'session' }),
+      'not json at all',
+    ].join('\n') + '\n');
+    await spooling.tick();
+    // No claim is held, so the pointers wait in pending_transcripts (§6.8) for the next claim.
+    expect(await rows(`SELECT repo, path FROM pending_transcripts ORDER BY rowid`)).toEqual([
+      { repo: 'immediately-run/claude-sessions', path: 'claude-code/2026-10-16-x.jsonl' },
+      { repo: 'immediately-run-worker/session-transcripts', path: 'host1/s.md' },
+    ]);
+    expect(await rows(`SELECT kind, label FROM activities`)).toEqual([{ kind: 'orient', label: 'a session orienting' }]);
+    expect(existsSync(`${stateFile}.spool.jsonl.taken`)).toBe(false); // sent: the taken file is gone
+    // A dropped request: the pointers come back to the spool for the next beat.
+    const api = (spooling as unknown as { o: { api: { broken: boolean } } }).o.api as unknown as { broken?: boolean } & { heartbeat: (b: unknown) => Promise<unknown> };
+    const realHeartbeat = api.heartbeat.bind(api);
+    let drop = true;
+    (api as unknown as { heartbeat: (b: unknown) => Promise<unknown> }).heartbeat = async (b: unknown) => {
+      if (drop) throw new Error('network down');
+      return realHeartbeat(b);
+    };
+    writeFileSync(`${stateFile}.spool.jsonl`, `${JSON.stringify({ repo: 'immediately-run/claude-sessions', path: 'claude-code/2026-10-16-y.jsonl', role: 'session' })}\n`);
+    await expect(spooling.tick()).rejects.toThrow(/network down/);
+    expect(existsSync(`${stateFile}.spool.jsonl.taken`)).toBe(false); // nothing truncated away
+    drop = false;
+    await spooling.tick();
+    expect(await rows(`SELECT path FROM pending_transcripts WHERE path LIKE '%y.jsonl' ORDER BY rowid`)).toEqual([{ path: 'claude-code/2026-10-16-y.jsonl' }]);
+  }, 30_000);
+
+  it('an orphaned claim is ended before the next claim, not held forever (rule 3)', async () => {
+    home.leg('check', `return { suspend: true, reached: 'checked' };`);
+    home.commit();
+    await home.post({ 'T-1': placed('built', [['build', 'built']], [['check', 'ready']]) });
+    // A first runner registers the worker, then dies with a claim live — the state file and
+    // the server each hold half of it, as a killed process leaves them.
+    const stateFile = join(tmpdir(), `baton-runner-${process.pid}-orphan.json`);
+    rmSync(stateFile, { force: true });
+    const first = makeRunner({ stateFile, session: 'orphan' } as Record<string, unknown>);
+    await first.tick();
+    const workerId = (await rows<{ id: number }>('SELECT id FROM workers'))[0].id;
+    await rows(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, station, start_path, course_id)
+                 VALUES ('docs:T-1', ?, 'seed:orphan', 'orphan1', '', ?, 'active', 'built', '[]', 'relay')`, workerId, clock.now);
+    const orphan = (await rows<{ id: number }>('SELECT id FROM claims'))[0].id;
+    const state = JSON.parse(readFileSync(stateFile, 'utf8')) as Record<string, unknown>;
+    state.claim = { id: orphan, ticket_id: 'docs:T-1', nonce: 'orphan1' };
+    writeFileSync(stateFile, JSON.stringify(state));
+    // The next process over that state file ends the orphan before claiming.
+    const runner = makeRunner({ stateFile, session: 'orphan' } as Record<string, unknown>);
+    // The orphan ends; the ticket becomes claimable again only after a reading follows the end
+    // (§6.7) — the next idle attempt sees it, once the board refreshes.
+    expect(await runner.runOnce()).toBeNull();
+    // The orphan's lease-lost counts as a failed attempt (§6.10): the backoff passes, then a
+    // reading makes the ticket claimable again.
+    await setClock(clock.now + 2 * 60 * 60_000);
+    await home.post({ 'T-1': placed('built', [['build', 'built']], [['check', 'ready']]) });
+    const out = await runner.runOnce();
+    expect(out).toMatchObject({ end_reason: 'suspended:checked' });
+    expect(await rows<{ id: number; end_reason: string }>('SELECT id, end_reason FROM claims ORDER BY id')).toEqual([
+      { id: orphan, end_reason: 'released:lease-lost' },
+      expect.objectContaining({ end_reason: 'suspended:checked' }),
+    ]);
+  }, 30_000);
+
+  it('a reaped worker re-keys on its next beat and carries on (R-BTN-14)', async () => {
+    home.leg('check', `return { suspend: true, reached: 'checked' };`);
+    home.commit();
+    await home.post({ 'T-1': placed('built', [['build', 'built']], [['check', 'ready']]) });
+    const runner = makeRunner();
+    await runner.tick();
+    const stateFile = (runner as unknown as { o: { stateFile: string } }).o.stateFile;
+    const before = JSON.parse(readFileSync(stateFile, 'utf8')) as { secret: string };
+    await rows(`UPDATE workers SET reaped_at = ?`, clock.now); // the alarm's verdict arrived
+    await runner.tick(); // the beat that learns it and parks the re-key
+    expect(JSON.parse(readFileSync(stateFile, 'utf8')).lease_lost).toBe(true);
+    await runner.tick(); // the beat that re-keys
+    expect(await rows(`SELECT reaped_at FROM workers`)).toEqual([{ reaped_at: null }]); // a new incarnation
+    const after = JSON.parse(readFileSync(stateFile, 'utf8')) as { secret: string; incarnation: number };
+    expect(after.secret).not.toBe(before.secret);
+    expect(after.incarnation).toBe(2);
+    expect(await runner.runOnce()).toMatchObject({ end_reason: 'suspended:checked' }); // serving again
   }, 30_000);
 
   it('a leg session never claims: the runner refuses to nest under IR_BATON_PARENT', async () => {

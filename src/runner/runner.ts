@@ -10,9 +10,10 @@
 // next safe point first.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { batonNow } from '../shared/baton.mjs';
 import { BatonApi, BatonRefusal } from './api';
 import { claimScratch, courseOf, dropCourse, ensureSha, freshSecret, loadCourse, type CourseLoad } from './home';
 import { decide, refusalKind, runNumber, shortWaitSpent, waitState } from './protocol';
@@ -91,11 +92,19 @@ export class Runner {
   private fenceToReport: number | null = null;
   /** R-BTN-77: set when a heartbeat carried an `unblocked` message, so the idle wait ends early. */
   private unblocked = false;
+  /** Bumps with every claim: an answer a beat started before the claim cannot fence it. */
+  private epoch = 0;
+  /** One beat at a time — the sidecar's answers stay ordered against the loop. */
+  private ticking = false;
+  /** R-BTN-14: a reaped worker re-keys on its next beat; the fresh secret until it lands. */
+  private rekeySecret: string | null = null;
+  /** An end Baton never answered (the network went with the lease): retried on every beat. */
+  private pendingEnd: { claimId: number; body: Record<string, unknown> } | null = null;
 
   constructor(options: RunnerOptions) {
     this.o = { beatEvery: BEAT_MS, ...options };
     this.log = options.log ?? (() => {});
-    this.now = options.now ?? Date.now;
+    this.now = options.now ?? batonNow;
     this.state = new StateFile(options.stateFile);
     if (!this.state.get().secret) this.state.set({ secret: freshSecret() });
     this.o.api.setSecret(this.state.get().secret);
@@ -117,8 +126,20 @@ export class Runner {
   }
 
   /** One heartbeat, by the timer or a test: the §11 answer drives everything local — the lease,
-   * the claim git shows, the messages and the snapshot's next legs. */
+   * the claim git shows, the messages and the snapshot's next legs. Never concurrent with
+   * another beat, so an answer always post-dates the claim state it is judged against. */
   async tick(): Promise<void> {
+    if (this.ticking) return;
+    this.ticking = true;
+    try {
+      await this.beatOnce();
+    } finally {
+      this.ticking = false;
+    }
+  }
+
+  private async beatOnce(): Promise<void> {
+    const epoch = this.epoch;
     const s = this.state.get();
     const spool = this.takeSpool();
     const body: Record<string, unknown> = {
@@ -126,23 +147,45 @@ export class Runner {
       billing: {}, capabilities: this.o.capabilities ?? ['agent-venue'], tier_ceiling: this.o.tierCeiling ?? 'critical',
       lease_timeout_s: s.lease_timeout_s ?? 900,
       courses: this.o.courses.map((c) => ({ repository: this.o.repository, course: c.course, version: c.version })),
-      ...(s.worker_id == null ? { secret_hash: await sha256Hex(s.secret) } : {}),
+      ...((s.worker_id == null || this.rekeySecret) ? { secret_hash: await sha256Hex(this.rekeySecret ?? s.secret), ...(this.rekeySecret ? { rekey: true } : {}) } : {}),
       ...(this.fenceToReport != null ? { fenced: { claim_id: this.fenceToReport, terminated: true } } : {}),
       transcripts: spool.transcripts,
     };
-    // §6.9: the spool's activity rows go up as their own call, before the beat — a failure
-    // re-appends them, so nothing a leg session recorded is lost to a dropped request.
-    if (spool.activities.length) await this.postActivities(spool.activities);
+    // §6.9: the spool's activity rows go up as their own call, before the beat; anything the
+    // calls do not land comes back to the spool, so a leg session's record is never lost.
+    let leftover: unknown[] = [...spool.overflowActivities];
+    try {
+      if (spool.activities.length) leftover = [...leftover, ...await this.postActivities(spool.activities)];
+      if (this.pendingEnd) await this.retryEnd();
+    } catch (e) {
+      appendFileSync(this.state.spool, `${[...spool.transcripts, ...leftover].map((t) => JSON.stringify(t)).join('\n')}\n`);
+      rmSync(spool.taken, { force: true }); // back in the spool; the taken copy is spent
+      throw e;
+    }
     let answer: Record<string, any>;
     try {
       answer = await this.o.api.heartbeat(body);
     } catch (e) {
+      // The transcripts never landed: back to the spool for the next beat.
+      appendFileSync(this.state.spool, `${[...spool.transcripts, ...leftover].map((t) => JSON.stringify(t)).join('\n')}\n`);
+      rmSync(spool.taken, { force: true }); // back in the spool; the taken copy is spent
       if (e instanceof BatonRefusal && ['session-taken', 'worker-reaped', 'forbidden'].includes(e.code)) {
-        // §6.3: a refused heartbeat marks the lease lost exactly as a missed timeout does.
+        // §6.3: a refused heartbeat marks the lease lost exactly as a missed timeout does; a
+        // reaped worker re-keys on the beat after (R-BTN-14).
+        if (e.code === 'worker-reaped') this.rekeySecret = freshSecret();
         this.loseLease(e.code);
         return;
       }
       throw e;
+    }
+    rmSync(spool.taken, { force: true });
+    if (this.rekeySecret) {
+      // The re-key landed: the new secret serves from here (R-BTN-14), and the new incarnation
+      // starts on a fresh lease — the old flag fenced a claim the reap already took.
+      this.state.set({ secret: this.rekeySecret, lease_lost: false, lease_lost_because: null });
+      this.o.api.setSecret(this.rekeySecret);
+      this.rekeySecret = null;
+      this.lostLease = false;
     }
     this.state.set({
       worker_id: answer.worker_id, incarnation: answer.incarnation, last_ok: this.now(),
@@ -154,7 +197,10 @@ export class Runner {
     const view = answer.claim && typeof answer.claim === 'object' ? answer.claim.git : null;
     // R-BTN-6 and §6.13: the wall clock's own verdict, or an answer that no longer lists the
     // claim, fence the runner at once — stop the leg, no hand-off.
-    if (!this.lostLease && (leaseLostFrom(this.state.get(), this.now()) || (this.inflight && answer.claim == null))) {
+    if (epoch !== this.epoch) {
+      // A claim began while this beat was out: its answer speaks for the lease it was asked
+      // about, never the one now held.
+    } else if (!this.lostLease && (leaseLostFrom(this.state.get(), this.now()) || (this.inflight && answer.claim == null))) {
       this.loseLease('lease-timeout');
     }
     if (this.inflight) {
@@ -180,6 +226,21 @@ export class Runner {
     if (!this.inflight) for (const id of this.toAck.splice(0)) await this.o.api.ack(id).catch(() => {});
   }
 
+  /** An end whose failure is never fatal: claimed-ended is the answer we wanted anyway, and a
+   * network failure parks the end for the beats to retry. */
+  private async endQuietly(claimId: number, body: Record<string, unknown>): Promise<void> {
+    try {
+      await this.o.api.end(claimId, body);
+    } catch (e) {
+      if (e instanceof BatonRefusal && e.code === 'claim-ended') return;
+      if (e instanceof BatonRefusal) {
+        this.log(`baton: the orphaned claim ${claimId} was refused (${e.message})`);
+        return;
+      }
+      this.pendingEnd = { claimId, body };
+    }
+  }
+
   private loseLease(because: string): void {
     this.lostLease = true;
     this.state.set({ lease_lost: true, lease_lost_because: because });
@@ -203,8 +264,11 @@ export class Runner {
   private signalLeg(signal: PendingAbort['signal'], reason?: string): void {
     if (!this.inflight || this.pendingAbort) return;
     this.pendingAbort = { signal, reason };
+    // The wire carries §6.13's closed reason set: a course change stops the leg the way a
+    // release does — at its next safe point — so that is the signal it gets.
     const child = this.inflight.child;
-    if (child?.process.stdin && !child.process.stdin.destroyed) child.process.stdin.write(`${JSON.stringify({ abort: signal })}\n`);
+    const wire = signal === 'course-changed' ? 'release' : signal;
+    if (child?.process.stdin && !child.process.stdin.destroyed) child.process.stdin.write(`${JSON.stringify({ abort: wire })}\n`);
   }
 
   private killGroup(child: LegChild): void {
@@ -215,17 +279,20 @@ export class Runner {
     }
   }
 
-  /** Take the spool (§6.8, §6.9): rename it aside so lines a leg session appends while this beat
-   * runs are never lost, split what was there into transcript pointers and activity rows, and
-   * drop only what is neither — loudly. Nothing is truncated before it reached Baton. */
-  private takeSpool(): { transcripts: unknown[]; activities: unknown[] } {
+  /** Take the spool (§6.8, §6.9): RENAME it aside, so lines a leg session appends while this
+   * beat is out wait in the fresh file rather than being truncated away, then split what was
+   * there into transcript pointers and activity rows. Overflow beyond a call's bound carries to
+   * the next beat; only what is neither shape is dropped, loudly. The renamed file lives until
+   * the beat landed (the caller removes it), so nothing is lost to a dropped request. */
+  private takeSpool(): { transcripts: unknown[]; activities: unknown[]; overflowActivities: unknown[]; taken: string } {
+    const taken = `${this.state.spool}.taken`;
     let text: string;
     try {
-      text = readFileSync(this.state.spool, 'utf8');
+      renameSync(this.state.spool, taken);
+      text = readFileSync(taken, 'utf8');
     } catch {
-      return { transcripts: [], activities: [] };
+      return { transcripts: [], activities: [], overflowActivities: [], taken };
     }
-    writeFileSync(this.state.spool, '');
     const transcripts: unknown[] = [];
     const activities: unknown[] = [];
     for (const line of text.split('\n')) {
@@ -239,20 +306,36 @@ export class Runner {
         this.log(`baton: a malformed spool line was dropped (${line.slice(0, 80)})`);
       }
     }
-    return { transcripts: transcripts.slice(-50), activities: activities.slice(-200) };
+    return { transcripts: transcripts.slice(-50), activities: activities.slice(0, 200), overflowActivities: activities.slice(200), taken };
   }
 
-  /** §6.9: activity rows go up under their own call; a failure re-appends them to the spool so
-   * the next beat carries them again — a refused row is the server's word, not a loss. */
-  private async postActivities(activities: unknown[]): Promise<void> {
+  /** §6.9: activity rows go up under their own call. Returns what must carry to the next beat —
+   * a transport failure's whole batch; a refused row is the server's word and is only logged. */
+  private async postActivities(activities: unknown[]): Promise<unknown[]> {
     try {
       const res = await this.o.api.activities(activities);
       for (const refused of (res.refused ?? []) as { id?: string; message?: string }[]) {
         this.log(`baton: an activity was refused (${refused.id ?? '?'}: ${refused.message ?? '?'})`);
       }
+      return [];
     } catch (e) {
       this.log(`baton: the activities call failed (${msg(e)}) — kept for the next beat`);
-      appendFileSync(this.state.spool, `${activities.map((a) => JSON.stringify(a)).join('\n')}\n`);
+      return activities;
+    }
+  }
+
+  /** The end a dropped request never landed: retried on every beat until Baton answers (§6.5's
+   * own resumable state — the claim is `in-review`'s sibling, ended in spirit, pending on the
+   * wire). */
+  private async retryEnd(): Promise<void> {
+    const pending = this.pendingEnd;
+    if (!pending) return;
+    try {
+      await this.o.api.end(pending.claimId, pending.body);
+      this.pendingEnd = null;
+    } catch (e) {
+      if (e instanceof BatonRefusal && e.code === 'claim-ended') this.pendingEnd = null;
+      else this.log(`baton: retrying the end Baton never answered (${msg(e)})`);
     }
   }
 
@@ -285,6 +368,15 @@ export class Runner {
   async runOnce(): Promise<ClaimOutcome | null> {
     // The worker must exist before it can claim (§5): one heartbeat registers it.
     if (this.state.get().worker_id == null) await this.tick();
+    // A claim the state file still names with nothing in flight is an orphan — a restart, or an
+    // end the network ate. It is ended (its resume record already says why) rather than held:
+    // Baton would refuse every claim of this worker otherwise (rule 3, one claim per worker).
+    const orphan = this.state.get().claim;
+    if (orphan && !this.inflight) {
+      this.log(`baton: ending the orphaned claim ${orphan.id} on ${orphan.ticket_id} before claiming`);
+      this.state.set({ claim: null });
+      await this.endQuietly(orphan.id, { end_reason: 'released:lease-lost', next: null });
+    }
     // R-BTN-72: it recommends, then claims — the first recommendation is what a claim without
     // an id would take anyway, asked for here so the runner knows what it is going for.
     let wanted: string | undefined;
@@ -300,9 +392,23 @@ export class Runner {
     try {
       claim = await this.o.api.claim({ request_id: `run-${randomBytes(8).toString('hex')}`, ...(wanted ? { ticket_id: wanted } : {}) });
     } catch (e) {
-      if (e instanceof BatonRefusal && (e.code === 'no-eligible-ticket' || e.code === 'not-eligible')) return null;
+      if (e instanceof BatonRefusal && e.code === 'no-eligible-ticket') return null;
+      if (e instanceof BatonRefusal && e.code === 'not-eligible' && e.ruleCode === 'claimed') {
+        // The worker still holds a claim Baton knows and this runner does not (its state was
+        // lost with the container): the heartbeat's claim view named it, so end it loudly
+        // rather than idling on the refusal forever.
+        const held = this.state.get().claim;
+        this.log(`baton: the claim was refused — this worker still holds ${held ? `claim ${held.id}` : 'a claim'} (rule 3)`);
+        if (held) {
+          this.state.set({ claim: null });
+          await this.endQuietly(held.id, { end_reason: 'released:lease-lost', next: null });
+        }
+        return null;
+      }
+      if (e instanceof BatonRefusal && e.code === 'not-eligible') return null;
       throw e;
     }
+    this.epoch++;
     const ticket = claim.ticket_id as string;
     const claimId = claim.claim_id as number;
     this.state.set({ claim: { id: claimId, ticket_id: ticket, nonce: claim.nonce } });
@@ -317,12 +423,12 @@ export class Runner {
     try {
       // R-BTN-34: the snapshot must be in the home checkout — one fetch, else stale-board.
       if (!ensureSha(this.o.home, claim.snapshot_sha, () => this.o.fetch?.(this.o.home))) {
-        return await this.finish(claimId, { end_reason: 'released:stale-board', reached: claim.station }, null);
+        return await this.finish(claimId, { end_reason: 'released:stale-board', reached: claim.station, ...(claim.legs?.[0] ? { next: claim.legs[0] } : {}) }, null);
       }
       course = loadCourse(this.o.home, claim.snapshot_sha, courseOf(this.o.home, claim.snapshot_sha));
     } catch (e) {
       this.log(`baton: the claim's course would not load (${msg(e)})`);
-      return await this.finish(claimId, { end_reason: 'released:stale-board', reached: claim.station }, null);
+      return await this.finish(claimId, { end_reason: 'released:stale-board', reached: claim.station, ...(claim.legs?.[0] ? { next: claim.legs[0] } : {}) }, null);
     }
     const scratch = claimScratch();
     this.inflight = { claimId, ticket, course, child: null, waiters: [] };
@@ -445,7 +551,8 @@ export class Runner {
         }
         if (verdict.kind === 'suspend' || verdict.kind === 'release') {
           const reason = verdict.kind === 'suspend' ? `suspended:${verdict.reached}` : `released:${verdict.reason}`;
-          return await this.finish(claimId, { end_reason: reason, reached: verdict.reached, next: verdict.next, ...(closed ? { ended_at_sha: closed } : {}) }, await this.callHandoff(script, ctx));
+          // §6.5: only a completed end points at its evidence — a released end carries none.
+          return await this.finish(claimId, { end_reason: reason, reached: verdict.reached, next: verdict.next, ...(verdict.kind === 'suspend' && closed ? { ended_at_sha: closed } : {}) }, await this.callHandoff(script, ctx));
         }
         // The go-on decision: the advance carries the result's bars on the edge (R-BTN-63) and
         // the evidence `close` wrote; it finishes this leg and starts the next. The finished leg
@@ -589,7 +696,9 @@ export class Runner {
     }
   }
 
-  /** End the claim, clear the local claim state, and ack what the sidecar delivered. */
+  /** End the claim, clear the local claim state, and ack what the sidecar delivered. The local
+   * flags clear whatever the wire said — a lost lease belongs to the claim that lost it — and an
+   * end the network ate is parked and retried on every beat until Baton answers. */
   private async finish(claimId: number, body: Record<string, unknown>, handoff: string | null): Promise<ClaimOutcome> {
     const ticket = this.state.get().claim?.ticket_id ?? this.inflight?.ticket ?? '';
     try {
@@ -598,14 +707,17 @@ export class Runner {
       if (e instanceof BatonRefusal && e.code === 'claim-ended') {
         // Baton already ended it (a stale-board release under a sync, §6.5) — its end stands.
         this.log(`baton: ${ticket} was already ended (${e.message})`);
-      } else {
+      } else if (e instanceof BatonRefusal) {
         throw e;
+      } else {
+        this.log(`baton: the end of ${ticket} did not reach Baton (${msg(e)}) — retried on every beat`);
+        this.pendingEnd = { claimId, body };
       }
     }
     for (const id of this.toAck.splice(0)) await this.o.api.ack(id).catch(() => {});
     this.state.set({ claim: null });
     // The lost lease belonged to that claim (R-BTN-6): a fresh claim starts on a fresh lease,
-    // so the flag never outlives the claim it fenced.
+    // so the flag never outlives the claim it fenced — cleared here, not only on success.
     this.lostLease = false;
     this.state.set({ lease_lost: false, lease_lost_because: null });
     this.closedDone = false;

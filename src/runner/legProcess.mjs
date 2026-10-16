@@ -7,10 +7,12 @@
 //
 // reads the serialisable half of `ctx`, imports the leg script fresh (a new process, so a course
 // change between claims needs no restart — the runner extracts the snapshot's file per claim),
-// calls its `run(ctx)` with an AbortSignal the parent fires over stdin
-// (`{"abort":"release"|"regressed"}` — `lease-lost` is a SIGKILL, not a message), and writes
-// `{ok: true, result} | {ok: false, error, aborted}` to the result file. `handoff` and `close`
-// run in the runner's process — they are quick git writes — so nothing here reads them.
+// calls its `run(ctx)` (a default export per §6.13, or a named one) with an AbortSignal the
+// parent fires over stdin — `release` or `regressed`, §6.13's closed reason set (a course change
+// stops the leg the way a release does, so it arrives as `release`; `lease-lost` is a SIGKILL,
+// not a message) — and writes `{ok: true, result} | {ok: false, error, aborted}` to the result
+// file. `handoff` and `close` run in the runner's process — quick git writes — so nothing here
+// reads them.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 
