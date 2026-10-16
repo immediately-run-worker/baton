@@ -50,6 +50,12 @@ const ACTIVITY_ID = /^[A-Za-z0-9._:-]{1,64}$/;
 /** §6.8: a transcript path — no `..` segment is checked separately. */
 const TRANSCRIPT_PATH = /^[A-Za-z0-9._/-]{1,256}$/;
 
+/** R-BTN-60: a tag — a short course-defined string (`family:glm`, `model:opencode-go/qwen3.8-max`)
+ *  core compares and never reads; the same form wherever one is posted, declared or barred. */
+export const TAG = /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,127}$/;
+/** Tags one heartbeat declares, or one advance bars (spec-silent, recorded on R3-1232). */
+export const TAGS_MAX = 64;
+
 export const ACTIVITY_KINDS = ['orient', 'implement', 'local-verify', 'open-pr', 'push', 'ci-wait', 'review-round', 'reviewer',
   'fix-findings', 'adjudicate', 'merge', 'reconcile', 'status-write', 'decision-packet', 'other'] as const;
 export const OUTCOMES = ['succeeded', 'failed', 'cancelled', 'abandoned'] as const;
@@ -86,6 +92,8 @@ export interface Heartbeat {
   model_provider_id?: string;
   billing: Record<string, string>;
   capabilities: string[];
+  /** R-BTN-60: course-defined strings the tag gate matches. */
+  tags: string[];
   tier_ceiling: (typeof TIERS)[number];
   /** Per repository (R-BTN-66): `{repository: tier}`, checked against each ladder at the heartbeat. */
   tier_ceilings: Record<string, string>;
@@ -125,6 +133,9 @@ export function checkHeartbeat(body: unknown, transcriptRepos: string[]): Heartb
   }
   if (!Array.isArray(b.capabilities) || !b.capabilities.every((c) => typeof c === 'string' && NAME.test(c))) bad('capabilities', 'must be a list of capability or role names');
   const capabilities = [...new Set(b.capabilities as string[])];
+  const rawTags = b.tags ?? [];
+  if (!Array.isArray(rawTags) || rawTags.length > TAGS_MAX || !rawTags.every((t) => typeof t === 'string' && TAG.test(t))) bad('tags', `must be a list of at most ${TAGS_MAX} tags`);
+  const tags = [...new Set(rawTags as string[])];
   const tier = b.tier_ceiling ?? 'critical'; // absent ⇒ every tier (§5)
   if (!TIERS.includes(tier as never)) bad('tier_ceiling', `must be one of ${TIERS.join(', ')}`);
   // R-BTN-22: the skills version is each course's version, declared per course; a sidecar that
@@ -161,6 +172,7 @@ export function checkHeartbeat(body: unknown, transcriptRepos: string[]): Heartb
     model_provider_id,
     billing,
     capabilities,
+    tags,
     tier_ceiling: tier as Heartbeat['tier_ceiling'],
     tier_ceilings: checkTierCeilings(b.tier_ceilings),
     lease_timeout_s: clampLease(b.lease_timeout_s),
@@ -390,8 +402,7 @@ const REQUEST_ID = /^[A-Za-z0-9._:-]{8,128}$/;
 export const GIT_SHA = /^[0-9a-f]{40}$/;
 /** §6.5: the `released:` reasons, exactly. */
 export const RELEASE_END_REASONS = ['stale-board', 'cannot-finish:transient', 'cannot-finish:capability', 'cannot-finish:spec',
-  'lease-lost', 'requested', 'owner-cancel', 'provider-suspended', 'awaiting-review-capacity'] as const;
-const BUFFER = /^[a-z][a-z0-9-]{0,63}$/;
+  'lease-lost', 'requested', 'owner-cancel', 'provider-suspended', 'provider-exhausted', 'course-changed'] as const;
 
 export function checkClaim(body: unknown): { request_id: string; ticket_id: string | null } {
   if (!isObj(body)) bad('body', 'must be a JSON object');
@@ -402,25 +413,79 @@ export function checkClaim(body: unknown): { request_id: string; ticket_id: stri
   };
 }
 
-/** §6.5's closed vocabulary; a `completed` end carries the git commit it pushed (R-BTN-8). */
-export function checkEnd(body: unknown): { end_reason: string; status: 'completed' | 'released'; ended_at_sha: string | null } {
+/** A URL a worker or sync points at (a hand-off comment, a review): https, at most 1000
+ *  characters, no whitespace or control character. Shown as text and linked only through
+ *  `httpsLink` (§10.4). */
+export const isHttpsPointer = (v: unknown): v is string =>
+  typeof v === 'string' && v.length <= 1000 && v.startsWith('https://') && !/[\s\u0000-\u001f\u007f]/.test(v);
+/** An evidence pointer (R-BTN-8): a commit sha, or the URL of the comment or review that ended
+ *  the leg. */
+const isPointer = (v: unknown) => typeof v === 'string' && (GIT_SHA.test(v) || isHttpsPointer(v));
+
+export interface End {
+  end_reason: string;
+  status: 'completed' | 'released';
+  /** `suspended:<station>`'s station. */
+  suspended_at: string | null;
+  reached: string | null;
+  next: string | null;
+  detail: string | null;
+  ended_at_sha: string | null;
+}
+
+/** §6.5's ends: `done`, `suspended:<station>` and `released:<reason>`, each with an optional
+ *  course-defined `detail` (§10.4 free text core stores and shows but never reads); `reached`, the
+ *  station the claim rests at (R-BTN-71); `next`, the queued leg (R-BTN-83); and an optional
+ *  pointer to the evidence, pushed first (R-BTN-8). */
+export function checkEnd(body: unknown): End {
   if (!isObj(body)) bad('body', 'must be a JSON object');
   const b = body as Record<string, unknown>;
   const r = b.end_reason;
   if (typeof r !== 'string') bad('end_reason', 'must be a string');
   const reason = r as string;
   let status: 'completed' | 'released';
-  if (reason === 'done' || (reason.startsWith('handed-off:') && BUFFER.test(reason.slice(11))) || (reason.startsWith('remainder:') && LOCAL_ID.test(reason.slice(10)))) {
+  let suspended_at: string | null = null;
+  if (reason === 'done') {
     status = 'completed';
+  } else if (reason.startsWith('suspended:') && COURSE_ID.test(reason.slice(10))) {
+    status = 'completed';
+    suspended_at = reason.slice(10);
   } else if (reason.startsWith('released:') && RELEASE_END_REASONS.includes(reason.slice(9) as never)) {
     status = 'released';
   } else {
-    bad('end_reason', 'must be done, handed-off:<buffer>, remainder:<id> or released:<a §6.5 reason>');
+    bad('end_reason', 'must be done, suspended:<station> or released:<a §6.5 reason>');
   }
-  const sha = optional(b.ended_at_sha, matches(GIT_SHA, 'ended_at_sha')) ?? null;
-  if (status! === 'completed' && !sha) bad('ended_at_sha', 'a completed end names the commit that pushed it (R-BTN-8)');
-  if (status! === 'released' && sha) bad('ended_at_sha', 'only a completed end names a commit');
-  return { end_reason: reason, status: status!, ended_at_sha: sha };
+  const reached = optional(b.reached, matches(COURSE_ID, 'reached')) ?? null;
+  if (suspended_at && reached && reached !== suspended_at) bad('reached', `a suspended:${suspended_at} end rests at ${suspended_at}`);
+  const next = optional(b.next, matches(COURSE_ID, 'next')) ?? null;
+  const detail = b.detail === undefined || b.detail === null ? null : isFreeText(b.detail, 200) ? (b.detail as string) : bad('detail', 'must be §10.4 free text of at most 200 characters');
+  const ptr = b.ended_at_sha;
+  if (ptr !== undefined && ptr !== null && !isPointer(ptr)) bad('ended_at_sha', 'must be a commit sha or an https URL of at most 1000 characters');
+  const sha = (ptr as string | undefined | null) ?? null;
+  if (status! === 'released' && sha) bad('ended_at_sha', 'only a completed end points at its evidence');
+  return { end_reason: reason, status: status!, suspended_at, reached: reached ?? suspended_at, next, detail, ended_at_sha: sha };
+}
+
+export interface Advance {
+  leg: string;
+  reached: string | null;
+  evidence: string | null;
+  bars: string[];
+}
+
+/** `POST /v1/runner/claims/{id}/advance` (R-BTN-63, §11): the leg to start; `reached`, the
+ *  outcome the running leg reached; a pointer to its evidence; the tags the holder bars from the
+ *  new leg. `course` is opaque data for the course's hook (R3-1236): accepted, bounded, unread. */
+export function checkAdvance(body: unknown): Advance {
+  if (!isObj(body)) bad('body', 'must be a JSON object');
+  const b = body as Record<string, unknown>;
+  const leg = matches(COURSE_ID, 'leg')(b.leg);
+  const reached = optional(b.reached, matches(COURSE_ID, 'reached')) ?? null;
+  const evidence = b.evidence === undefined || b.evidence === null ? null : isPointer(b.evidence) ? (b.evidence as string) : bad('evidence', 'must be a commit sha or an https URL of at most 1000 characters');
+  const raw = b.bars ?? [];
+  if (!Array.isArray(raw) || raw.length > TAGS_MAX || !raw.every((t) => typeof t === 'string' && TAG.test(t))) bad('bars', `must be a list of at most ${TAGS_MAX} tags`);
+  if (b.course !== undefined && JSON.stringify(b.course).length > 4096) bad('course', 'must be at most 4 KB');
+  return { leg, reached, evidence, bars: [...new Set(raw as string[])] };
 }
 
 /** §6.7: the sync's confirmations, `[{claim_id, sha}]`. */

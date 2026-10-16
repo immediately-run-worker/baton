@@ -4,7 +4,7 @@
 // it reuses (G-BTN-33: built from the claims' activities). The client half — reusing the
 // branch and PR — is R3-1219's.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { claimItem, cutover, endClaim, hbBody, payload, register, rows, setClock, syncCall, workerCall } from '../helpers';
+import { claimItem, cutover, endClaim, hbBody, payload, refresh, register, rows, setClock, syncCall, workerCall } from '../helpers';
 
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');
@@ -41,24 +41,28 @@ describe('S-BTN-5 retried item (server)', () => {
     await endClaim('vm-a', workers[0].secret, first.claim_id, { end_reason: 'released:cannot-finish:transient' });
     expect(await rows(`SELECT retry_after FROM ticket_overrides WHERE ticket_id = 'docs:R3-9001'`)).toEqual([{ retry_after: T0 + H }]);
 
+    // §6.7: claimable again only after a sync observed after the end.
+    await refresh();
     const second = await attempt(1, T0 + H);
     expect(second.previous_attempts.map((p: { claim_id: number }) => p.claim_id)).toEqual([first.claim_id]);
     await work(1, second.claim_id, T0 + H, 2);
     await endClaim('vm-b', workers[1].secret, second.claim_id, { end_reason: 'released:cannot-finish:transient' });
     expect(await rows(`SELECT retry_after FROM ticket_overrides WHERE ticket_id = 'docs:R3-9001'`)).toEqual([{ retry_after: T0 + 5 * H }]);
 
+    await refresh();
     // Still backing off one millisecond before; claimable at 4 h.
     await setClock(T0 + 5 * H - 1);
     expect((await claimItem('test', workers[2].secret, { ticket_id: 'docs:R3-9001' })).json).toMatchObject({ code: 'backing-off', rule: 10 });
     const third = await attempt(2, T0 + 5 * H);
     expect(third.previous_attempts).toEqual([second.claim_id, first.claim_id].map((id, k) => ({
-      claim_id: id, status: 'released', end_reason: 'released:cannot-finish:transient', ended_at: [T0 + H, T0][k],
+      claim_id: id, status: 'released', end_reason: 'released:cannot-finish:transient', detail: null, ended_at: [T0 + H, T0][k], legs: [],
       resume: {
         end_reason: 'released:cannot-finish:transient', ended_at: [T0 + H, T0][k],
         branches: ['claude/r3-9001-fixture'], prs: [PR],
         review_rounds: [{ seq: [2, 1][k], findings: 3, blocking: 1, should_fix: null, nit: null, outcome: 'abandoned' }],
         last_activity: { kind: 'review-round', label: null, outcome: 'abandoned', started_at: [T0 + H, T0][k] + 4, ended_at: [T0 + H, T0][k] },
         transcripts: [],
+        detail: null, reached: 'filed', next: null, legs: [],
       },
     })));
   });

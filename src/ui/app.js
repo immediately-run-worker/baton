@@ -332,6 +332,27 @@ function renderNeeds() {
     const what = w.course_id == null ? 'declares no course' : `${w.repository_id}:${w.course_id} version ${w.version}, below its minimum ${w.min_worker_version}`;
     list.append(el('li', { text: `${w.hostname} · ${w.session_name}: ${what} — restart it from a pulled checkout` }));
   }
+  // §2e: git has shown a claim's path going backwards for 30 minutes; the holder re-reads git.
+  for (const c of n.regressed ?? []) {
+    let at = '?';
+    try {
+      const path = JSON.parse(c.path ?? '[]');
+      at = path.length ? path.at(-1).reached : 'its start';
+    } catch {
+      // shown without it
+    }
+    list.append(el('li', { text: `${c.ticket_id}: git has it back at ${at} since ${fmtTime(c.regressed_since)}, while worker #${c.worker_id} holds it` }));
+  }
+  // R-BTN-63: the holder barred tags from a leg that the sync's reading of git does not bar.
+  for (const b of n.bars_mismatch ?? []) {
+    let d = {};
+    try {
+      d = JSON.parse(b.detail_json);
+    } catch {
+      // shown without it
+    }
+    list.append(el('li', { text: `${b.ticket_id}: the holder barred ${(d.declared_only ?? []).join(', ')} from ${d.leg ?? 'a leg'}, which the sync does not; the sync's reading binds` }));
+  }
   // R-BTN-69: a refused course file; the one in force stays until a passing one is posted.
   for (const c of n.courses_refused ?? []) {
     const first = c.violations[0];

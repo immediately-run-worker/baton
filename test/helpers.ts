@@ -59,6 +59,21 @@ export async function syncCall(path: string, body?: unknown, token?: string) {
   return send(path, body);
 }
 
+/** The ticket ids a worker is recommended, in order (R-BTN-45, R-BTN-61): what a claim without
+ *  an id would take first. */
+export function recommended(workerId: number, limit = 100): Promise<string[]> {
+  return withCore((o) => (o.claims as unknown as { recommendations: (id: number, limit: number) => { recommendations: { ticket_id: string }[] } })
+    .recommendations(workerId, limit).recommendations.map((r) => r.ticket_id));
+}
+
+/** A refresh (§7.1 step 4): docs' head re-posted with a fresh observation, so a reading follows
+ *  every end — a ticket is claimable again only after one (§6.7). Returns the post's JSON. */
+export async function refresh(extra: Record<string, unknown> = {}) {
+  const { sha } = (await (await syncCall('/v1/sync/head')).json()) as { sha: string };
+  const res = await syncCall('/v1/sync/board', { sha, parent_sha: sha, state: { items: [] }, ready: [], ...extra });
+  return (await res.json()) as Record<string, any>;
+}
+
 /** `POST /v1/sync/observation` as a repository's sync (R-BTN-62): its JSON and status. */
 export async function observe(token?: string) {
   const res = await call('/v1/sync/observation', { method: 'POST', headers: { Authorization: `Bearer ${token ?? (await syncToken())}`, 'Content-Type': 'application/json' }, body: '{}' });
@@ -240,4 +255,78 @@ export async function webhookCall(event: string, payload: unknown, { id = reques
 /** The core's armed alarm (§3), as its scheduler reports it. */
 export function armedAt() {
   return withCore((c) => (c as unknown as { ports: { scheduler: { get(): Promise<number | null> } } }).ports.scheduler.get());
+}
+
+// ── stations and legs (R3-1232) ───────────────────────────────────────────────────────────
+
+/** A ticket of §7.1's normative post. */
+export function ticket(id: string, over: Record<string, unknown> = {}) {
+  return { id, course_id: 'roadmap-pr', path: `content/roadmap/${id}.mdx`, title: `${id} — a fixture ticket`, tier: 'routine', requires: [],
+    operator_only: false, expedite: false, depends_on: [], blocked_by: [], repos: ['immediately-run/docs'], rank: 0, ...over };
+}
+
+type NextLeg = [string, 'ready' | 'waiting'] | [string, 'waiting', string];
+/** Where a sync places a ticket (R-BTN-70): its station, its path as [leg, reached] pairs, its
+ *  next legs as [leg, state, waiting_on?]; the queued leg is the first ready one unless given. */
+export function placed(station: string, path: [string, string][], next: NextLeg[], over: Record<string, unknown> = {}) {
+  return {
+    station, path: path.map(([leg, reached]) => ({ leg, reached })),
+    next_leg: next.find((n) => n[1] === 'ready')?.[0] ?? next[0]?.[0] ?? null, next_source: 'marker',
+    next: next.map(([leg, state, waiting_on]) => ({ leg, state, ...(waiting_on ? { waiting_on } : {}) })), bars: {}, ...over,
+  };
+}
+
+/** A repository's git as its sync reports it, in the normative shape (§7.1): each `post` is a new
+ *  head over the last, each `refresh` the same head again, both with a fresh observation. */
+export class Git {
+  private n = 0;
+  head: string | null = null;
+  readonly tickets = new Map<string, Record<string, unknown>>();
+  readonly stations: Record<string, unknown> = {};
+  private closed: { id: string; as: 'done' | 'withdrawn' }[] = [];
+  registry: unknown[] = [course()];
+  constructor(private readonly token?: string) {}
+
+  add(id: string, over: Record<string, unknown> = {}, station: unknown = placed('filed', [], [['implement', 'ready']])) {
+    this.tickets.set(id, ticket(id, over));
+    this.stations[id] = station;
+    return this;
+  }
+  place(id: string, station: unknown) {
+    this.stations[id] = station;
+    return this;
+  }
+  close(id: string, as: 'done' | 'withdrawn') {
+    this.tickets.delete(id);
+    delete this.stations[id];
+    this.closed.push({ id, as });
+    return this;
+  }
+  body(sha: string, parent: string | null, extra: Record<string, unknown> = {}) {
+    return { registry: this.registry, sha, parent_sha: parent, tickets: [...this.tickets.values()], closed: this.closed, stations: this.stations, ...extra };
+  }
+  /** A new head; the response's JSON (with its status). */
+  async post(extra: Record<string, unknown> = {}) {
+    const sha = (++this.n).toString(16).padStart(40, '0');
+    const res = await syncCall('/v1/sync/board', this.body(sha, this.head, extra), this.token);
+    const json = (await res.json()) as Record<string, any>;
+    if (res.status === 200) {
+      this.head = sha;
+      this.closed = [];
+    }
+    return { status: res.status, ...json };
+  }
+  /** A refresh of the head: its tickets unchanged, its stations and closures replaced. */
+  async refresh(extra: Record<string, unknown> = {}) {
+    const res = await syncCall('/v1/sync/board', this.body(this.head!, this.head, extra), this.token);
+    const json = (await res.json()) as Record<string, any>;
+    if (res.status === 200) this.closed = [];
+    return { status: res.status, ...json };
+  }
+}
+
+/** `POST /v1/runner/claims/{id}/advance`. */
+export async function advance(cred: keyof typeof TOKENS, secret: string, claimId: number, body: Record<string, unknown>) {
+  const res = await workerCall(`/v1/runner/claims/${claimId}/advance`, { cred, secret, body });
+  return { status: res.status, json: (await res.json()) as Record<string, any> };
 }

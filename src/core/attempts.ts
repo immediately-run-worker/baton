@@ -1,20 +1,19 @@
-// attempts.ts — the retry policy (BATON_SPEC §6.10 R-BTN-23, §7.4's review-capacity loop;
-// R3-1217). Pure: Claims reads the rows and applies the answer.
+// attempts.ts — the retry policy (BATON_SPEC §6.10 R-BTN-23; R3-1217). Pure: Claims reads the rows
+// and applies the answer.
 
 export const HOUR = 3_600_000;
 /** R-BTN-23: the backoff after the first and the second failed attempt. */
 export const BACKOFF_MS = [1 * HOUR, 4 * HOUR] as const;
 /** R-BTN-23: the failed attempt that holds the item `attempts-exhausted`. */
 export const ATTEMPTS_HOLD_AT = 3;
-/** §7.4: consecutive `awaiting-review-capacity` releases that hold the item `review-capacity`. */
-export const REVIEW_CAPACITY_LOOPS = 3;
 
 /**
  * §6.10: whether an end counts as a failed attempt. A reap by the alarm for silence, any
  * `cannot-finish`, and `lease-lost` once per distinct worker (`leaseLostBefore`: this worker
  * already has a counted lease-lost on the item since the last hold-lift). Nothing else — not an
  * owner's force-reap, the unacknowledged-release reap, a legacy reap, nor stale-board,
- * requested, owner-cancel, provider-suspended, awaiting-review-capacity or any completion.
+ * requested, owner-cancel, provider-suspended, provider-exhausted, course-changed or any
+ * completion, suspensions included.
  */
 export function countsAsFailed(endReason: string, leaseLostBefore = false): boolean {
   if (endReason === 'reaped:silent') return true;
@@ -35,17 +34,6 @@ export function afterFailure(count: number): { hold: 'attempts-exhausted' } | { 
   if (count >= ATTEMPTS_HOLD_AT) return { hold: 'attempts-exhausted' };
   if (count >= 1) return { retryAfterMs: BACKOFF_MS[count - 1] };
   return null;
-}
-
-/** §7.4: the length of the run of `awaiting-review-capacity` ends at the head of `endsNewestFirst`
- *  (the item's ends since the last hold-lift) — "consecutive" means no other end between. */
-export function reviewCapacityRun(endsNewestFirst: string[]): number {
-  let n = 0;
-  for (const r of endsNewestFirst) {
-    if (r !== 'released:awaiting-review-capacity') break;
-    n++;
-  }
-  return n;
 }
 
 export interface ResumeActivity {

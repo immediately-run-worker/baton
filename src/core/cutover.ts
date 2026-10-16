@@ -29,9 +29,12 @@ export function importLegacyClaim(sql: Store, now: number,
             VALUES ('legacy', ?, ?, 'legacy', 'claude-code', 'legacy', 'critical', 0, '', ?, ?)`, session, randomHex(32), now, now);
   const workerId = sql.exec('SELECT last_insert_rowid() AS id').one().id as number;
   // R-BTN-62: the counter's value now, as for any claim.
-  sql.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, reap_after, claim_observation)
-            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, COALESCE((SELECT last_handed_out FROM board_head WHERE repository_id = ?), 0))`,
-    o.item, workerId, o.requestId, o.nonce, o.sha, o.claimedAt, o.claimedAt + LEGACY_REAP_MS, repositoryOf(o.item));
+  // §4: a legacy claim starts at the station the sync posts for its ticket at the import.
+  sql.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, reap_after, claim_observation, station, start_path, course_id)
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, COALESCE((SELECT last_handed_out FROM board_head WHERE repository_id = ?), 0),
+                    COALESCE((SELECT station FROM ticket_stations WHERE ticket_id = ?), ''), COALESCE((SELECT path FROM ticket_stations WHERE ticket_id = ?), '[]'),
+                    (SELECT course_id FROM tickets WHERE id = ?))`,
+    o.item, workerId, o.requestId, o.nonce, o.sha, o.claimedAt, o.claimedAt + LEGACY_REAP_MS, repositoryOf(o.item), o.item, o.item, o.item);
   const claimId = sql.exec('SELECT last_insert_rowid() AS id').one().id as number;
   logEvent(sql, now, 'claimed', 'baton', { legacy: true, session, ...(o.detail ?? {}) }, o.item, claimId);
   return { claimId, session };

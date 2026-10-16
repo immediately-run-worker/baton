@@ -7,7 +7,8 @@
 // request's key, signature, clock and nonce, which only the core can check (verifySigned).
 import { MIGRATIONS } from '../migrations';
 import { BatonError, errorResponse, json } from './http';
-import { checkPayload, inPeak, nextPeakChange, rowFor, rowHash, type BoardPayload } from './board';
+import { checkPayload, DEFAULT_COURSE, inPeak, nextPeakChange, rowFor, rowForTicket, rowHash, stationOf, type BoardPayload, type PostedStation } from './board';
+import { Stations, type Seen } from './stations';
 import { priceFor } from '../shared/sessionUsage.mjs';
 import { familyOf } from '../shared/baton.mjs';
 import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
@@ -39,6 +40,7 @@ export class BatonCore {
   readonly courses: Courses;
   readonly observations: Observations;
   readonly webhooks: Webhooks;
+  readonly stations: Stations;
   readonly store: Store;
   /** §12: workflows to dispatch once the current request or alarm has committed, one per
    *  repository and kind. */
@@ -60,10 +62,12 @@ export class BatonCore {
     this.observations = new Observations({ store, now: () => this.now() });
     this.webhooks = new Webhooks({ store, now: () => this.now() });
     const want = (wf: Workflow) => this.pendingDispatch.set(`${wf.repository}:${wf.kind}`, wf);
-    this.claims = new Claims({ store, now: () => this.now(), dispatch: (kind, ticketId) => want({ repository: repositoryOf(ticketId), kind }) });
+    this.stations = new Stations({ store, now: () => this.now() });
+    this.claims = new Claims({ store, now: () => this.now(), stations: this.stations, dispatch: (kind, ticketId) => want({ repository: repositoryOf(ticketId), kind }) });
     this.cutover = new Cutover({ store, now: () => this.now() });
     this.mirror = new Mirror({ store, now: () => this.now() });
-    this.workers = new WorkerApi({ store, config: ports.config, now: () => this.now(), fenced: (w, inc, id) => this.claims.fenced(w, inc, id) });
+    this.workers = new WorkerApi({ store, config: ports.config, now: () => this.now(), fenced: (w, inc, id) => this.claims.fenced(w, inc, id),
+      claimView: (id) => this.claims.holderView(id) });
   }
 
   /** Before the first request (§3): every migration applied — the core refuses to serve until
@@ -355,6 +359,18 @@ export class BatonCore {
         return json(tx(() => this.claims.claim(workerId, body)));
       }
       if (m === 'GET' && p === '/v1/runner/next') return json(this.claims.next(workerId));
+      if (m === 'GET' && p === '/v1/runner/recommendations') {
+        // §11: `?limit=`, default 10, applied after the merge (R-BTN-61).
+        const raw = url.searchParams.get('limit');
+        const limit = raw == null ? 10 : Number(raw);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 50) throw new BatonError('invalid-params', 'limit: must be an integer from 1 to 50');
+        return json(this.claims.recommendations(workerId, limit));
+      }
+      const advance = /^\/v1\/runner\/claims\/(\d+)\/advance$/.exec(p);
+      if (m === 'POST' && advance) {
+        const body = await readJson(req);
+        return json(tx(() => this.claims.advance(workerId, Number(advance[1]), body)));
+      }
       if (m === 'POST' && p === '/v1/runner/adopt') {
         const body = await readJson(req);
         return json(tx(() => this.cutover.adopt(workerId, body)));
@@ -468,6 +484,17 @@ export class BatonCore {
    * schema's "written once" and "the first force post" describe that one hold.
    */
   async board(repo: Repository, p: BoardPayload) {
+    // Course graphs are read per post: a registry applied, or a post refused after applying one,
+    // must not leave another request reading a graph that is not in force.
+    this.stations.reset();
+    try {
+      return await this.boardPost(repo, p);
+    } finally {
+      this.stations.reset();
+    }
+  }
+
+  private async boardPost(repo: Repository, p: BoardPayload) {
     const r = repo.id;
     // R-BTN-62: the post's number is used first, whatever becomes of the post; an older reading
     // than the last accepted one, or a void or used number, is refused whole here.
@@ -475,19 +502,22 @@ export class BatonCore {
     this.observations.use(r, n);
     const head = this.headOf(r);
     const at = this.now();
-    // A sync confirms only its own repository's completions (R-BTN-47).
-    const confirmations = this.claims.ownConfirmations(r, checkConfirmations(p.confirmations));
+    const normative = p.tickets !== undefined;
+    const ticketCount = normative ? p.tickets!.length : p.state!.items.length;
+    // The interim post's confirmations (docs until R3-1233; R-BTN-10 derives them from stations
+    // and closures for the normative post), only for its own repository's completions (R-BTN-47).
+    const confirmations = normative ? [] : this.claims.ownConfirmations(r, checkConfirmations(p.confirmations));
     // A held history the owner (or the 24-hour clock) accepted becomes the head on its next post.
     const accepted = !!p.force && this.claims.acceptedLine(r, head);
     if (p.force && !accepted) {
-      // A held post still carries the sync's confirmations: git carries those completions
-      // whichever history the owner keeps, and dropping them would leave their items blocked.
-      // R-BTN-62: what it saw is a refresh against the current head, its number being newer.
+      // R-BTN-62: a held post's stations, paths, next legs and closures — which no commit orders —
+      // are a refresh against the current head, its number being newer, so confirmations and
+      // staleness do not stall for the hold's 24 hours. Its interim confirmations likewise.
       this.store.transaction(() => {
         this.observations.accept(r, n);
+        const seen = normative ? this.refreshStations(r, p, n, at, true) : new Map<string, Seen>();
         this.claims.confirm(confirmations, n);
-        // …and judges claims as a refresh would, so staleness does not stall for the hold's 24 hours.
-        this.claims.staleBoard(r, n);
+        this.claims.judge(r, n, seen);
         this.store.exec('UPDATE held_snapshots SET observation = ? WHERE repository_id = ? AND sha = ?', n, r, p.sha);
       });
       // Held once per sha: a repeat (the sync re-posts every 15 minutes) changes nothing, so
@@ -500,33 +530,34 @@ export class BatonCore {
       if (!known) {
         this.store.transaction(() => {
           this.store.exec('INSERT INTO held_snapshots (repository_id, sha, parent_sha, head_sha, ticket_count, received_at, auto_accept_at, observation) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-            r, p.sha, p.parent_sha, head, p.state.items.length, at, deadline, n);
-          this.event(r, 'snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, ticket_count: p.state.items.length, auto_accept_at: deadline }, at);
+            r, p.sha, p.parent_sha, head, ticketCount, at, deadline, n);
+          this.event(r, 'snapshot-rejected', { sha: p.sha, parent_sha: p.parent_sha, head, ticket_count: ticketCount, auto_accept_at: deadline }, at);
         });
       }
       throw new BatonError('snapshot-rejected', `a rewritten history is held for the owner until ${new Date(deadline).toISOString()}; claims continue on the current head`);
     }
     if (p.sha === head) {
-      // §6.7: the sync's confirm-only post re-sends the head with its confirmations. Its registry
-      // is not applied: the sync builds that body at the commit it fetched, which may be an
-      // ancestor of the head, and an older registry would roll a course back. A head that
-      // predates the registry (migration 0007) gets its courses with the next new head; until
-      // then its tickets fit no worker (rule 9), failing closed.
-      // A refresh is a reading like any other: it confirms ends and judges claims made before its
-      // number (R-BTN-62, R-BTN-35), not only the post that moved the head.
+      // §7.1 step 4: a refresh — the board's tickets unchanged, its stations, paths, next legs and
+      // closures replaced. Its registry is not applied: the sync builds that body at the commit it
+      // fetched, which may be an ancestor of the head, and an older registry would roll a course
+      // back. A refresh is a reading like any other: it confirms ends and judges claims made
+      // before its number (R-BTN-62, R-BTN-35), not only the post that moved the head.
       return this.store.transaction(() => {
         this.observations.accept(r, n);
+        const seen = normative ? this.refreshStations(r, p, n, at) : new Map<string, Seen>();
         const confirmed = this.claims.confirm(confirmations, n);
-        return { ok: true, unchanged: true, confirmed, stale_released: this.claims.staleBoard(r, n) };
+        const judged = this.claims.judge(r, n, seen);
+        return { ok: true, unchanged: true, confirmed: confirmed + judged.confirmed, stale_released: judged.stale_released };
       });
     }
     if (!accepted && p.parent_sha !== head) throw new BatonError('head-moved', `the head is ${head ?? 'unset'}; re-read it and retry`);
 
     // Hash every row before the transaction: the digest is async, the transaction is not.
-    const rankOf = new Map(p.ready.map((id, i) => [id, i]));
-    const rows = await Promise.all(p.state.items.map(async (it) => {
+    const rankOf = new Map((p.ready ?? []).map((id, i) => [id, i]));
+    const posted = normative ? p.tickets!.map(rowForTicket) : p.state!.items.map((it) => rowFor(it, rankOf));
+    const rows = await Promise.all(posted.map(async (base) => {
       // R-BTN-66: tiers arrive by name and are matched as positions in this repository's ladder.
-      const row = { ...rowFor(it, rankOf), tier_position: tierPosition(repo.tiers, it.tier ?? null) };
+      const row = { ...base, tier_position: tierPosition(repo.tiers, base.tier ?? null) };
       return { row, hash: await rowHash(row) };
     }));
     const changed: { upserted: number; deleted: number; confirmed?: number; stale_released?: number; courses_refused?: string[]; fleet_ignored?: boolean } = { upserted: 0, deleted: 0 };
@@ -548,29 +579,42 @@ export class BatonCore {
         const id = qualify(r, row.id);
         this.store.exec(
           `INSERT INTO tickets (id, repository_id, local_id, path, title, project, status, node, queue, tags, tier, requires_clause, operator_only,
-             depends_on, blocked_by, repos, ord, rank, snapshot_sha, row_hash, since, holder, course_id, tier_position)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             depends_on, blocked_by, repos, ord, rank, snapshot_sha, row_hash, since, holder, course_id, tier_position, expedite, display)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (id) DO UPDATE SET path = excluded.path, title = excluded.title, project = excluded.project,
              status = excluded.status, node = excluded.node, queue = excluded.queue, tags = excluded.tags,
              tier = excluded.tier, requires_clause = excluded.requires_clause, operator_only = excluded.operator_only,
              depends_on = excluded.depends_on, blocked_by = excluded.blocked_by, repos = excluded.repos,
              ord = excluded.ord, rank = excluded.rank, snapshot_sha = excluded.snapshot_sha, row_hash = excluded.row_hash,
-             since = excluded.since, holder = excluded.holder, course_id = excluded.course_id, tier_position = excluded.tier_position`,
+             since = excluded.since, holder = excluded.holder, course_id = excluded.course_id, tier_position = excluded.tier_position,
+             expedite = excluded.expedite, display = excluded.display`,
           id, r, row.id, row.path, row.title, row.project, row.status, row.node, row.queue, row.tags, row.tier,
-          row.requires_clause, row.operator_only, row.depends_on, row.blocked_by, row.repos, row.ord, row.rank, p.sha, hash, row.since, row.holder, row.course_id, row.tier_position);
+          row.requires_clause, row.operator_only, row.depends_on, row.blocked_by, row.repos, row.ord, row.rank, p.sha, hash, row.since, row.holder, row.course_id,
+          row.tier_position, row.expedite, row.display);
         this.store.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', id);
         for (const name of row.requires) this.store.exec('INSERT INTO ticket_requires (ticket_id, name) VALUES (?, ?)', id, name);
         changed.upserted++;
       }
       // Tickets no longer live leave the cache (R-BTN-35); their claims and events stay.
       for (const gone of have.keys()) {
-        this.store.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', qualify(r, gone));
-        this.store.exec('DELETE FROM tickets WHERE id = ?', qualify(r, gone));
+        const id = qualify(r, gone);
+        this.stations.clear(id);
+        this.store.exec('DELETE FROM ticket_requires WHERE ticket_id = ?', id);
+        this.store.exec('DELETE FROM tickets WHERE id = ?', id);
         changed.deleted++;
       }
+      // Where each ticket is (R-BTN-70): the normative post's stations, or the interim post's
+      // placement at each course's start; and the closures it reports (R-BTN-10).
+      const stations = normative
+        ? new Map(Object.entries(p.stations ?? {}).map(([id, st]) => [id, stationOf(st)] as [string, PostedStation]))
+        : this.stations.interim(r, p.state!.items.map((it) => ({ id: it.id, course: it.course ?? DEFAULT_COURSE, node: it.node })));
+      // A live ticket the post does not place is placed nowhere: it is not offered on old data.
+      for (const { row } of rows) if (!stations.has(row.id)) this.stations.clear(qualify(r, row.id));
+      this.stations.reopened(r, rows.map(({ row }) => row.id));
+      const seen = this.stations.apply(r, p.sha, n, stations, p.closed ?? [], at);
       // A non-fleet repository's fleet fields are ignored, and its answer says so.
       if (this.reference(r, p)) changed.fleet_ignored = true;
-      this.store.exec('INSERT INTO board_snapshots (repository_id, sha, parent_sha, received_at, ticket_count) VALUES (?, ?, ?, ?, ?) ON CONFLICT (repository_id, sha) DO NOTHING', r, p.sha, p.parent_sha, at, p.state.items.length);
+      this.store.exec('INSERT INTO board_snapshots (repository_id, sha, parent_sha, received_at, ticket_count) VALUES (?, ?, ?, ?, ?) ON CONFLICT (repository_id, sha) DO NOTHING', r, p.sha, p.parent_sha, at, ticketCount);
       this.store.exec('INSERT INTO board_head (repository_id, sha) VALUES (?, ?) ON CONFLICT (repository_id) DO UPDATE SET sha = excluded.sha', r, p.sha);
       // A hold is against one head (R3-1223): when the head moves — an accepted rewrite or a
       // plain fast-forward — every row held against the head it leaves is retired, answered or
@@ -579,13 +623,28 @@ export class BatonCore {
       // its sha is held afresh. So every row left is a hold against the current head. Their
       // history stays in the events.
       this.store.exec('DELETE FROM held_snapshots WHERE repository_id = ? AND head_sha IS ?', r, head);
-      this.event(r, 'snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, ticket_count: p.state.items.length, ...changed, ...(accepted ? { held: true } : {}) }, at);
+      this.event(r, 'snapshot-accepted', { sha: p.sha, parent_sha: p.parent_sha, ticket_count: ticketCount, ...changed, ...(accepted ? { held: true } : {}) }, at);
       this.observations.accept(r, n);
-      changed.confirmed = this.claims.confirm(confirmations, n);
-      // R-BTN-35: git wins over a claim it has overtaken.
-      changed.stale_released = this.claims.staleBoard(r, n);
+      const confirmed = this.claims.confirm(confirmations, n);
+      // R-BTN-10, R-BTN-35, §2e: git confirms ends, takes tickets away and goes backwards.
+      const judged = this.claims.judge(r, n, seen);
+      changed.confirmed = confirmed + judged.confirmed;
+      changed.stale_released = judged.stale_released;
     });
     return { ok: true, ...changed };
+  }
+
+  /** A refresh's stations (§7.1, R-BTN-62): the head's tickets unchanged, where each is replaced. */
+  private refreshStations(r: string, p: BoardPayload, n: number, at: number, held = false): Map<string, Seen> {
+    const live = new Set(this.sql<{ local_id: string }>('SELECT local_id FROM tickets WHERE repository_id = ?', r).map((t) => t.local_id));
+    const stations = new Map(Object.entries(p.stations ?? {}).filter(([id]) => live.has(id)).map(([id, st]) => [id, stationOf(st)] as [string, PostedStation]));
+    // As on a new head: a live ticket the refresh does not place is placed nowhere, never offered
+    // on an old station (round 1, 1-A-0, 1-B-0).
+    for (const id of live) if (!stations.has(id)) this.stations.clear(qualify(r, id));
+    // A held history's closures stand even for tickets the current head still has: the holder's
+    // archive may be in the rewritten history alone, and its done end must not wait the hold's
+    // 24 hours (R-BTN-62; round 2, 2-A-0). A plain refresh of the head cannot close what it has.
+    return this.stations.apply(r, p.sha, n, stations, (p.closed ?? []).filter((c) => held || !live.has(c.id)), at);
   }
 
   /** The registry of a post (R-BTN-48, R-BTN-69), inside its transaction: applied whole, then
@@ -593,9 +652,12 @@ export class BatonCore {
    *  or a course the registry dropped while a ticket still names it, refuses the post. */
   private applyRegistry(r: string, p: BoardPayload, ticketCourses: string[], at: number): string[] {
     const refused = p.registry ? this.courses.apply(r, p.registry, p.sha, at) : [];
+    this.stations.reset();
     for (const c of new Set(ticketCourses)) {
       if (!this.courses.get(r, c)) throw new BatonError('invalid-params', `a ticket's course ${c} is not in ${r}'s registry`);
     }
+    // R-BTN-64: a course file accepted with renames carries its active claims over.
+    for (const e of p.registry ?? []) if (!refused.includes(e.id)) this.claims.renameActive(r, e.id);
     return refused;
   }
 
@@ -662,9 +724,14 @@ export class BatonCore {
     });
     const where = new Map(repositories.map((r) => [r.id, r]));
     const items = this.sql<Record<string, SqlValue>>(
-      `SELECT t.id, t.repository_id, t.local_id, t.path, t.title, t.project, t.status, t.node, t.queue, t.tags, t.tier, t.requires_clause, t.operator_only, t.ord, t.rank
+      // Ready: a ticket whose queued leg its sync posts ready (R-BTN-70), the interim post's
+      // included — it places each ready item at its course's start (round 2, 2-A-4).
+      `SELECT t.id, t.repository_id, t.local_id, t.path, t.title, t.project, t.status, t.node, t.queue, t.tags, t.tier, t.requires_clause, t.operator_only, t.ord, t.rank,
+              t.expedite, s.station, s.next_leg, s.to_end
        FROM tickets t JOIN repositories p ON p.id = t.repository_id
-       WHERE t.node LIKE 'ready-%' AND t.rank IS NOT NULL AND p.retired_at IS NULL ORDER BY p.weight DESC, t.rank, t.repository_id`);
+       JOIN ticket_stations s ON s.ticket_id = t.id
+       JOIN ticket_next_legs a ON a.ticket_id = t.id AND a.leg = s.next_leg AND a.state = 'ready'
+       WHERE p.retired_at IS NULL ORDER BY p.weight DESC, t.expedite DESC, s.to_end, t.rank IS NULL, t.rank, t.repository_id, t.id`);
     const requires = new Map<string, string[]>();
     for (const r of this.sql<{ ticket_id: string; name: string }>('SELECT ticket_id, name FROM ticket_requires ORDER BY name')) {
       requires.set(r.ticket_id, [...(requires.get(r.ticket_id) ?? []), r.name]);
@@ -680,7 +747,10 @@ export class BatonCore {
       queue: r.queue,
       node: r.node,
       rank: r.rank,
-      rank_reason: r.node === 'ready-expedite' ? 'expedite lane' : `${r.queue} queue · order ${r.ord ?? '—'}`,
+      station: r.station,
+      leg: r.next_leg,
+      rank_reason: r.node ? (r.node === 'ready-expedite' ? 'expedite lane' : `${r.queue} queue · order ${r.ord ?? '—'}`)
+        : `${r.expedite ? 'expedite lane · ' : ''}${r.next_leg} from ${r.station} · rank ${r.rank ?? '—'}`,
       requires_clause: r.requires_clause,
       requires: requires.get(r.id as string) ?? [],
       operator_only: r.operator_only === 1,

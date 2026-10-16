@@ -3,7 +3,7 @@
 // ceiling may differ per repository. S-BTN-26.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
 import { ceilingIn, tierPosition } from '../../src/core/registry';
-import { claimItem, course, cutover, payload, register, rows, setClock, syncCall, syncToken, withCore, workerCall, hbBody, sha256 } from '../helpers';
+import { claimItem, course, cutover, payload, register, rows, setClock, syncCall, syncToken, withCore, workerCall, hbBody, sha256, recommended } from '../helpers';
 
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');
@@ -31,10 +31,7 @@ beforeEach(async () => {
   await cutover(1, 'ops');
 });
 
-const offered = (id: number) => withCore((o) => {
-  const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
-  return c.candidates(c.worker(id), T0, 100);
-});
+const offered = (id: number) => recommended(id);
 
 describe('tiers per repository (R-BTN-66)', () => {
   it('stores each ticket’s position in its ladder: untiered null, an unknown name the ladder’s length', async () => {
@@ -90,7 +87,7 @@ describe('tiers per repository (R-BTN-66)', () => {
     expect(await res.json()).toMatchObject({ ok: true, stale_released: 1 });
   });
 
-  it('G-BTN-40 for rule 5: the query and isEligible agree for every ceiling, in docs’ ladder and ops’', async () => {
+  it('G-BTN-40 for rule 5: the query and gatesFor agree for every ceiling, in docs’ ladder and ops’', async () => {
     const workers = [
       { cred: 'vm-a' as const, over: { tier_ceilings: { ops: 'small' } } },
       { cred: 'vm-b' as const, over: { tier_ceilings: { ops: 'large', docs: 'routine' } } },
@@ -101,12 +98,12 @@ describe('tiers per repository (R-BTN-66)', () => {
     for (const w of workers) {
       const { id } = await register(w.cred, { ...DECLARES, ...w.over });
       const agree = await withCore((o) => {
-        const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown;
-          item: (id: string) => unknown; eligible: (w: unknown, item: unknown, now: number, shared: unknown) => { ok: boolean }; shared: (now: number) => unknown };
+        const c = o.claims as unknown as { candidates: (w: unknown, page: number) => { id: string }[]; worker: (id: number) => unknown;
+          item: (id: string) => { station: { next_leg: string } }; gate: (w: unknown, item: unknown, leg: string, phase: string) => { ok: boolean } };
         const facts = c.worker(id);
-        const query = new Set(c.candidates(facts, T0, 100));
-        const all = (o.store.exec<{ id: string }>(`SELECT id FROM tickets WHERE node LIKE 'ready-%'`).toArray()).map((r) => r.id);
-        return all.map((t) => [t, query.has(t), c.eligible(facts, c.item(t), T0, c.shared(T0)).ok]);
+        const query = new Set(c.candidates(facts, 0).map((r) => r.id));
+        const all = (o.store.exec<{ id: string }>(`SELECT t.id FROM tickets t JOIN ticket_next_legs a ON a.ticket_id = t.id AND a.state = 'ready'`).toArray()).map((r) => r.id);
+        return all.map((t) => { const item = c.item(t); return [t, query.has(t), c.gate(facts, item, item.station.next_leg, 'claim').ok]; });
       });
       for (const [t, q, e] of agree) expect([w.cred, t, q]).toEqual([w.cred, t, e]);
     }

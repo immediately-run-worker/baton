@@ -2,9 +2,9 @@
 // claim and end contracts, the holder query, matching's worker rules, and the held history.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
 import { confirmations } from '../../src/shared/batonSync.mjs';
-import { isEligible } from '../../src/shared/baton.mjs';
+import { gatesFor } from '../../src/core/gates';
 import {
-  beat, claimItem, claimRow, cutover, q, endClaim, hbBody, ORIGIN, ownerCall, payload, register, requestId, rows, setClock, sha256, syncCall, withCore, workerCall, tick,
+  beat, claimItem, claimRow, cutover, q, endClaim, hbBody, ORIGIN, ownerCall, payload, recommended, refresh, register, requestId, rows, setClock, sha256, syncCall, withCore, workerCall, tick,
 } from '../helpers';
 
 const board = inject('board');
@@ -35,13 +35,16 @@ describe('the claim and end contracts (§6.2, §6.5, §11)', () => {
     await cutover();
     const c = await claimItem('vm-a', secret);
     expect(c.status).toBe(200);
-    expect(c.json).toEqual({ claim_id: expect.any(Number), ticket_id: 'docs:R3-9001', path: 'content/roadmap/R3-9001.mdx', nonce: expect.stringMatching(/^[0-9a-f]{6}$/), snapshot_sha: sha.A, previous_attempts: [] });
-    expect((await beat('vm-a', secret)).json.claim).toMatchObject({ id: c.json.claim_id, ticket_id: 'docs:R3-9001', nonce: c.json.nonce });
+    // §11, R3-1232: where the ticket starts and its queued leg, the snapshot's next legs.
+    expect(c.json).toEqual({ claim_id: expect.any(Number), ticket_id: 'docs:R3-9001', station: 'filed', legs: ['implement'], next: [{ leg: 'implement', state: 'ready' }],
+      path: 'content/roadmap/R3-9001.mdx', nonce: expect.stringMatching(/^[0-9a-f]{6}$/), snapshot_sha: sha.A, previous_attempts: [], advice: null });
+    expect((await beat('vm-a', secret)).json.claim).toMatchObject({ id: c.json.claim_id, ticket_id: 'docs:R3-9001', nonce: c.json.nonce, station: 'filed',
+      git: { station: 'filed', path: [], path_len: 0, regressed: false, next: [{ leg: 'implement', state: 'ready' }] } });
   });
 
   it('GET next answers what a claim would, without claiming; a named item that is not ready is refused with its rule', async () => {
     const { secret } = await register('vm-a');
-    expect(await (await workerCall('/v1/runner/next', { secret })).json()).toEqual({ ticket_id: 'docs:R3-9001', rank_reason: 'autonomous queue · rank 0' });
+    expect(await (await workerCall('/v1/runner/next', { secret })).json()).toMatchObject({ ticket_id: 'docs:R3-9001', station: 'filed', legs: ['implement'] });
     expect(await rows('SELECT count(*) AS n FROM claims')).toEqual([{ n: 0 }]);
     const blocked = await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9004' });
     expect([blocked.status, blocked.json.code, blocked.json.rule]).toEqual([409, 'not-eligible', 1]);
@@ -50,17 +53,24 @@ describe('the claim and end contracts (§6.2, §6.5, §11)', () => {
     expect((await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9002' })).json.ticket_id).toBe('docs:R3-9002');
   });
 
-  it('ends only in §6.5’s vocabulary; a completed end names its commit; only the holder ends; a retried end is a no-op', async () => {
+  it('ends only in §6.5’s vocabulary, at a station the claim can rest at; only the holder ends; a retried end is a no-op', async () => {
     const a = await register('vm-a');
     const b = await register('vm-b');
     const { json: c } = await claimItem('vm-a', a.secret);
-    expect((await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'released:bored' })).json.code).toBe('invalid-params');
-    expect((await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'done' })).json.code).toBe('invalid-params');
+    for (const bad of [{ end_reason: 'released:bored' }, { end_reason: 'handed-off:awaiting-ci' }, { end_reason: 'remainder:R3-1' },
+      { end_reason: 'released:awaiting-review-capacity' }, { end_reason: 'suspended:filed', reached: 'pr-open' }, { end_reason: 'done', detail: 'a<b' },
+      { end_reason: 'released:requested', ended_at_sha: sha.B }, { end_reason: 'done', ended_at_sha: 'http://x' }]) {
+      expect([bad, (await endClaim('vm-a', a.secret, c.claim_id, bad)).json.code]).toEqual([bad, 'invalid-params']);
+    }
+    // R-BTN-71: running nothing at filed, the claim rests at filed and nowhere else.
+    expect((await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'suspended:pr-open' })).json).toMatchObject({ code: 'not-eligible', rule_code: 'off-graph' });
     expect((await endClaim('vm-b', b.secret, c.claim_id, { end_reason: 'released:requested' })).json.code).toBe('not-holder');
-    expect((await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'handed-off:awaiting-ci', ended_at_sha: sha.B })).status).toBe(200);
-    expect((await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'handed-off:awaiting-ci', ended_at_sha: sha.B })).status).toBe(200);
+    const end = { end_reason: 'suspended:filed', detail: 'awaiting-owner', ended_at_sha: 'https://github.com/immediately-run/docs/pull/1#issuecomment-1' };
+    expect((await endClaim('vm-a', a.secret, c.claim_id, end)).status).toBe(200);
+    expect((await endClaim('vm-a', a.secret, c.claim_id, end)).status).toBe(200);
     expect((await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'released:requested' })).json.code).toBe('claim-ended');
-    expect(await claimRow(c.claim_id)).toMatchObject({ status: 'completed', end_reason: 'handed-off:awaiting-ci', confirmed_at: null });
+    expect(await claimRow(c.claim_id)).toMatchObject({ status: 'completed', end_reason: 'suspended:filed', confirmed_at: null });
+    expect(await rows('SELECT end_detail, station FROM claims WHERE id = ?', c.claim_id)).toEqual([{ end_detail: 'awaiting-owner', station: 'filed' }]);
   });
 
   it('§6.9: an end closes the claim’s open activities abandoned', async () => {
@@ -71,26 +81,23 @@ describe('the claim and end contracts (§6.2, §6.5, §11)', () => {
     expect(await rows('SELECT outcome FROM activities')).toEqual([{ outcome: 'abandoned' }]);
   });
 
-  it('§7.2 worker rules: a suspended account, and a worker below its course’s min_worker_version, get no claim', async () => {
+  it('§7.2 worker rules: a worker below its course’s min_worker_version gets no claim; a suspended account is no core gate (§7.3)', async () => {
     const { secret } = await register('vm-a');
+    // A provider suspension is the course's, enforced as an owner bar's tag (R-BTN-67, R3-1240), never by core.
     await owner('/v1/ui/suspensions', { provider_id: 'zai', mode: 'no-new-work' });
-    expect(await claimItem('vm-a', secret)).toMatchObject({ status: 409, json: { code: 'provider-suspended', rule: 7 } });
+    expect((await claimItem('vm-a', secret)).status).toBe(200);
     const late = await register('vm-b', { model_id: 'opencode-go/kimi-k3', model_provider_id: 'opencode_go_plus', courses: [{ repository: 'docs', course: 'roadmap-pr', version: 2 }] });
     expect(await claimItem('vm-b', late.secret)).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
-    expect(await claimItem('vm-b', late.secret, { ticket_id: 'docs:R3-9001' })).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
+    expect(await claimItem('vm-b', late.secret, { ticket_id: 'docs:R3-9002' })).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
     // Declaring no course at all is stale too: rule 9 asks for the ticket's course.
     const none = await register('mac', { model_id: 'opencode-go/kimi-k3', model_provider_id: 'opencode_go_plus', courses: [] });
     expect(await claimItem('mac', none.secret)).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
   });
 
-  it('G-BTN-40, rule 9: a ticket whose course is not registered fits no worker, in the query and isEligible alike', async () => {
+  it('G-BTN-40, rule 9: a ticket whose course is not registered fits no worker, in the query and gatesFor alike', async () => {
     const { id, secret } = await register('vm-a');
     await rows(`DELETE FROM courses`); // a head posted before the registry existed
-    const got = await withCore((o) => {
-      const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
-      return c.candidates(c.worker(id), T0, 100);
-    });
-    expect(got).toEqual([]);
+    expect(await recommended(id)).toEqual([]);
     expect(await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' })).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
   });
 
@@ -228,6 +235,7 @@ describe('G-BTN-14: a force-reaped live worker’s item waits for its fence', ()
     await beat('vm-a', a.secret, { fenced: { claim_id: c.claim_id, terminated: true } });
     expect((await claimRow(c.claim_id)).fence_pending).toBe(0);
     expect(await rows(`SELECT actor, json_extract(detail_json, '$.by') AS by FROM events WHERE kind = 'fence-cleared'`)).toEqual([{ actor: `worker:${a.id}`, by: 'sidecar' }]);
+    await refresh(); // §6.7: a reading since the reap
     expect((await claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9001' })).status).toBe(200);
   });
 
@@ -245,6 +253,7 @@ describe('G-BTN-14: a force-reaped live worker’s item waits for its fence', ()
     expect(await rows(`SELECT json_extract(detail_json, '$.by') AS by FROM events WHERE kind = 'fence-cleared'`)).toEqual([{ by: 'timeout' }]);
     await setClock(T0 + 900 * S);
     await beat('vm-b', b.secret);
+    await refresh();
     expect((await claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9001' })).status).toBe(200);
   });
 
@@ -260,7 +269,7 @@ describe('G-BTN-14: a force-reaped live worker’s item waits for its fence', ()
   });
 });
 
-describe('G-BTN-40: the matching query and isEligible agree; git overtaking a claim ends it', () => {
+describe('G-BTN-40: the matching query and gatesFor agree; git overtaking a claim ends it', () => {
   const workers = [
     { cred: 'vm-a' as const, session: 'venue', over: { capabilities: ['agent-venue'], tier_ceiling: 'critical' } },
     { cred: 'vm-a' as const, session: 'judge', over: { capabilities: ['agent-venue'], tier_ceiling: 'judgement' } },
@@ -279,17 +288,15 @@ describe('G-BTN-40: the matching query and isEligible agree; git overtaking a cl
     for (const w of workers) {
       const { id } = await register(w.cred, { session_name: w.session, ...w.over });
       const decl = w.over.capabilities;
-      const facts = { tier_ceiling: w.over.tier_ceiling, declared: decl, model_id: 'zai-coding-plan/glm-5.3', model_provider_id: 'zai', billing: { 'zai-coding-plan': 'zai' }, courses: w.over.courses ?? [{ repository: 'docs', course: 'roadmap-pr', version: 3 }] };
-      // The reference: isEligible over the snapshot's own items, in its ready order.
+      const facts = { tier_ceiling: w.over.tier_ceiling, declared: decl, tags: [], courses: (w.over.courses ?? [{ repository: 'docs', course: 'roadmap-pr', version: 3 }]) as { repository: string; course: string; version: number }[] };
+      // The reference: gatesFor over the snapshot's own items, in its ready order — each at its
+      // course's start, its start leg ready (the interim post's placement).
       const expected = snap.ready.filter((rid: string) => {
         const it = itemsOf(label).find((x) => x.id === rid)!;
-        const item = { id: it.id, repository: 'docs', course: 'roadmap-pr', tier: it.tier, tags: it.tags, requires: it.requires, expedite: it.queue === 'expedite' };
-        return isEligible(facts, item, { now: T0, claims: [], override: null, suspensions: [], minWorkerVersion: 3, expediteActive: 0, lastEndReason: null }).ok;
+        const ticket = { repository: 'docs', course: 'roadmap-pr', tier: it.tier, requires: it.requires, operator_only: it.tags.includes('OP') || (it.requires ?? []).includes('human-operator'), tiers: ['routine', 'judgement', 'critical'] };
+        return gatesFor(facts, ticket, { name: 'implement', state: 'ready', bars: [] }, 'claim', { now: T0, claims: [], override: null, minWorkerVersion: 3, headObservation: 1, lastEndObservation: -1 }).ok;
       });
-      const got = await withCore((o) => {
-        const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
-        return c.candidates(c.worker(id), T0, 100);
-      });
+      const got = await recommended(id);
       expect([w.session, got]).toEqual([w.session, expected.map(q)]);
     }
   });
