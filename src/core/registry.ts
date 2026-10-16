@@ -91,7 +91,7 @@ export function checkRegistration(v: unknown, at = 'repository'): Registration {
   // No credential ever reaches SQLite (R-BTN-94): an https remote has no userinfo, an ssh one a user
   // name at most (round 1, 1-A-5, 1-B-2).
   if (typeof remote !== 'string' || remote.length > 500
-    || !/^(https:\/\/[A-Za-z0-9.-]+(:\d+)?\/|ssh:\/\/([A-Za-z0-9._-]+@)?[A-Za-z0-9.-]+(:\d+)?\/|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:)[^\s\\@?#]+$/.test(remote)) {
+    || !/^(https:\/\/[A-Za-z0-9.-]+(:\d+)?\/|ssh:\/\/([A-Za-z0-9._-]+@)?[A-Za-z0-9.-]+(:\d+)?\/|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:)[^\s\\@?#\u0000-\u001f\u007f]+$/.test(remote)) {
     bad(`${at}.remote`, 'must be an https:// URL with no userinfo, an ssh:// URL, or user@host:path — never a credential');
   }
   const syncWorkflow = r.sync_workflow == null ? '' : str('sync_workflow', WORKFLOW);

@@ -34,7 +34,9 @@ async function route(req: Request, env: Config, to: Forward): Promise<Response> 
       return forward(withBody(req, signed.body), to, { 'X-Baton-Signed': signed.keyid });
     }
     const claims = await verifySyncCredential(req, env);
-    return forward(req, to, { 'X-Baton-Sync': JSON.stringify(claims) });
+    // A header carries bytes only: characters from U+007F up go as \u escapes (round 3, 3-A-1).
+    const ascii = JSON.stringify(claims).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+    return forward(req, to, { 'X-Baton-Sync': ascii });
   }
   if (pathname === '/v1/github/webhook') {
     // R-BTN-73: the GitHub App's delivery — the one route whose credential is GitHub's

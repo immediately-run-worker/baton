@@ -133,6 +133,9 @@ export class BatonCore {
         }
       }
       const { req: signed, cred } = await this.verifySigned(req, (fp) => this.registry.syncKey(fp)?.public_key ?? this.workers.publicKey(fp) ?? admins.get(fp) ?? null);
+      // An administrator key is never a sync's, even one added to BATON_ADMIN_KEYS after it was
+      // registered as a sync key (round 3, 3-A-2).
+      if (admins.has(cred)) throw new BatonError('forbidden', 'an administrator key holds no other role (R-BTN-57)');
       const key = this.registry.syncKey(cred);
       // A worker, probe, courier or administrator key is never a sync's (R-BTN-57, R-BTN-93).
       if (!key) throw new BatonError('forbidden', 'only a sync key may act as a sync');

@@ -72,6 +72,12 @@ describe(`S-BTN-55 the sync key (${HOST})`, () => {
     });
     const res = await hostCall(await signed(admin, '/v1/sync/head'));
     expect([res.status, await code(res)]).toEqual([403, 'forbidden']);
+    // A sync key later added to BATON_ADMIN_KEYS acts as a sync no more (round 3, 3-A-2).
+    await withCore((c) => {
+      (c as unknown as { ports: { adminKeys: { list: () => string[] } } }).ports.adminKeys = { list: () => [sync.publicKey] };
+    });
+    const both = await hostCall(await signed(sync, '/v1/sync/head'));
+    expect([both.status, await code(both)]).toEqual([403, 'forbidden']);
   });
 
   it('a revoked key’s post and a replay are unauthenticated', async () => {

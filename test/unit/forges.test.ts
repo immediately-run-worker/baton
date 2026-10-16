@@ -41,6 +41,9 @@ describe('the forge path and web_base (R-BTN-92)', () => {
       expect([bad, isWebBase('gitlab', bad, 'o/n') || isWebBase('github', bad, 'o/n')]).toEqual([bad, false]);
     }
     expect(underWebBase('https:github.com/immediately-run/docs/pull/1', base)).toBe(false);
+    // Control characters, which the parser would strip (round 3, 3-A-0).
+    expect(isPullRequestUrl('github', 'https://github.com/immediately-run/docs/pull/1\u0000', base)).toBe(false);
+    expect(isWebBase('github', 'https://github.com/immediately-run/docs\u0001', 'immediately-run/docs')).toBe(false);
     for (const bad of ['https://github.com/immediately-run/docs-evil/pull/1', 'https://github.com:444/immediately-run/docs/pull/1', 'https://u@github.com/immediately-run/docs',
       'http://github.com/immediately-run/docs', 'https://github.com/immediately-run/docs/%2e%2e/x', 'https://github.com/immediately-run/docs/a%2Fb', 'javascript:alert(1)', 'https://github.com/immediately-run/docs#x']) {
       expect([bad, underWebBase(bad, base)]).toEqual([bad, false]);
@@ -138,6 +141,12 @@ describe('GitLab CI tokens (R-BTN-93)', () => {
     await register();
     const res = await head(await gitlabToken(over, opts));
     expect([res.status, await code(res)]).toEqual([status, status === 401 ? 'unauthenticated' : 'forbidden']);
+  });
+
+  it('a token whose claims are not Latin-1 is refused forbidden, never an internal error (round 3, 3-A-1)', async () => {
+    await register();
+    const res = await head(await gitlabToken({ ref: 'главная' }));
+    expect([res.status, await code(res)]).toEqual([403, 'forbidden']);
   });
 
   it('the mirror audience reads events only where the identity says the repository has a GitLab mirror', async () => {
