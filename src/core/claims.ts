@@ -628,19 +628,22 @@ export class Claims {
     const allowed = new Set([station, ...outcomes]);
     let reached = station;
     if (e.reached) {
-      // A station the course file dropped is still where the claim is: a `course-changed` release
-      // names it (R-BTN-64; round 2, 2-A-1).
-      const r = resolveStation(g, e.reached) ?? e.reached;
-      if (!allowed.has(r)) {
+      // A station the course file dropped is still where the claim is: a release — the runner's
+      // `course-changed` (R-BTN-64) — may name it (round 2, 2-A-1). A suspension or `done` may not:
+      // no path under the new file could ever confirm it (round 3, 3-A-0).
+      const r = resolveStation(g, e.reached) ?? (e.status === 'released' ? e.reached : null);
+      if (!r || !allowed.has(r)) {
         throw new BatonError('not-eligible', `off-graph: the claim rests at ${[...allowed].join(' or ')}, not ${e.reached}`, { rule: 1, rule_code: 'off-graph' });
       }
       reached = r;
     } else if (e.end_reason === 'done' && outcomes.length === 1) {
       reached = outcomes[0];
     }
-    // A leg whose outcome is its own `from` (a loop) finishes there on a completed end; a release
-    // at `from` gives the leg up.
-    return { reached, finished: outcomes.includes(reached) && (reached !== station || e.status === 'completed') };
+    // An end at the leg's `from` gives the leg up — a self-loop's (`to` = `from`) included: from
+    // the end alone Baton cannot tell a finished loop from an abandoned one, and recording it given
+    // up is the reading git can always confirm (a git path that does show the run still extends
+    // the expected path; round 3, 3-A-1). An advance names the outcome and so finishes it.
+    return { reached, finished: outcomes.includes(reached) && reached !== station };
   }
 
   /** Ends an active claim (§6.5): the running leg finishes at its outcome or is given up at its
@@ -1020,8 +1023,10 @@ export class Claims {
         `SELECT l.claim_id, l.seq, l.leg, l.bars, c.course_id FROM claim_legs l JOIN claims c ON c.id = l.claim_id
          WHERE c.ticket_id = ? AND l.bars != '[]' AND l.bars_judged = 0 AND l.started_observation < ?`, ticketId, observation)) {
         const g = l.course_id ? this.stations.graph(repo, l.course_id) : null;
-        const posted = s.bars[(g && resolveLeg(g, l.leg)) ?? l.leg];
-        if (!posted) continue;
+        const name = (g && resolveLeg(g, l.leg)) ?? l.leg;
+        // Own keys only: a leg named like an Object.prototype member is just a name (3-A-3).
+        if (!Object.hasOwn(s.bars, name)) continue;
+        const posted = s.bars[name];
         this.exec('UPDATE claim_legs SET bars_judged = 1 WHERE claim_id = ? AND seq = ?', l.claim_id, l.seq);
         const missing = (JSON.parse(l.bars) as string[]).filter((t) => !posted.includes(t));
         if (missing.length) this.event('bars-mismatch', 'sync', { seq: l.seq, leg: l.leg, declared_only: missing, observation }, ticketId, l.claim_id);

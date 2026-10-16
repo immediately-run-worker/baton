@@ -79,6 +79,8 @@ describe('S-BTN-37 a course changes under a claim (renames)', () => {
     expect(await git.post()).toMatchObject({ status: 200 });
     expect((await beat('vm-a', w1.secret)).json.claim).toMatchObject({ station: 'reviewed', git: 'unknown' });
     expect((await advance('vm-a', w1.secret, c1.claim_id, { leg: 'fix' })).json).toMatchObject({ code: 'not-eligible', rule_code: 'off-graph' });
+    // A suspension there could never be confirmed under the new file: refused (round 3, 3-A-0).
+    expect((await endClaim('vm-a', w1.secret, c1.claim_id, { end_reason: 'suspended:reviewed' })).json).toMatchObject({ code: 'not-eligible', rule_code: 'off-graph' });
     // The runner ends released:course-changed, naming the station it is at though the file
     // dropped it (round 2, 2-A-1).
     expect((await endClaim('vm-a', w1.secret, c1.claim_id, { end_reason: 'released:course-changed', reached: 'reviewed' })).status).toBe(200);

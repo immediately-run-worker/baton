@@ -1,0 +1,15 @@
+{
+  "start": "open",
+  "start_leg": "do",
+  "end": ["checked"],
+  "stations": {
+    "open": { "label": "Open" },
+    "done-once": { "label": "Done once" },
+    "checked": { "label": "Checked" }
+  },
+  "legs": {
+    "do": { "from": ["open"], "to": "done-once" },
+    "verify": { "from": ["done-once"], "to": "checked" },
+    "redo": { "from": ["done-once"], "to": "done-once", "max_runs": 2 }
+  }
+}

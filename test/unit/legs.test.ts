@@ -152,3 +152,20 @@ describe('round 2 fixes', () => {
     expect(state.ready.map((r) => [r.id, r.station, r.leg])).toEqual([['docs:T-1', 'reviewed', 'fix']]);
   });
 });
+
+describe('round 3 fixes', () => {
+  it('a leg named like an Object.prototype member is just a name: bars are judged by own keys and the board keeps posting (3-A-3)', async () => {
+    const { fix, ...others } = roadmapPr.legs;
+    git.registry = [course(4, 3, { course: { ...roadmapPr, legs: { ...others, constructor: { ...fix, renamed_from: 'fix' } } } })];
+    git.place('T-1', placed('reviewed', REVIEWED, [['constructor', 'ready']]));
+    expect(await git.post()).toMatchObject({ status: 200 });
+    const w = await register('vm-a', { tags: ['family:glm'] });
+    const { json: c } = await claimItem('vm-a', w.secret);
+    expect((await advance('vm-a', w.secret, c.claim_id, { leg: 'constructor', bars: ['family:qwen'] })).status).toBe(200);
+    expect(await git.refresh()).toMatchObject({ status: 200 });
+    expect(await git.post()).toMatchObject({ status: 200 });
+    git.place('T-1', placed('reviewed', REVIEWED, [['constructor', 'ready']], { bars: { constructor: ['family:deepseek'] } }));
+    expect(await git.refresh()).toMatchObject({ status: 200 });
+    expect(await rows(`SELECT json_extract(detail_json, '$.declared_only') AS only FROM events WHERE kind = 'bars-mismatch'`)).toEqual([{ only: '["family:qwen"]' }]);
+  });
+});
