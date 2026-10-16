@@ -10,7 +10,7 @@
 // next safe point first.
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { BatonApi, BatonRefusal } from './api';
@@ -87,6 +87,10 @@ export class Runner {
   private lostLease = false;
   private closedDone = false;
   private toAck: number[] = [];
+  /** R-BTN-19: a claim the runner knows it lost, whose fence the next heartbeat clears. */
+  private fenceToReport: number | null = null;
+  /** R-BTN-77: set when a heartbeat carried an `unblocked` message, so the idle wait ends early. */
+  private unblocked = false;
 
   constructor(options: RunnerOptions) {
     this.o = { beatEvery: BEAT_MS, ...options };
@@ -113,17 +117,22 @@ export class Runner {
   }
 
   /** One heartbeat, by the timer or a test: the §11 answer drives everything local — the lease,
-   * the claim git shows, the messages, the bars and the snapshot's next legs. */
+   * the claim git shows, the messages and the snapshot's next legs. */
   async tick(): Promise<void> {
     const s = this.state.get();
+    const spool = this.takeSpool();
     const body: Record<string, unknown> = {
       hostname: this.o.hostname, session_name: this.o.session, harness: this.o.harness, kind: 'vm',
       billing: {}, capabilities: this.o.capabilities ?? ['agent-venue'], tier_ceiling: this.o.tierCeiling ?? 'critical',
       lease_timeout_s: s.lease_timeout_s ?? 900,
       courses: this.o.courses.map((c) => ({ repository: this.o.repository, course: c.course, version: c.version })),
       ...(s.worker_id == null ? { secret_hash: await sha256Hex(s.secret) } : {}),
-      transcripts: this.drainSpool(),
+      ...(this.fenceToReport != null ? { fenced: { claim_id: this.fenceToReport, terminated: true } } : {}),
+      transcripts: spool.transcripts,
     };
+    // §6.9: the spool's activity rows go up as their own call, before the beat — a failure
+    // re-appends them, so nothing a leg session recorded is lost to a dropped request.
+    if (spool.activities.length) await this.postActivities(spool.activities);
     let answer: Record<string, any>;
     try {
       answer = await this.o.api.heartbeat(body);
@@ -140,6 +149,8 @@ export class Runner {
       lease_timeout_s: answer.lease_timeout_s ?? s.lease_timeout_s,
       claim: answer.claim ? { id: answer.claim.id, ticket_id: answer.claim.ticket_id, nonce: answer.claim.nonce } : null,
     });
+    // R-BTN-19: the fence of a claim this runner lost cleared with this beat.
+    this.fenceToReport = null;
     const view = answer.claim && typeof answer.claim === 'object' ? answer.claim.git : null;
     // R-BTN-6 and §6.13: the wall clock's own verdict, or an answer that no longer lists the
     // claim, fence the runner at once — stop the leg, no hand-off.
@@ -156,14 +167,15 @@ export class Runner {
       }
     }
     for (const m of (answer.messages ?? []) as { id: number; kind: string; payload?: { reason?: string } }[]) {
-      if (m.kind !== 'release') continue;
-      this.toAck.push(m.id);
-      // A release message's payload reason is one of §6.5's own ('requested', 'owner-cancel',
-      // 'provider-suspended') — it names the end directly.
-      this.signalLeg('release', `released:${m.payload?.reason ?? 'requested'}`);
-    }
-    for (const bar of (answer.bars ?? []) as { release_holders?: boolean; reason?: string }[]) {
-      if (bar.release_holders && this.inflight) this.signalLeg('release', `released:${bar.reason ?? 'requested'}`);
+      if (m.kind === 'release') {
+        this.toAck.push(m.id);
+        // A release message's payload reason is one of §6.5's own ('requested', 'owner-cancel',
+        // 'provider-suspended') — it names the end directly. (A releasing owner bar arrives
+        // the same way, as a release message — §11's heartbeat bars carry no release flag.)
+        this.signalLeg('release', `released:${m.payload?.reason ?? 'requested'}`);
+      } else if (m.kind === 'unblocked') {
+        this.unblocked = true; // R-BTN-77: the idle wait ends with the next claim attempt
+      }
     }
     if (!this.inflight) for (const id of this.toAck.splice(0)) await this.o.api.ack(id).catch(() => {});
   }
@@ -171,17 +183,28 @@ export class Runner {
   private loseLease(because: string): void {
     this.lostLease = true;
     this.state.set({ lease_lost: true, lease_lost_because: because });
+    // R-BTN-19: the claim was taken away from this worker; the next heartbeat reports the fence
+    // it cleared, so the ticket is re-issued instead of waiting for the worker to go silent.
+    this.fenceToReport = this.inflight?.claimId ?? this.state.get().claim?.id ?? null;
     const child = this.inflight?.child;
     if (child) this.killGroup(child);
   }
 
-  /** Ask the running leg to stop at its next safe point (§6.13's `release`/`regressed` signals);
-   * the claim-level end this turns into is remembered for when the leg settles. */
+  /** The pending signal as the loop reads it — through a call, so a field-narrowed null at one
+   * check point never hides the signal a later tick recorded. */
+  private abortSignal(): PendingAbort | null {
+    return this.pendingAbort;
+  }
+
+  /** Ask the claim to stop at its next safe point (§6.13's `release`/`regressed` signals): the
+   * signal is recorded whether or not a leg process is running — a release that lands in a
+   * short wait or between legs is honoured just the same, never dropped. The claim-level end it
+   * turns into is remembered for when the runner next settles. */
   private signalLeg(signal: PendingAbort['signal'], reason?: string): void {
-    if (!this.inflight?.child || this.pendingAbort) return;
+    if (!this.inflight || this.pendingAbort) return;
     this.pendingAbort = { signal, reason };
     const child = this.inflight.child;
-    if (child.process.stdin && !child.process.stdin.destroyed) child.process.stdin.write(`${JSON.stringify({ abort: signal })}\n`);
+    if (child?.process.stdin && !child.process.stdin.destroyed) child.process.stdin.write(`${JSON.stringify({ abort: signal })}\n`);
   }
 
   private killGroup(child: LegChild): void {
@@ -192,53 +215,90 @@ export class Runner {
     }
   }
 
-  /** Drain the spool: transcript pointers leg sessions appended (§6.8) ride this heartbeat.
-   * A missing file is no spool at all; a malformed line is dropped loudly — the archiver that
-   * wrote it is who must fix it, and one bad line never sinks the heartbeat. */
-  private drainSpool(): unknown[] {
+  /** Take the spool (§6.8, §6.9): rename it aside so lines a leg session appends while this beat
+   * runs are never lost, split what was there into transcript pointers and activity rows, and
+   * drop only what is neither — loudly. Nothing is truncated before it reached Baton. */
+  private takeSpool(): { transcripts: unknown[]; activities: unknown[] } {
     let text: string;
     try {
       text = readFileSync(this.state.spool, 'utf8');
     } catch {
-      return [];
+      return { transcripts: [], activities: [] };
     }
-    const out: unknown[] = [];
+    writeFileSync(this.state.spool, '');
+    const transcripts: unknown[] = [];
+    const activities: unknown[] = [];
     for (const line of text.split('\n')) {
       if (!line) continue;
       try {
-        const parsed = JSON.parse(line) as unknown;
-        if (!!parsed && typeof parsed === 'object' && 'repo' in (parsed as object) && 'path' in (parsed as object)) out.push(parsed);
+        const parsed = JSON.parse(line) as Record<string, unknown>;
+        if ('repo' in parsed && 'path' in parsed) transcripts.push(parsed);
+        else if ('id' in parsed && 'kind' in parsed) activities.push(parsed);
+        else this.log(`baton: a spool line that is neither a transcript pointer nor an activity was dropped (${line.slice(0, 80)})`);
       } catch {
         this.log(`baton: a malformed spool line was dropped (${line.slice(0, 80)})`);
       }
     }
-    if (text) writeFileSync(this.state.spool, '');
-    return out.slice(-50);
+    return { transcripts: transcripts.slice(-50), activities: activities.slice(-200) };
+  }
+
+  /** §6.9: activity rows go up under their own call; a failure re-appends them to the spool so
+   * the next beat carries them again — a refused row is the server's word, not a loss. */
+  private async postActivities(activities: unknown[]): Promise<void> {
+    try {
+      const res = await this.o.api.activities(activities);
+      for (const refused of (res.refused ?? []) as { id?: string; message?: string }[]) {
+        this.log(`baton: an activity was refused (${refused.id ?? '?'}: ${refused.message ?? '?'})`);
+      }
+    } catch (e) {
+      this.log(`baton: the activities call failed (${msg(e)}) — kept for the next beat`);
+      appendFileSync(this.state.spool, `${activities.map((a) => JSON.stringify(a)).join('\n')}\n`);
+    }
   }
 
   // ── the loop ─────────────────────────────────────────────────────────────────────────────
 
-  /** Claim and run tickets until `stop()`; a failure between claims is logged, never fatal. */
+  /** Claim and run tickets until `stop()`; a failure between claims is logged, never fatal.
+   * Idle, the runner asks for recommendations when a heartbeat carried an `unblocked` message
+   * (R-BTN-77) and otherwise at its own interval — each idle attempt asks first, then claims. */
   async work(): Promise<void> {
     this.start();
     while (!this.stopped) {
       try {
         const outcome = await this.runOnce();
-        if (!outcome) await sleep(this.o.beatEvery);
+        if (!outcome) await this.idleWait();
       } catch (e) {
         this.log(`baton: the loop failed (${msg(e)}) — retrying after a beat`);
-        await sleep(this.o.beatEvery);
+        await this.idleWait();
       }
     }
+  }
+
+  /** The idle wait: a beat long, unless an `unblocked` message ends it early. */
+  private async idleWait(): Promise<void> {
+    const until = this.now() + this.o.beatEvery;
+    while (!this.stopped && !this.unblocked && this.now() < until) await sleep(Math.min(50, this.o.beatEvery));
+    this.unblocked = false;
   }
 
   /** One claim's whole run — or one idle attempt, returning null when nothing was claimable. */
   async runOnce(): Promise<ClaimOutcome | null> {
     // The worker must exist before it can claim (§5): one heartbeat registers it.
     if (this.state.get().worker_id == null) await this.tick();
+    // R-BTN-72: it recommends, then claims — the first recommendation is what a claim without
+    // an id would take anyway, asked for here so the runner knows what it is going for.
+    let wanted: string | undefined;
+    try {
+      const recs = await this.o.api.recommendations();
+      wanted = (recs.recommendations ?? [])[0]?.ticket_id;
+    } catch (e) {
+      if (!(e instanceof BatonRefusal)) throw e;
+      // A worker the gates refuse entirely still claims below: Baton's refusal is the answer.
+      this.log(`baton: no recommendation (${e.message})`);
+    }
     let claim: Record<string, any>;
     try {
-      claim = await this.o.api.claim({ request_id: `run-${randomBytes(8).toString('hex')}` });
+      claim = await this.o.api.claim({ request_id: `run-${randomBytes(8).toString('hex')}`, ...(wanted ? { ticket_id: wanted } : {}) });
     } catch (e) {
       if (e instanceof BatonRefusal && (e.code === 'no-eligible-ticket' || e.code === 'not-eligible')) return null;
       throw e;
@@ -267,8 +327,10 @@ export class Runner {
     const scratch = claimScratch();
     this.inflight = { claimId, ticket, course, child: null, waiters: [] };
     this.closedDone = false;
-    const gitPath0 = (claim.previous_attempts?.[0]?.legs ?? []) as { leg: string; reached: string }[];
-    let gitPath = gitPath0;
+    // §2e/R-BTN-63: the legs git evidences are every earlier attempt's, flattened; the claim's
+    // own legs are counted beside them when a leg's run number is taken.
+    let gitPath = (claim.previous_attempts ?? []).flatMap((a: { legs?: { leg: string; reached: string | null }[] }) =>
+      (a.legs ?? []).map((l) => ({ leg: l.leg, reached: l.reached ?? '' })));
     let handoffUrl = (claim.handoff_url ?? null) as string | null;
     let resume = (claim.previous_attempts?.[0]?.resume ?? null) as Record<string, any> | null;
     let advice = (claim.advice ?? null) as unknown;
@@ -288,11 +350,29 @@ export class Runner {
       nextLegs = (firstAnswer.next ?? nextLegs) as NextLegs;
       advice = firstAnswer.advice ?? advice;
       for (;;) {
+        // A signal that landed while no leg was running (a short wait, or the steps between
+        // legs) ends the claim just the same — a release is never dropped (§6.13).
+        const whileWaiting = this.abortSignal();
+        if (whileWaiting) {
+          const reason = whileWaiting.reason ?? `suspended:${at}`;
+          return await this.finish(claimId, { end_reason: reason, reached: at, next: legName }, await this.callHandoff(ranScript, ranCtx ?? {}) ?? handoffUrl);
+        }
         // §6.13: a leg the latest snapshot shows waiting suspends — unless its wait is one of the
-        // course's short_waits, when the claim is kept and the station re-read each beat for up
-        // to 30 minutes (R-BTN-40).
+        // course's short_waits, when the claim is kept and the station is re-read each beat for
+        // up to 30 minutes (R-BTN-40). A signal that landed in the wait ends the claim as the
+        // signal says, never as the suspension it interrupted.
         const wait = waitState(nextLegs, legName, course.graph.shortWaits);
-        if (wait === 'suspend' || (wait === 'short' && !(await this.waitOut(legName, course)))) {
+        let held: 'cleared' | 'suspend' = wait === 'run' ? 'cleared' : 'suspend';
+        if (wait === 'short') {
+          const out = await this.waitOut(legName, course);
+          if (out === 'abort') {
+            const signal = this.abortSignal()!;
+            const reason = signal.reason ?? `suspended:${at}`;
+            return await this.finish(claimId, { end_reason: reason, reached: at, next: legName }, await this.callHandoff(ranScript, ranCtx ?? {}) ?? handoffUrl);
+          }
+          held = out === 'cleared' ? 'cleared' : 'suspend';
+        }
+        if (held === 'suspend') {
           // §6.13: the hand-off of the leg that ran comes before the suspension (R-BTN-44).
           const url = await this.callHandoff(ranScript, ranCtx ?? {}) ?? handoffUrl;
           return await this.finish(claimId, { end_reason: `suspended:${at}`, reached: at, next: legName }, url);
@@ -317,21 +397,28 @@ export class Runner {
         }
         if (outcome.kind === 'lease-lost') {
           // The group is dead; no close, no hand-off (R-BTN-24's resume record covers the leg).
-          return await this.finish(claimId, { end_reason: 'released:lease-lost', reached: at }, null);
+          return await this.finish(claimId, { end_reason: 'released:lease-lost', reached: at, next: legName }, null);
         }
         if (outcome.kind === 'missing') {
           this.log(`baton: the snapshot has no legs/${legName}.mjs — a script bug the test kit owns (§2d)`);
           return await this.finish(claimId, { end_reason: 'released:cannot-finish:transient', reached: at, next: legName }, null);
         }
         // A sidecar signal that landed mid-leg decides the end, whatever the script then says —
-        // the leg stops at its next safe point (§6.13); `handoff` runs before it.
-        const abort: PendingAbort | null = this.pendingAbort;
+        // the leg stops at its next safe point (§6.13). A release may name the outcome the
+        // finished leg reached, validated and closed like any result (R-BTN-83: a position not
+        // in git is not reported); a regression rests at the leg's `from` whatever it said.
+        const abort = this.abortSignal();
         if (abort) {
-          const result = outcome.kind === 'ok' ? outcome.result : null;
-          const finished = abort.signal === 'release' && result != null && typeof (result as { reached?: unknown }).reached === 'string';
-          const reached = finished ? (result as { reached: string }).reached : at;
+          let reached = at;
+          let closed: string | null | undefined = null;
+          if (abort.signal === 'release' && outcome.kind === 'ok') {
+            const verdict = decide(outcome.result, course.graph, legName, at);
+            if (!('bug' in verdict)) closed = await this.callClose(script, ctx, outcome.result);
+            if (closed != null && !('bug' in verdict)) reached = verdict.reached;
+          }
           const reason = abort.reason ?? `suspended:${at}`;
-          return await this.finish(claimId, { end_reason: reason, reached, ...(reason.startsWith('suspended') ? { next: legName } : {}) }, await this.callHandoff(script, ctx));
+          // A released end points at no evidence (§6.5); the marker close wrote is in git.
+          return await this.finish(claimId, { end_reason: reason, reached, next: legName }, await this.callHandoff(script, ctx));
         }
         if (outcome.kind === 'crashed') {
           this.log(`baton: ${ticket}'s ${legName} failed (${outcome.error})`);
@@ -361,14 +448,15 @@ export class Runner {
           return await this.finish(claimId, { end_reason: reason, reached: verdict.reached, next: verdict.next, ...(closed ? { ended_at_sha: closed } : {}) }, await this.callHandoff(script, ctx));
         }
         // The go-on decision: the advance carries the result's bars on the edge (R-BTN-63) and
-        // the evidence `close` wrote; it finishes this leg and starts the next.
+        // the evidence `close` wrote; it finishes this leg and starts the next. The finished leg
+        // joins the evidenced path only now — the next leg's run number counts what ran.
         const answer = await this.advance(claimId, { reached: verdict.reached, leg: verdict.leg, bars: verdict.bars, ...(closed ? { evidence: closed } : {}) }, verdict.reached);
         if ('settle' in answer) return await this.finish(claimId, answer.settle, await this.callHandoff(script, ctx) ?? handoffUrl);
+        gitPath = [...gitPath, { leg: legName, reached: verdict.reached }];
         at = answer.station ?? verdict.reached;
         nextLegs = (answer.next ?? nextLegs) as NextLegs;
         advice = answer.advice ?? advice;
         legName = verdict.leg;
-        gitPath = [...gitPath, { leg: verdict.leg, reached: at }];
         handoffUrl = null;
         resume = null;
       }
@@ -389,29 +477,31 @@ export class Runner {
     } catch (e) {
       if (!(e instanceof BatonRefusal)) throw e;
       if (refusalKind(e.ruleCode) === 'course-changed') {
-        return { settle: { end_reason: 'released:course-changed', reached: body.reached ?? fallbackStation } };
+        return { settle: { end_reason: 'released:course-changed', reached: body.reached ?? fallbackStation, ...(body.leg ? { next: body.leg } : {}) } };
       }
       return { settle: { end_reason: `suspended:${body.reached ?? fallbackStation}`, reached: body.reached ?? fallbackStation, next: body.leg } };
     }
   }
 
-  /** Hold a short wait (R-BTN-40): each beat re-reads the snapshot's legs; 30 minutes suspends.
-   * A beat that brought no reading (the fallback timeout) settles nothing — only the clock. */
-  private async waitOut(leg: string, course: CourseLoad): Promise<boolean> {
+  /** Hold a short wait (R-BTN-40): each beat re-reads the snapshot's legs; 30 minutes spends it.
+   * A beat that brought no reading (the fallback timeout) settles nothing — only the clock — and
+   * a signal that landed while no leg ran aborts the wait, honoured by the caller. */
+  private async waitOut(leg: string, course: CourseLoad): Promise<'cleared' | 'spent' | 'abort'> {
     const waitedSince = this.now();
     for (;;) {
+      if (this.pendingAbort) return 'abort';
       const shown = await new Promise<NextLegs | null>((resolve) => {
         if (!this.inflight) return resolve(null);
         this.inflight.waiters.push((n) => resolve(n));
         setTimeout(() => resolve(null), this.o.beatEvery).unref?.();
       });
       if (shown == null) {
-        if (shortWaitSpent(waitedSince, this.now())) return false;
+        if (shortWaitSpent(waitedSince, this.now())) return 'spent';
         continue;
       }
       const state = waitState(shown, leg, course.graph.shortWaits);
-      if (state === 'run') return true;
-      if (state === 'suspend' || shortWaitSpent(waitedSince, this.now())) return false;
+      if (state === 'run') return 'cleared';
+      if (state === 'suspend' || shortWaitSpent(waitedSince, this.now())) return 'spent';
     }
   }
 
@@ -465,14 +555,16 @@ export class Runner {
   }
 
   /** `close(ctx, result)`: the closing marker from the validated result (R-BTN-83), retried
-   * twice; when it cannot write, nothing is reported for the leg (§6.13) — `undefined`. */
+   * twice; when it cannot write, nothing is reported for the leg (§6.13) — `undefined`.
+   * §6.13's default-export shape and the named-export shape both serve. */
   private async callClose(script: string | null, ctx: Record<string, unknown>, result: unknown): Promise<string | null | undefined> {
     if (script == null) return null;
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        const mod = (await import(`${pathToFileURL(script).href}?close=${randomBytes(4).toString('hex')}`)) as { close?: (ctx: unknown, result: unknown) => unknown };
-        if (typeof mod.close !== 'function') throw new Error('the script exports no close(ctx, result)');
-        const ref = await mod.close(ctx, result);
+        const mod = (await import(`${pathToFileURL(script).href}?close=${randomBytes(4).toString('hex')}`)) as { close?: (ctx: unknown, result: unknown) => unknown; default?: { close?: (ctx: unknown, result: unknown) => unknown } };
+        const close = mod.close ?? mod.default?.close;
+        if (typeof close !== 'function') throw new Error('the script exports no close(ctx, result)');
+        const ref = await close(ctx, result);
         return typeof ref === 'string' ? ref : null;
       } catch (e) {
         this.log(`baton: the leg's close failed (${msg(e)}), attempt ${attempt + 1} of 3`);
@@ -486,9 +578,10 @@ export class Runner {
   private async callHandoff(script: string | null, ctx: Record<string, unknown>, why?: string): Promise<string | null> {
     if (script == null) return null;
     try {
-      const mod = (await import(`${pathToFileURL(script).href}?handoff=${randomBytes(4).toString('hex')}`)) as { handoff?: (ctx: unknown) => unknown };
-      if (typeof mod.handoff !== 'function') throw new Error('the script exports no handoff(ctx)');
-      const url = await mod.handoff(why != null ? { ...ctx, bug: why } : ctx);
+      const mod = (await import(`${pathToFileURL(script).href}?handoff=${randomBytes(4).toString('hex')}`)) as { handoff?: (ctx: unknown) => unknown; default?: { handoff?: (ctx: unknown) => unknown } };
+      const handoff = mod.handoff ?? mod.default?.handoff;
+      if (typeof handoff !== 'function') throw new Error('the script exports no handoff(ctx)');
+      const url = await handoff(why != null ? { ...ctx, bug: why } : ctx);
       return typeof url === 'string' ? url : null;
     } catch (e) {
       this.log(`baton: the leg's handoff failed (${msg(e)}) — the resume record covers it (R-BTN-24)`);
@@ -511,6 +604,10 @@ export class Runner {
     }
     for (const id of this.toAck.splice(0)) await this.o.api.ack(id).catch(() => {});
     this.state.set({ claim: null });
+    // The lost lease belonged to that claim (R-BTN-6): a fresh claim starts on a fresh lease,
+    // so the flag never outlives the claim it fenced.
+    this.lostLease = false;
+    this.state.set({ lease_lost: false, lease_lost_because: null });
     this.closedDone = false;
     this.log(`baton: ${ticket} ${body.end_reason} at ${body.reached ?? '?'}`);
     return { ticket, end_reason: body.end_reason as string, reached: (body.reached as string) ?? null, handoff };

@@ -1,8 +1,11 @@
 // main.ts — `baton run`'s entry (BATON_SPEC §6.13): parses the flags, refuses to nest (a session
 // that carries IR_BATON_PARENT is a leg session — it never claims, advances or ends: the runner
 // that started it does), wires the API client (the machine's key, or the transition's token),
-// the state file and the home checkout, and runs the loop. The pure half (`parseRunArgs`) is
-// unit-tested; the wiring is exercised end-to-end by S-BTN-41 against the local host.
+// the state file, the home checkout and R-BTN-34's bounded fetch, and runs the loop. The pure
+// half (`parseRunArgs`, `declareCourses`, `envAuth`) is unit-tested in
+// test/unit/runner-main.test.ts; the wiring is exercised end-to-end by S-BTN-41 against the
+// local host.
+import { execFileSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
@@ -59,10 +62,11 @@ export function parseRunArgs(argv: string[], env: NodeJS.ProcessEnv = process.en
   return out;
 }
 
-/** A repository's course declarations for the heartbeat (rule 9): `.baton/baton.json`'s
- * `courses` when R3-1233's file lands; docs' interim is the skills_version every course runs at.
- * The runner refuses to guess a version it cannot find — a wrong declaration silences rule 9. */
-export function declareCourses(home: string, repository: string): { course: string; version: number }[] {
+/** A repository's course declarations for the heartbeat (rule 9): the spec's
+ * `.baton/baton.json` `courses: [{id, version}]` (§2c/R-BTN-51) first; docs' interim is the
+ * skills_version every course runs at (`{course}` naming one, or the single directory). The
+ * runner refuses to guess a version it cannot find — a wrong declaration silences rule 9. */
+export function declareCourses(home: string): { course: string; version: number }[] {
   const read = (p: string): Record<string, unknown> | null => {
     try {
       return JSON.parse(readFileSync(join(home, p), 'utf8')) as Record<string, unknown>;
@@ -71,17 +75,28 @@ export function declareCourses(home: string, repository: string): { course: stri
     }
   };
   const batonJson = read('.baton/baton.json');
+  if (batonJson && Array.isArray(batonJson.courses) && batonJson.courses.length) {
+    const out: { course: string; version: number }[] = [];
+    for (const c of batonJson.courses as Record<string, unknown>[]) {
+      if (typeof c.id !== 'string' || typeof c.version !== 'number') throw new Error('.baton/baton.json courses[] entries must be {id, version}');
+      out.push({ course: c.id, version: c.version });
+    }
+    return out;
+  }
   const version = (() => {
     if (batonJson && typeof batonJson.skills_version === 'number') return batonJson.skills_version;
     const data = read('scripts/data/baton.json');
     return typeof data?.skills_version === 'number' ? data.skills_version : null;
   })();
-  if (version == null) throw new Error('the home checkout names no course version (.baton/baton.json skills_version, or scripts/data/baton.json)');
-  if (typeof batonJson?.course === 'string') return [{ course: batonJson.course, version }];
+  if (typeof batonJson?.course === 'string') {
+    if (version == null) throw new Error('the home checkout names no course version (.baton/baton.json courses[] or skills_version, or scripts/data/baton.json)');
+    return [{ course: batonJson.course, version }];
+  }
   const coursesDir = join(home, '.baton', 'courses');
   if (!existsSync(coursesDir)) throw new Error(`${home} has no .baton/courses`);
   const listed = readdirSync(coursesDir).filter((d) => existsSync(join(coursesDir, d, 'course.json')));
   if (listed.length !== 1) throw new Error(`the home checkout runs ${listed.length} courses and .baton/baton.json names none: ${listed.join(', ')}`);
+  if (version == null) throw new Error('the home checkout names no course version (.baton/baton.json courses[] or skills_version, or scripts/data/baton.json)');
   return [{ course: listed[0], version }];
 }
 
@@ -90,6 +105,17 @@ function cacheDir(): string {
   const dir = join(homedir(), '.cache', 'immediately-run', 'baton');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   return dir;
+}
+
+/** R-BTN-34's bounded fetch: one `git fetch origin main` in the home checkout, its failure
+ * logged and swallowed — `ensureSha` re-checks and releases `stale-board` when the commit is
+ * still missing, which is exactly the bound. */
+export function fetchMain(home: string, log: (l: string) => void = () => {}): void {
+  try {
+    execFileSync('git', ['-C', home, 'fetch', 'origin', 'main'], { stdio: 'ignore' });
+  } catch (e) {
+    log(`baton: the snapshot fetch failed (${e instanceof Error ? e.message : String(e)})`);
+  }
 }
 
 export async function runMain(argv: string[], io: { log?: (l: string) => void; fetch?: (home: string) => void } = {}): Promise<number> {
@@ -112,10 +138,10 @@ export async function runMain(argv: string[], io: { log?: (l: string) => void; f
     api: new BatonApi({ url: a.url, transport: (req) => fetch(req), auth }, log),
     home: a.home, repository: a.repository, hostname: a.hostname, harness: a.harness, session: a.session,
     tierCeiling: a.tier, capabilities: a.capabilities,
-    courses: declareCourses(a.home, a.repository),
+    courses: declareCourses(a.home),
     stateFile: join(cacheDir(), `${a.session}.json`),
     beatEvery: a.beatEvery, log,
-    fetch: io.fetch,
+    fetch: io.fetch ?? ((home) => fetchMain(home, log)),
   });
   await runner.work();
   return 0;

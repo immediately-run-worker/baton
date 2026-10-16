@@ -5,7 +5,7 @@
 // extracted per claim into a scratch directory, so a course change between two claims needs no
 // restart and the fresh `import()` the wrapper does is of the snapshot's bytes.
 import { execFileSync } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,18 +24,21 @@ export interface CourseLoad {
   scratch: string;
 }
 
-/** The course id the home repository runs: `.baton/baton.json`'s `course` (R3-1233's file, the
- * spec's home of "baton.json names the course"), else — docs' interim — the one course under
- * `.baton/courses/`. A repository running two courses with no baton.json is refused loudly
- * rather than guessed at. */
+/** The course id the home repository runs, from the snapshot's `.baton/baton.json`: the spec's
+ * `courses: [{id, …}]` (§2c/R-BTN-51) when it lists one; docs' interim `{course}` key; else —
+ * no baton.json at all yet — the one course under `.baton/courses/`. Several courses with no
+ * disambiguation are refused loudly, never guessed at: the claim response names no course. */
 export function courseOf(home: string, sha: string): string {
   const batonJson = readAt(home, sha, '.baton/baton.json');
   if (batonJson != null) {
-    const parsed = JSON.parse(batonJson) as { course?: unknown };
-    if (typeof parsed.course !== 'string' || !/^[a-z][a-z0-9-]{0,39}$/.test(parsed.course)) {
-      throw new Error(`.baton/baton.json at ${sha.slice(0, 10)} names no course`);
+    const parsed = JSON.parse(batonJson) as { courses?: { id?: unknown }[]; course?: unknown };
+    if (Array.isArray(parsed.courses) && parsed.courses.length) {
+      const ids = parsed.courses.map((c) => c.id).filter((id): id is string => typeof id === 'string' && /^[a-z][a-z0-9-]{0,39}$/.test(id));
+      if (ids.length !== parsed.courses.length || ids.length !== 1) throw new Error(`.baton/baton.json at ${sha.slice(0, 10)} names ${ids.length} courses: ${ids.join(', ')} — the runner takes exactly one`);
+      return ids[0];
     }
-    return parsed.course;
+    if (typeof parsed.course === 'string' && /^[a-z][a-z0-9-]{0,39}$/.test(parsed.course)) return parsed.course;
+    throw new Error(`.baton/baton.json at ${sha.slice(0, 10)} names no course`);
   }
   const listing = git(home, ['ls-tree', '--name-only', `${sha}:.baton/courses/`]).split('\n').filter((l) => l && !l.endsWith('/'));
   if (listing.length !== 1) throw new Error(`the home repository runs ${listing.length} courses and .baton/baton.json names none: ${listing.join(', ') || '(none)'}`);
@@ -105,7 +108,8 @@ export function claimScratch(): string {
   return mkdtempSync(join(tmpdir(), 'baton-claim-'));
 }
 
-/** A stable secret for the runner's own worker: fresh per state file, kept across restarts. */
+/** A stable secret for the runner's own worker: fresh per state file, kept across restarts —
+ * R-BTN-14's random 256-bit value. */
 export function freshSecret(): string {
-  return `runner-${createHash('sha256').update(`${Math.random()}${Date.now()}`).digest('hex').slice(0, 24)}`;
+  return randomBytes(32).toString('hex');
 }

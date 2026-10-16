@@ -86,6 +86,14 @@ export class BatonApi {
   heartbeat(body: Record<string, unknown>): Promise<Record<string, any>> {
     return this.call('POST', '/v1/runner/heartbeat', body);
   }
+  /** §11: the sorted legs this worker may take — what an idle runner asks for (R-BTN-45). */
+  recommendations(limit = 10): Promise<Record<string, any>> {
+    return this.call('GET', `/v1/runner/recommendations?limit=${limit}`);
+  }
+  /** §6.9: activity rows from the spool, upserted under their own call. */
+  activities(activities: unknown[]): Promise<Record<string, any>> {
+    return this.call('POST', '/v1/runner/activities', { activities });
+  }
   claim(body: { request_id: string; ticket_id?: string }): Promise<Record<string, any>> {
     return this.call('POST', '/v1/runner/claim', body);
   }

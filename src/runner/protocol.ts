@@ -134,8 +134,9 @@ export const SHORT_WAIT_MS = 30 * 60_000;
 /** Whether a short wait that started at `waitedSince` is spent at `now`. */
 export const shortWaitSpent = (waitedSince: number, now: number): boolean => now - waitedSince >= SHORT_WAIT_MS;
 
-/** A leg's run number for `ctx`: how many runs of it git evidences (the claim response's `path`)
- * plus the ones this claim started, under current names (R-BTN-64). */
+/** A leg's run number for `ctx`: how many runs of it git evidences (every earlier attempt's
+ * legs, flattened by the runner) plus the ones this claim started, under current names
+ * (R-BTN-64, R-BTN-63). */
 export function runNumber(g: Graph, path: { leg: string; reached?: string }[], leg: string, ownRuns: string[]): number {
   return path.filter((s) => (resolveLeg(g, s.leg) ?? s.leg) === leg).length
     + ownRuns.filter((l) => (resolveLeg(g, l) ?? l) === leg).length + 1;

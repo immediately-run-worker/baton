@@ -27,14 +27,14 @@ const T0 = Date.parse('2026-10-16T12:00:00Z');
 /** One leg script: `run` is the body given; `close` commits a closing marker and returns the
  * commit (the position is in git before it is reported, R-BTN-83); `handoff` records its call.
  * Every line the test asserts on lands in `<home>/.baton/evidence.jsonl`. */
-function legFile(run: string): string {
+function legFile(run: string, defaultExport = false): string {
   return `import { appendFileSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 const at = (ctx, name) => [ctx.checkout, '.baton', name].join('/');
 const ev = (ctx, line) => appendFileSync(at(ctx, 'evidence.jsonl'), line + '\\n');
 const out = (ctx, o) => { const f = at(ctx, 'evidence.jsonl'); const was = existsSync(f) ? readFileSync(f, 'utf8') : ''; writeFileSync(f, was + JSON.stringify(o) + '\\n'); };
 const git = (ctx, ...a) => execFileSync('git', ['-C', ctx.checkout, ...a], { encoding: 'utf8' }).trim();
-export async function run(ctx) {
+${defaultExport ? 'export default' : 'export'} async function run(ctx) {
 ${run}
 }
 export async function close(ctx, result) {
@@ -70,8 +70,8 @@ class Home {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, text);
   }
-  leg(name: string, run: string): void {
-    this.write(`.baton/courses/relay/legs/${name}.mjs`, legFile(run));
+  leg(name: string, run: string, defaultExport = false): void {
+    this.write(`.baton/courses/relay/legs/${name}.mjs`, legFile(run, defaultExport));
   }
   sha(): string {
     return execFileSync('git', ['-C', this.dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
@@ -116,7 +116,7 @@ function makeRunner(over: Record<string, unknown> = {}): Runner {
   const runner = new Runner({
     api, home: home.dir, repository: 'docs', hostname: 'vm-a', harness: 'opencode',
     session: `runner-${n}`, courses: [{ course: 'relay', version: 3 }],
-    stateFile, beatEvery: 40, now: () => clock.now, log: (l) => console.error('RUNNERLOG', l),
+    stateFile, beatEvery: 40, now: () => clock.now, log: () => {},
     ...over,
   });
   runners.push(runner);
@@ -165,12 +165,12 @@ afterEach(async () => {
 
 describe('S-BTN-41 the runner', () => {
   it('claims a ticket and takes the leg each result names, never inferring one', async () => {
-    home.leg('build', `out(ctx, { leg: 'build', parent: process.env.IR_BATON_PARENT ?? null, hasState: !!process.env.IR_BATON_STATE, session: ctx.session ?? null });
+    home.leg('build', `out(ctx, { leg: 'build', parent: process.env.IR_BATON_PARENT ?? null, hasState: !!process.env.IR_BATON_STATE, session: ctx.session ?? null, run: ctx.run });
   return { reached: 'built', next: 'check', session: 's-1' };`);
-    home.leg('check', `out(ctx, { leg: 'check', session: ctx.session ?? null });
+    home.leg('check', `out(ctx, { leg: 'check', session: ctx.session ?? null, run: ctx.run });
   return { reached: 'checked', next: 'merge', bars: ['family:anthropic'] };`);
-    home.leg('merge', `out(ctx, { leg: 'merge' });
-  return { reached: 'merged' };`);
+    home.leg('merge', `out(ctx, { leg: 'merge', run: ctx.run });
+  return { reached: 'merged' };`, true);
     home.commit();
     await home.post({ 'T-1': placed('filed', [], [['build', 'ready']]) });
     const out = await makeRunner().runOnce();
@@ -183,10 +183,11 @@ describe('S-BTN-41 the runner', () => {
       { leg: 'merge', to_station: 'merged', bars: '["family:anthropic"]' },
     ]);
     // The leg session's env named its parent and the runner's state file (it registers no worker
-    // of its own); the session token travelled from build's result into check's ctx.
+    // of its own); the session token travelled from build's result into check's ctx. Each leg's
+    // run number is 1 on its first run — the path gains a leg only when it finishes.
     const lines = home.evidence();
-    expect(JSON.parse(lines[0])).toMatchObject({ leg: 'build', parent: expect.stringMatching(/^\d+$/), hasState: true });
-    expect(JSON.parse(lines[2])).toMatchObject({ leg: 'check', session: 's-1' });
+    expect(JSON.parse(lines[0])).toMatchObject({ leg: 'build', parent: expect.stringMatching(/^\d+$/), hasState: true, run: 1 });
+    expect(JSON.parse(lines[2])).toMatchObject({ leg: 'check', session: 's-1', run: 1 });
     // close ran for every leg (git before the report, R-BTN-83); a done end writes no hand-off.
     expect(lines.filter((l) => l.startsWith('close '))).toEqual(['close build', 'close check', 'close merge']);
     expect(lines.some((l) => l.startsWith('handoff'))).toBe(false);
@@ -202,8 +203,9 @@ describe('S-BTN-41 the runner', () => {
     const runner = makeRunner();
     runner.start();
     const done = runner.runOnce();
-    await until(() => rows('SELECT 1 FROM claims'));
-    // While build runs, the snapshot moves: the ticket is built and check waits on ci.
+    await until(() => rows(`SELECT 1 FROM claim_legs WHERE leg = 'build'`));
+    // While build runs, the snapshot moves: the ticket is built and check waits on ci — the
+    // advance into check then reads the wait, deterministically.
     await home.post({ 'T-1': placed('built', [['build', 'built']], [['check', 'waiting', 'ci']]) });
     await until(() => rows(`SELECT 1 FROM claim_legs WHERE leg = 'check'`));
     // The claim is held through the wait — check started only when the wait cleared? No: the
@@ -223,7 +225,7 @@ describe('S-BTN-41 the runner', () => {
     const runner = makeRunner();
     runner.start();
     const done = runner.runOnce();
-    await until(() => rows('SELECT 1 FROM claims'));
+    await until(() => rows(`SELECT 1 FROM claim_legs WHERE leg = 'build'`));
     await home.post({ 'T-1': placed('built', [['build', 'built']], [['check', 'waiting', 'ci']]) });
     await until(() => rows(`SELECT 1 FROM claim_legs WHERE leg = 'check'`));
     await new Promise((r) => setTimeout(r, 120));
@@ -237,6 +239,50 @@ describe('S-BTN-41 the runner', () => {
       { leg: 'check', to_station: null, gone: 1 },
     ]);
     expect(home.evidence().at(-1)).toMatch(/^handoff build/);
+  }, 30_000);
+
+  it('a release that lands during the short wait is honoured, not dropped', async () => {
+    home.leg('build', `return { reached: 'built', next: 'check' };`);
+    home.leg('check', `return { reached: 'checked', next: 'merge' };`);
+    home.commit();
+    await home.post({ 'T-1': placed('filed', [], [['build', 'ready']]) });
+    const runner = makeRunner();
+    runner.start();
+    const done = runner.runOnce();
+    await until(() => rows('SELECT 1 FROM claims'));
+    await home.post({ 'T-1': placed('built', [['build', 'built']], [['check', 'waiting', 'ci']]) });
+    await until(() => rows(`SELECT 1 FROM claim_legs WHERE leg = 'check'`)); // the wait holds
+    const worker = (await rows<{ id: number }>('SELECT id FROM workers ORDER BY id DESC LIMIT 1'))[0].id;
+    const send = await ownerCall('/v1/ui/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: ORIGIN }, body: JSON.stringify({ kind: 'release', to_worker_id: worker, payload: { ticket_id: 'docs:T-1', reason: 'requested' } }) });
+    expect(send.status).toBe(200);
+    // No leg was running when the release landed — the claim still ends released, never
+    // suspended, and the message is acked because it was acted on.
+    expect(await done).toMatchObject({ end_reason: 'released:requested', reached: 'built' });
+    expect(await rows('SELECT end_reason FROM claims')).toEqual([{ end_reason: 'released:requested' }]);
+    await until(() => rows(`SELECT 1 FROM messages WHERE status = 'acknowledged'`));
+    expect(home.evidence().at(-1)).toMatch(/^handoff build/); // the leg that ran writes it
+  }, 30_000);
+
+  it('a snapshot the checkout lacks is fetched once, and the claim runs (R-BTN-34)', async () => {
+    // The runner's home is a clone of the course-only root: the legs commit the claim is
+    // decided on does not exist in it yet, so the one bounded fetch must bring it.
+    home.commit(); // the course-only root, before any legs
+    const clone = mkdtempSync(join(tmpdir(), 'baton-clone-'));
+    execFileSync('git', ['clone', '-q', home.dir, clone], { stdio: 'ignore' });
+    const fetched: string[] = [];
+    home.leg('build', `return { reached: 'built', next: 'check' };`);
+    home.leg('check', `return { suspend: true, reached: 'checked' };`);
+    home.commit();
+    await home.post({ 'T-1': placed('filed', [], [['build', 'ready']]) });
+    const runner = makeRunner({ home: clone, fetch: (h: string) => {
+      fetched.push(h);
+      execFileSync('git', ['-C', h, 'fetch', '-q', 'origin', 'main'], { stdio: 'ignore' });
+    } } as Record<string, unknown>);
+    const out = await runner.runOnce();
+    expect(out).toMatchObject({ ticket: 'docs:T-1', end_reason: 'suspended:checked' }); // ran, not stale-board
+    expect(fetched).toEqual([clone]); // one bounded fetch
+    expect(await rows('SELECT end_reason FROM claims')).toEqual([{ end_reason: 'suspended:checked' }]);
+    rmSync(clone, { recursive: true, force: true });
   }, 30_000);
 
   it('a script’s own suspension rests at its outcome, close before handoff', async () => {
@@ -314,11 +360,15 @@ describe('S-BTN-41 the runner', () => {
     const worker = (await rows<{ id: number }>('SELECT id FROM workers ORDER BY id DESC LIMIT 1'))[0].id;
     const send = await ownerCall('/v1/ui/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: ORIGIN }, body: JSON.stringify({ kind: 'release', to_worker_id: worker, payload: { ticket_id: 'docs:T-1', reason: 'requested' } }) });
     expect(send.status).toBe(200);
-    // It names that the leg reached its to, writes the hand-off, and releases.
+    // It names that the leg reached its to — validated and closed like any result (R-BTN-83),
+    // the marker before the hand-off — and releases naming the queued leg.
     expect(await done).toMatchObject({ end_reason: 'released:requested', reached: 'checked' });
     expect(home.evidence().some((l) => l.includes('aborted:release'))).toBe(true);
-    expect(home.evidence().at(-1)).toMatch(/^handoff check/);
+    const lines = home.evidence();
+    expect(lines.indexOf('close check')).toBeLessThan(lines.indexOf('handoff check'));
+    expect(home.markers().at(-1)).toMatchObject({ leg: 'check', reached: 'checked' });
     expect(await rows('SELECT end_reason, status FROM claims')).toEqual([{ end_reason: 'released:requested', status: 'released' }]);
+    expect((await rows<{ resume_json: string }>('SELECT resume_json FROM claims'))[0].resume_json).toMatch(/"next":"check"/); // the leg itself queued (R-BTN-83)
     // The message is acknowledged once acted on (§9).
     await until(() => rows(`SELECT 1 FROM messages WHERE status = 'acknowledged'`));
   }, 30_000);
@@ -346,12 +396,25 @@ describe('S-BTN-41 the runner', () => {
     // The grandchild died with the group, and no hand-off was written (R-BTN-24 covers it).
     expect(await untilDead(pid)).toBe(true);
     expect(home.evidence().some((l) => l.startsWith('handoff'))).toBe(false);
-  }, 30_000);
+    // R-BTN-19: the next heartbeat reports the fence it cleared, so the ticket is re-issued
+    // instead of waiting for the worker to go silent…
+    await until(() => rows('SELECT 1 FROM claims WHERE fence_pending = 0'));
+    // The owner's reap ended the claim first; the runner's own end was answered claim-ended and
+    // the outcome stands — the ticket is re-issued, not fence-pending.
+    expect((await rows<{ end_reason: string }>('SELECT end_reason FROM claims'))[0].end_reason).toBe('reaped:owner');
+    // …and the lost lease belonged to that claim: the next one runs on a fresh lease.
+    home.leg('check', `return { suspend: true, reached: 'checked' };`);
+    home.commit();
+    await home.post({ 'T-1': placed('built', [['build', 'built']], [['check', 'ready']]) });
+    expect(await runner.runOnce()).toMatchObject({ end_reason: 'suspended:checked' });
+    expect((await rows<{ end_reason: string }>('SELECT end_reason FROM claims ORDER BY id DESC'))[0].end_reason).toBe('suspended:checked');
+  }, 60_000);
 
   it('a course change between two claims runs the new scripts with no restart', async () => {
-    home.leg('adjudicate', `out(ctx, { leg: 'adjudicate', flavour: 'v1' });
+    home.leg('adjudicate', `out(ctx, { leg: 'adjudicate', flavour: 'v1', run: ctx.run });
     return { suspend: true, reached: 'adjudicated' };`);
-    home.leg('rework', `return { reached: 'checked', next: 'adjudicate' };`);
+    home.leg('rework', `out(ctx, { leg: 'rework', run: ctx.run });
+    return { reached: 'checked', next: 'adjudicate' };`);
     home.commit();
     const TO_CHECKED: [string, string][] = [['build', 'built'], ['check', 'checked']];
     await home.post({ 'T-1': placed('checked', TO_CHECKED, [['adjudicate', 'ready']]) });
@@ -360,12 +423,18 @@ describe('S-BTN-41 the runner', () => {
     expect((JSON.parse(home.evidence().find((l) => l.includes('flavour')) ?? '{}') as Record<string, unknown>).flavour).toBe('v1');
     // The course changes: adjudicate's script behaves differently, on a new head; the same
     // runner (no restart) loads the new bytes with its next claim, through rework's edge.
-    home.leg('adjudicate', `out(ctx, { leg: 'adjudicate', flavour: 'v2' });
+    home.leg('adjudicate', `out(ctx, { leg: 'adjudicate', flavour: 'v2', run: ctx.run });
     return { suspend: true, reached: 'adjudicated' };`);
     home.commit();
     await home.post({ 'T-1': placed('adjudicated', [...TO_CHECKED, ['adjudicate', 'adjudicated']], [['rework', 'ready']]) });
     expect(await runner.runOnce()).toMatchObject({ end_reason: 'suspended:adjudicated' });
-    expect((JSON.parse([...home.evidence()].reverse().find((l) => l.includes('flavour')) ?? '{}') as Record<string, unknown>).flavour).toBe('v2');
+    const second = JSON.parse([...home.evidence()].reverse().find((l) => l.includes('flavour')) ?? '{}') as Record<string, unknown>;
+    expect(second.flavour).toBe('v2');
+    // The second claim's rework ran once (run 1) and adjudicate again — run 2, the earlier
+    // claim's leg counted from git (R-BTN-63).
+    expect(second.run).toBe(2);
+    const rework = [...home.evidence()].reverse().find((l) => l.startsWith('{') && l.includes('rework')) ?? '{}';
+    expect((JSON.parse(rework) as Record<string, unknown>).run).toBe(1);
   }, 30_000);
 
   it('an off-graph refusal ends released:course-changed', async () => {

@@ -42,8 +42,10 @@ process.stdin.on('error', () => {}); // the parent may close stdin when it kills
 
 try {
   const mod = await import(pathToFileURL(script).href);
-  if (typeof mod.run !== 'function') throw new Error('the leg script does not export run(ctx)');
-  const result = await mod.run({ ...ctx, signal: stop.signal });
+  // §6.13: a script default-exports run(ctx) — a named export serves the fixtures the same.
+  const run = mod.run ?? (mod.default != null && typeof mod.default === 'object' ? mod.default.run : undefined) ?? (typeof mod.default === 'function' ? mod.default : undefined);
+  if (typeof run !== 'function') throw new Error('the leg script exports no run(ctx)');
+  const result = await run({ ...ctx, signal: stop.signal });
   write({ ok: true, result: result === undefined ? null : result });
   process.exit(0);
 } catch (e) {
