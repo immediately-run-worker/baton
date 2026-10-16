@@ -515,7 +515,7 @@ export class BatonCore {
       // staleness do not stall for the hold's 24 hours. Its interim confirmations likewise.
       this.store.transaction(() => {
         this.observations.accept(r, n);
-        const seen = normative ? this.refreshStations(r, p, n, at) : new Map<string, Seen>();
+        const seen = normative ? this.refreshStations(r, p, n, at, true) : new Map<string, Seen>();
         this.claims.confirm(confirmations, n);
         this.claims.judge(r, n, seen);
         this.store.exec('UPDATE held_snapshots SET observation = ? WHERE repository_id = ? AND sha = ?', n, r, p.sha);
@@ -635,13 +635,16 @@ export class BatonCore {
   }
 
   /** A refresh's stations (§7.1, R-BTN-62): the head's tickets unchanged, where each is replaced. */
-  private refreshStations(r: string, p: BoardPayload, n: number, at: number): Map<string, Seen> {
+  private refreshStations(r: string, p: BoardPayload, n: number, at: number, held = false): Map<string, Seen> {
     const live = new Set(this.sql<{ local_id: string }>('SELECT local_id FROM tickets WHERE repository_id = ?', r).map((t) => t.local_id));
     const stations = new Map(Object.entries(p.stations ?? {}).filter(([id]) => live.has(id)).map(([id, st]) => [id, stationOf(st)] as [string, PostedStation]));
     // As on a new head: a live ticket the refresh does not place is placed nowhere, never offered
     // on an old station (round 1, 1-A-0, 1-B-0).
     for (const id of live) if (!stations.has(id)) this.stations.clear(qualify(r, id));
-    return this.stations.apply(r, p.sha, n, stations, (p.closed ?? []).filter((c) => !live.has(c.id)), at);
+    // A held history's closures stand even for tickets the current head still has: the holder's
+    // archive may be in the rewritten history alone, and its done end must not wait the hold's
+    // 24 hours (R-BTN-62; round 2, 2-A-0). A plain refresh of the head cannot close what it has.
+    return this.stations.apply(r, p.sha, n, stations, (p.closed ?? []).filter((c) => held || !live.has(c.id)), at);
   }
 
   /** The registry of a post (R-BTN-48, R-BTN-69), inside its transaction: applied whole, then
@@ -721,9 +724,14 @@ export class BatonCore {
     });
     const where = new Map(repositories.map((r) => [r.id, r]));
     const items = this.sql<Record<string, SqlValue>>(
-      `SELECT t.id, t.repository_id, t.local_id, t.path, t.title, t.project, t.status, t.node, t.queue, t.tags, t.tier, t.requires_clause, t.operator_only, t.ord, t.rank
+      // Ready: a ticket whose queued leg its sync posts ready (R-BTN-70), the interim post's
+      // included — it places each ready item at its course's start (round 2, 2-A-4).
+      `SELECT t.id, t.repository_id, t.local_id, t.path, t.title, t.project, t.status, t.node, t.queue, t.tags, t.tier, t.requires_clause, t.operator_only, t.ord, t.rank,
+              t.expedite, s.station, s.next_leg, s.to_end
        FROM tickets t JOIN repositories p ON p.id = t.repository_id
-       WHERE t.node LIKE 'ready-%' AND t.rank IS NOT NULL AND p.retired_at IS NULL ORDER BY p.weight DESC, t.rank, t.repository_id`);
+       JOIN ticket_stations s ON s.ticket_id = t.id
+       JOIN ticket_next_legs a ON a.ticket_id = t.id AND a.leg = s.next_leg AND a.state = 'ready'
+       WHERE p.retired_at IS NULL ORDER BY p.weight DESC, t.expedite DESC, s.to_end, t.rank IS NULL, t.rank, t.repository_id, t.id`);
     const requires = new Map<string, string[]>();
     for (const r of this.sql<{ ticket_id: string; name: string }>('SELECT ticket_id, name FROM ticket_requires ORDER BY name')) {
       requires.set(r.ticket_id, [...(requires.get(r.ticket_id) ?? []), r.name]);
@@ -739,7 +747,10 @@ export class BatonCore {
       queue: r.queue,
       node: r.node,
       rank: r.rank,
-      rank_reason: r.node === 'ready-expedite' ? 'expedite lane' : `${r.queue} queue · order ${r.ord ?? '—'}`,
+      station: r.station,
+      leg: r.next_leg,
+      rank_reason: r.node ? (r.node === 'ready-expedite' ? 'expedite lane' : `${r.queue} queue · order ${r.ord ?? '—'}`)
+        : `${r.expedite ? 'expedite lane · ' : ''}${r.next_leg} from ${r.station} · rank ${r.rank ?? '—'}`,
       requires_clause: r.requires_clause,
       requires: requires.get(r.id as string) ?? [],
       operator_only: r.operator_only === 1,

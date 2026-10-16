@@ -3,7 +3,8 @@
 // a sync since its last end, in the query and gatesFor alike (§6.7, G-BTN-40); the heartbeat shows
 // a closed ticket as closed; an advance on an ended claim is claim-ended.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { advance, beat, claimItem, cutover, endClaim, Git, ownerCall, placed, recommended, register, rows, setClock, withCore } from '../helpers';
+import roadmapPr from '../fixtures/courses/roadmap-pr/course.json';
+import { advance, beat, claimItem, course, cutover, endClaim, Git, ownerCall, placed, recommended, register, rows, setClock, syncCall, withCore } from '../helpers';
 
 const T0 = Date.parse('2026-10-16T12:00:00Z');
 const REVIEWED: [string, string][] = [['implement', 'pr-open'], ['review', 'reviewed']];
@@ -114,5 +115,40 @@ describe('round 1 fixes', () => {
     await claimItem('vm-b', y.secret, { ticket_id: 'docs:E-5' });
     const t = await register('test');
     expect(await recommended(t.id)).toEqual(['docs:N-1', 'docs:E-3', 'docs:N-2']);
+  });
+});
+
+describe('round 2 fixes', () => {
+  it('a held force post’s closure confirms a done end during the hold, though the head still has the ticket (2-A-0)', async () => {
+    const w = await register('vm-a');
+    const { json: c } = await claimItem('vm-a', w.secret);
+    await endClaim('vm-a', w.secret, c.claim_id, { end_reason: 'done' });
+    git.close('T-1', 'done');
+    const held = await syncCall('/v1/sync/board', git.body('d'.repeat(40), 'e'.repeat(40), { force: true }));
+    expect(held.status).toBe(409);
+    expect(await rows(`SELECT closed_as FROM closed_tickets WHERE ticket_id = 'docs:T-1'`)).toEqual([{ closed_as: 'done' }]);
+    expect((await rows<{ confirmed_at: number | null }>('SELECT confirmed_at FROM claims WHERE id = ?', c.claim_id))[0].confirmed_at).toBe(T0);
+  });
+
+  it('each leg run’s bars are judged once: a later change of the leg’s bars logs nothing (2-A-2); an old leg name reads the new name’s bars (2-A-3)', async () => {
+    const w = await register('vm-a', { tags: ['family:glm'] });
+    const { json: c } = await claimItem('vm-a', w.secret);
+    await advance('vm-a', w.secret, c.claim_id, { leg: 'fix', bars: ['family:deepseek'] });
+    await git.refresh(); // agrees: judged, nothing logged
+    git.place('T-1', placed('reviewed', REVIEWED, [['fix', 'ready']], { bars: { fix: ['family:kimi'] } }));
+    await git.refresh(); // a seat substituted later
+    expect(await rows(`SELECT 1 FROM events WHERE kind = 'bars-mismatch'`)).toEqual([]);
+    // A run started as fix, judged after a rename to address, reads address's bars.
+    await rows(`INSERT INTO claim_legs (claim_id, seq, leg, from_station, bars, started_at, started_observation) VALUES (?, 2, 'fix', 'reviewed', '["family:qwen"]', 0, 0)`, c.claim_id);
+    const { fix, ...others } = roadmapPr.legs;
+    git.registry = [course(4, 3, { course: { ...roadmapPr, legs: { ...others, address: { ...fix, renamed_from: 'fix' } } } })];
+    git.place('T-1', placed('reviewed', REVIEWED, [['address', 'ready']], { bars: { address: ['family:deepseek'] } }));
+    await git.post();
+    expect(await rows(`SELECT json_extract(detail_json, '$.seq') AS seq FROM events WHERE kind = 'bars-mismatch'`)).toEqual([{ seq: 2 }]);
+  });
+
+  it('the dashboard’s Ready lists a normative ticket by its ready queued leg (2-A-4)', async () => {
+    const state = (await (await ownerCall('/v1/ui/state')).json()) as { ready: { id: string; station: string; leg: string }[] };
+    expect(state.ready.map((r) => [r.id, r.station, r.leg])).toEqual([['docs:T-1', 'reviewed', 'fix']]);
   });
 });

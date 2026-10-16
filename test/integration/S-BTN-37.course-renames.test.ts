@@ -9,7 +9,7 @@
 // R3-1248's.) Runs on both hosts.
 import { describe, it, expect, beforeEach } from 'vitest';
 import roadmapPr from '../fixtures/courses/roadmap-pr/course.json';
-import { advance, beat, claimItem, course, cutover, Git, placed, register, rows, setClock } from '../helpers';
+import { advance, beat, claimItem, course, cutover, endClaim, Git, placed, register, rows, setClock } from '../helpers';
 
 const T0 = Date.parse('2026-10-16T12:00:00Z');
 const REVIEWED: [string, string][] = [['implement', 'pr-open'], ['review', 'reviewed']];
@@ -79,5 +79,8 @@ describe('S-BTN-37 a course changes under a claim (renames)', () => {
     expect(await git.post()).toMatchObject({ status: 200 });
     expect((await beat('vm-a', w1.secret)).json.claim).toMatchObject({ station: 'reviewed', git: 'unknown' });
     expect((await advance('vm-a', w1.secret, c1.claim_id, { leg: 'fix' })).json).toMatchObject({ code: 'not-eligible', rule_code: 'off-graph' });
+    // The runner ends released:course-changed, naming the station it is at though the file
+    // dropped it (round 2, 2-A-1).
+    expect((await endClaim('vm-a', w1.secret, c1.claim_id, { end_reason: 'released:course-changed', reached: 'reviewed' })).status).toBe(200);
   });
 });

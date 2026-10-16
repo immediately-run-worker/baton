@@ -628,8 +628,10 @@ export class Claims {
     const allowed = new Set([station, ...outcomes]);
     let reached = station;
     if (e.reached) {
-      const r = resolveStation(g, e.reached);
-      if (!r || !allowed.has(r)) {
+      // A station the course file dropped is still where the claim is: a `course-changed` release
+      // names it (R-BTN-64; round 2, 2-A-1).
+      const r = resolveStation(g, e.reached) ?? e.reached;
+      if (!allowed.has(r)) {
         throw new BatonError('not-eligible', `off-graph: the claim rests at ${[...allowed].join(' or ')}, not ${e.reached}`, { rule: 1, rule_code: 'off-graph' });
       }
       reached = r;
@@ -1009,16 +1011,20 @@ export class Claims {
     // R-BTN-63: the sync's reading of a leg's bars binds; a tag a holder declared that a later
     // snapshot's bars for that leg lack is logged once per leg run — whether the claim is still
     // active or has ended, typically at the snapshot that confirms its suspension (round 1, 1-A-1).
+    // Each leg run is judged once, against the first later snapshot that posts that leg's bars:
+    // a later, legitimate change of the bars (a seat substituted) says nothing about the run
+    // (round 2, 2-A-2). The posted bars are under current names; a run started under an old one
+    // reads them through `renamed_from` (2-A-3).
     for (const [ticketId, s] of seen) {
-      for (const l of this.rows<{ claim_id: number; seq: number; leg: string; bars: string }>(
-        `SELECT l.claim_id, l.seq, l.leg, l.bars FROM claim_legs l JOIN claims c ON c.id = l.claim_id
-         WHERE c.ticket_id = ? AND l.bars != '[]' AND l.started_observation < ?`, ticketId, observation)) {
-        const posted = s.bars[l.leg];
+      for (const l of this.rows<{ claim_id: number; seq: number; leg: string; bars: string; course_id: string | null }>(
+        `SELECT l.claim_id, l.seq, l.leg, l.bars, c.course_id FROM claim_legs l JOIN claims c ON c.id = l.claim_id
+         WHERE c.ticket_id = ? AND l.bars != '[]' AND l.bars_judged = 0 AND l.started_observation < ?`, ticketId, observation)) {
+        const g = l.course_id ? this.stations.graph(repo, l.course_id) : null;
+        const posted = s.bars[(g && resolveLeg(g, l.leg)) ?? l.leg];
         if (!posted) continue;
+        this.exec('UPDATE claim_legs SET bars_judged = 1 WHERE claim_id = ? AND seq = ?', l.claim_id, l.seq);
         const missing = (JSON.parse(l.bars) as string[]).filter((t) => !posted.includes(t));
-        if (!missing.length) continue;
-        if (this.rows(`SELECT 1 FROM events WHERE claim_id = ? AND kind = 'bars-mismatch' AND json_extract(detail_json, '$.seq') = ?`, l.claim_id, l.seq).length) continue;
-        this.event('bars-mismatch', 'sync', { seq: l.seq, leg: l.leg, declared_only: missing, observation }, ticketId, l.claim_id);
+        if (missing.length) this.event('bars-mismatch', 'sync', { seq: l.seq, leg: l.leg, declared_only: missing, observation }, ticketId, l.claim_id);
       }
     }
     return { confirmed, stale_released: stale };

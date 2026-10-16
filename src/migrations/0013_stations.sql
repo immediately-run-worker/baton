@@ -63,6 +63,7 @@ CREATE TABLE claim_legs (                        -- R-BTN-63: the legs a claim s
   finished_at   INTEGER,                         -- set by the next advance or a completed end at its `to`
   abandoned_at  INTEGER,                         -- set by an end at its `from`
   evidence      TEXT,                            -- the pointer the finishing advance or end passed (sha or URL)
+  bars_judged   INTEGER NOT NULL DEFAULT 0,      -- R-BTN-63: judged against the first later snapshot posting the leg's bars
   PRIMARY KEY (claim_id, seq)
 );
 
