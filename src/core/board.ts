@@ -6,7 +6,7 @@ import { capabilitiesOf } from '../shared/vocabulary.mjs';
 import { parseTranscriptRepo } from './links';
 import { BatonError } from './http';
 import { checkRegistry, COURSE_ID, type RegistryEntry } from './courses';
-import { COURSE_ID as LEG_ID, LOCAL_ID, SESSION_NAME, TAG } from './validate';
+import { COURSE_ID as LEG_ID, isHttpsPointer, LOCAL_ID, SESSION_NAME, TAG } from './validate';
 import type { Step } from './graph';
 
 /** One factory-state item, as the sync posts it (`docs/scripts/factory-state.mjs`). Only the
@@ -262,7 +262,7 @@ function checkNormative(p: BoardPayload) {
       }
       if (st.next_leg !== null && (typeof st.next_leg !== 'string' || !LEG_ID.test(st.next_leg))) fail(`${at}.next_leg`, 'must be a leg id or null');
       if (!['course', 'marker', 'inferred', 'holder'].includes(st.next_source)) fail(`${at}.next_source`, 'must be course, marker, inferred or holder');
-      if (st.handoff_url != null && !(typeof st.handoff_url === 'string' && st.handoff_url.length <= 1000 && st.handoff_url.startsWith('https://') && !/[\s\u0000-\u001f\u007f]/.test(st.handoff_url))) fail(`${at}.handoff_url`, 'must be an https URL of at most 1000 characters');
+      if (st.handoff_url != null && !isHttpsPointer(st.handoff_url)) fail(`${at}.handoff_url`, 'must be an https URL of at most 1000 characters');
       if (!isObjArr(st.next, NEXT_MAX)) fail(`${at}.next`, `must be a list of at most ${NEXT_MAX}`);
       const legs = new Set<string>();
       for (const [j, n] of st.next.entries()) {

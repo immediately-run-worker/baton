@@ -339,17 +339,27 @@ export class Claims {
       }
       for (const [key, g] of groups) if ((counts.get(key) ?? 0) < 50) g.done = true;
     }
+    // Rule 2 (advice): past the lane's bound an expedited ticket loses its lane — it sorts as an
+    // unexpedited one in the default order — before its group's places are numbered, so R-BTN-61's
+    // "firsts before any seconds" reads the order it is actually offered in (round 1, 1-A-2, 1-B-1).
     const full = this.expediteActive() >= EXPEDITE_BOUND;
-    const merged = [...groups.values()].flatMap((g) => g.rows.map((r, place) => ({ ...r, place, waits: !!r.expedite && full })));
-    merged.sort((a, b) =>
-      Number(a.waits) - Number(b.waits) || (b.expedite && !b.waits ? 1 : 0) - (a.expedite && !a.waits ? 1 : 0) || b.weight - a.weight || a.place - b.place
-      || a.to_end - b.to_end || (a.ready_since ?? 0) - (b.ready_since ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+    const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    const merged = [...groups.values()].flatMap((g) => {
+      const rows = g.rows.map((r) => ({ ...r, waits: !!r.expedite && full, lane: !!r.expedite && !full }));
+      if (full) {
+        rows.sort((a, b) => Number(b.lane) - Number(a.lane) || a.to_end - b.to_end
+          || (a.item.rank ?? Number.MAX_SAFE_INTEGER) - (b.item.rank ?? Number.MAX_SAFE_INTEGER) || (a.ready_since ?? 0) - (b.ready_since ?? 0) || byId(a, b));
+      }
+      return rows.map((r, place) => ({ ...r, place }));
+    });
+    merged.sort((a, b) => Number(b.lane) - Number(a.lane) || b.weight - a.weight || a.place - b.place
+      || a.to_end - b.to_end || (a.ready_since ?? 0) - (b.ready_since ?? 0) || byId(a, b));
     return merged.slice(0, limit).map((r) => ({
       ticket_id: r.id,
       station: r.item.station!.station,
       legs: [r.item.station!.next_leg!],
       score: null,
-      reasons: [...(r.expedite && !r.waits ? ['expedite lane'] : []), `${r.to_end} leg${r.to_end === 1 ? '' : 's'} to an end`, `rank ${r.item.rank ?? '—'} in ${r.repository_id}`],
+      reasons: [...(r.lane ? ['expedite lane'] : []), `${r.to_end} leg${r.to_end === 1 ? '' : 's'} to an end`, `rank ${r.item.rank ?? '—'} in ${r.repository_id}`],
       flags: r.waits ? ['expedite-bound'] : [],
       advice: null,
       handoff_url: r.item.station!.handoff_url,
@@ -598,7 +608,7 @@ export class Claims {
       throw new BatonError('claim-ended', `the claim already ended (${c.status}: ${c.end_reason})`);
     }
     const { reached, finished } = this.restingAt(c, e);
-    this.finish(c.id, c.ticket_id, e.status, e.end_reason, `worker:${workerId}`, { ended_at_sha: e.ended_at_sha, detail: e.detail, reached, finished, evidence: e.ended_at_sha });
+    this.finish(c.id, c.ticket_id, e.status, e.end_reason, `worker:${workerId}`, { ended_at_sha: e.ended_at_sha, detail: e.detail, reached, finished, evidence: e.ended_at_sha, next: e.next });
     return { ok: true };
   }
 
@@ -635,7 +645,7 @@ export class Claims {
    *  `from` (R-BTN-71), open activities close `abandoned` (§6.9), the resume record is written
    *  for every end (R-BTN-24), and the end is logged. */
   private finish(claimId: number, ticketId: string, status: 'completed' | 'released' | 'reaped', reason: string, actor: string,
-    opts: { ended_at_sha?: string | null; fence?: { incarnation: number } | null; detail?: string | null; reached?: string | null; finished?: boolean; evidence?: string | null } = {}) {
+    opts: { ended_at_sha?: string | null; fence?: { incarnation: number } | null; detail?: string | null; reached?: string | null; finished?: boolean; evidence?: string | null; next?: string | null } = {}) {
     const now = this.c.now();
     const c = this.rows<{ station: string; regressed_since: number | null }>('SELECT station, regressed_since FROM claims WHERE id = ?', claimId)[0];
     const run = this.runningLeg(claimId);
@@ -661,7 +671,7 @@ export class Claims {
     this.c.dispatch?.('sync', ticketId);
     // §13 step 3: a legacy claim that ends takes its adoption request with it.
     this.exec('DELETE FROM adoptions WHERE claim_id = ?', claimId);
-    this.writeResume(claimId, reason, now);
+    this.writeResume(claimId, reason, now, opts.next ?? null);
     if (status === 'completed') this.confirmByClosure(claimId);
     else this.applyRetryPolicy(claimId, ticketId, reason);
   }
@@ -692,12 +702,13 @@ export class Claims {
   }
 
   /** R-BTN-24: the record the next claimant reads, from this claim's activities. */
-  private writeResume(claimId: number, reason: string, now: number) {
+  private writeResume(claimId: number, reason: string, now: number, next: string | null = null) {
     const acts = this.rows<ResumeActivity>('SELECT kind, seq, label, started_at, ended_at, outcome, detail_json FROM activities WHERE claim_id = ? ORDER BY started_at', claimId);
     const transcripts = this.rows<{ repo: string; path: string; role: string }>('SELECT repo, path, role FROM transcripts WHERE claim_id = ? ORDER BY id', claimId);
     const c = this.rows<{ end_detail: string | null; station: string }>('SELECT end_detail, station FROM claims WHERE id = ?', claimId)[0];
-    // R-BTN-24: every end, a suspension included; with the legs the claim ran and where it rests.
-    const record = { ...resumeRecord(reason, now, acts, transcripts), detail: c?.end_detail ?? null, reached: c?.station ?? null, legs: this.legsOf(claimId) };
+    // R-BTN-24: every end, a suspension included; with the legs the claim ran, where it rests and
+    // the queued leg the holder named (`next`, R-BTN-83; round 1, 1-B-4).
+    const record = { ...resumeRecord(reason, now, acts, transcripts), detail: c?.end_detail ?? null, reached: c?.station ?? null, next, legs: this.legsOf(claimId) };
     this.exec('UPDATE claims SET resume_json = ? WHERE id = ?', JSON.stringify(record), claimId);
   }
 
@@ -994,16 +1005,20 @@ export class Claims {
       } else if (!backwards && c.regressed_since != null && extendsPath(g, this.expectedPath(c.id, c.start_path), s.path, g.start)) {
         this.exec('UPDATE claims SET regressed_since = NULL WHERE id = ?', c.id);
       }
-      // R-BTN-63: the sync's reading of a leg's bars binds; a tag the holder declared that a later
-      // snapshot's bars for that leg lack is logged once per leg run.
-      for (const l of this.rows<{ seq: number; leg: string; bars: string }>(
-        `SELECT seq, leg, bars FROM claim_legs WHERE claim_id = ? AND bars != '[]' AND started_observation < ?`, c.id, observation)) {
+    }
+    // R-BTN-63: the sync's reading of a leg's bars binds; a tag a holder declared that a later
+    // snapshot's bars for that leg lack is logged once per leg run — whether the claim is still
+    // active or has ended, typically at the snapshot that confirms its suspension (round 1, 1-A-1).
+    for (const [ticketId, s] of seen) {
+      for (const l of this.rows<{ claim_id: number; seq: number; leg: string; bars: string }>(
+        `SELECT l.claim_id, l.seq, l.leg, l.bars FROM claim_legs l JOIN claims c ON c.id = l.claim_id
+         WHERE c.ticket_id = ? AND l.bars != '[]' AND l.started_observation < ?`, ticketId, observation)) {
         const posted = s.bars[l.leg];
         if (!posted) continue;
         const missing = (JSON.parse(l.bars) as string[]).filter((t) => !posted.includes(t));
         if (!missing.length) continue;
-        if (this.rows(`SELECT 1 FROM events WHERE claim_id = ? AND kind = 'bars-mismatch' AND json_extract(detail_json, '$.seq') = ?`, c.id, l.seq).length) continue;
-        this.event('bars-mismatch', 'sync', { seq: l.seq, leg: l.leg, declared_only: missing, observation }, c.ticket_id, c.id);
+        if (this.rows(`SELECT 1 FROM events WHERE claim_id = ? AND kind = 'bars-mismatch' AND json_extract(detail_json, '$.seq') = ?`, l.claim_id, l.seq).length) continue;
+        this.event('bars-mismatch', 'sync', { seq: l.seq, leg: l.leg, declared_only: missing, observation }, ticketId, l.claim_id);
       }
     }
     return { confirmed, stale_released: stale };

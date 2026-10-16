@@ -62,7 +62,7 @@ describe('S-BTN-5 retried item (server)', () => {
         review_rounds: [{ seq: [2, 1][k], findings: 3, blocking: 1, should_fix: null, nit: null, outcome: 'abandoned' }],
         last_activity: { kind: 'review-round', label: null, outcome: 'abandoned', started_at: [T0 + H, T0][k] + 4, ended_at: [T0 + H, T0][k] },
         transcripts: [],
-        detail: null, reached: 'filed', legs: [],
+        detail: null, reached: 'filed', next: null, legs: [],
       },
     })));
   });

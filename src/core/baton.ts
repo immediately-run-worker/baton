@@ -638,6 +638,9 @@ export class BatonCore {
   private refreshStations(r: string, p: BoardPayload, n: number, at: number): Map<string, Seen> {
     const live = new Set(this.sql<{ local_id: string }>('SELECT local_id FROM tickets WHERE repository_id = ?', r).map((t) => t.local_id));
     const stations = new Map(Object.entries(p.stations ?? {}).filter(([id]) => live.has(id)).map(([id, st]) => [id, stationOf(st)] as [string, PostedStation]));
+    // As on a new head: a live ticket the refresh does not place is placed nowhere, never offered
+    // on an old station (round 1, 1-A-0, 1-B-0).
+    for (const id of live) if (!stations.has(id)) this.stations.clear(qualify(r, id));
     return this.stations.apply(r, p.sha, n, stations, (p.closed ?? []).filter((c) => !live.has(c.id)), at);
   }
 

@@ -79,3 +79,40 @@ describe('the holder’s view and an ended claim', () => {
     }
   });
 });
+
+describe('round 1 fixes', () => {
+  it('a refresh that no longer places a live ticket places it nowhere, so it is not offered on its old station (1-A-0, 1-B-0)', async () => {
+    const a = await register('vm-a');
+    const b = await register('vm-b');
+    const { json: c } = await claimItem('vm-a', a.secret);
+    await advance('vm-a', a.secret, c.claim_id, { leg: 'fix' });
+    await endClaim('vm-a', a.secret, c.claim_id, { end_reason: 'released:requested' });
+    delete git.stations['T-1'];
+    await git.refresh();
+    expect(await rows(`SELECT 1 FROM ticket_stations WHERE ticket_id = 'docs:T-1'`)).toEqual([]);
+    expect(await recommended(b.id)).toEqual([]);
+  });
+
+  it('bars-mismatch is judged for an ended claim too: at the snapshot that confirms its suspension (1-A-1)', async () => {
+    const w = await register('vm-a', { tags: ['family:glm'] });
+    const { json: c } = await claimItem('vm-a', w.secret);
+    await advance('vm-a', w.secret, c.claim_id, { leg: 'fix', bars: ['family:deepseek', 'family:qwen'] });
+    await endClaim('vm-a', w.secret, c.claim_id, { end_reason: 'suspended:fixed', reached: 'fixed' });
+    git.place('T-1', placed('fixed', [...REVIEWED, ['fix', 'fixed']], [['review', 'ready']], { bars: { fix: ['family:deepseek'] } }));
+    expect(await git.refresh()).toMatchObject({ confirmed: 1 });
+    expect(await rows(`SELECT claim_id, json_extract(detail_json, '$.declared_only') AS only FROM events WHERE kind = 'bars-mismatch'`)).toEqual([
+      { claim_id: c.claim_id, only: '["family:qwen"]' }]);
+  });
+
+  it('past the expedite bound an expedited ticket sorts as unexpedited in its group, and places follow that order (1-A-2, 1-B-1)', async () => {
+    git.add('N-1', { rank: 1 }).add('N-2', { rank: 10 }).add('E-3', { rank: 3, expedite: true }).add('E-4', { rank: 4, expedite: true }).add('E-5', { rank: 5, expedite: true });
+    git.place('T-1', placed('reviewed', REVIEWED, [['fix', 'waiting', 'ci']]));
+    await git.post();
+    const x = await register('vm-a');
+    const y = await register('vm-b');
+    await claimItem('vm-a', x.secret, { ticket_id: 'docs:E-4' });
+    await claimItem('vm-b', y.secret, { ticket_id: 'docs:E-5' });
+    const t = await register('test');
+    expect(await recommended(t.id)).toEqual(['docs:N-1', 'docs:E-3', 'docs:N-2']);
+  });
+});

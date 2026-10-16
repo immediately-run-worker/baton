@@ -413,10 +413,14 @@ export function checkClaim(body: unknown): { request_id: string; ticket_id: stri
   };
 }
 
+/** A URL a worker or sync points at (a hand-off comment, a review): https, at most 1000
+ *  characters, no whitespace or control character. Shown as text and linked only through
+ *  `httpsLink` (§10.4). */
+export const isHttpsPointer = (v: unknown): v is string =>
+  typeof v === 'string' && v.length <= 1000 && v.startsWith('https://') && !/[\s\u0000-\u001f\u007f]/.test(v);
 /** An evidence pointer (R-BTN-8): a commit sha, or the URL of the comment or review that ended
- *  the leg — https, at most 1000 characters, no whitespace or control character. */
-const isPointer = (v: unknown) =>
-  typeof v === 'string' && (GIT_SHA.test(v) || (v.length <= 1000 && v.startsWith('https://') && !/[\s\u0000-\u001f\u007f]/.test(v)));
+ *  the leg. */
+const isPointer = (v: unknown) => typeof v === 'string' && (GIT_SHA.test(v) || isHttpsPointer(v));
 
 export interface End {
   end_reason: string;

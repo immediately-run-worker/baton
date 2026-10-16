@@ -253,3 +253,37 @@ describe('migration 0010: credentials by SSH key (R3-1239, round 1, 1-B-3)', () 
     });
   });
 });
+
+describe('migration 0013: stations and legs (R3-1232, round 1, 1-B-2)', () => {
+  it('keeps a deployed 0012 database’s events (seq, kinds, indexes) and claims, giving each claim its defaults', async () => {
+    const id = env.BATON.idFromName('migrations-0013');
+    await runInDurableObject(env.BATON.get(id), (_o: unknown, state: DurableObjectState) => {
+      const sql = state.storage.sql;
+      sql.exec('PRAGMA foreign_keys = OFF');
+      const objects = sql.exec("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' AND name NOT LIKE '_cf_%' AND type = 'table'").toArray() as { name: string }[];
+      for (const o of objects) sql.exec(`DROP TABLE IF EXISTS "${o.name}"`);
+      for (const m of MIGRATIONS.filter((x) => x.id <= 12)) sql.exec(m.sql);
+      sql.exec('PRAGMA foreign_keys = ON'); // as the host runs it
+      sql.exec(`INSERT INTO repositories (id, github, default_branch, sync_workflow) VALUES ('docs', 'immediately-run/docs', 'main', '.github/workflows/baton-sync.yml')`);
+      sql.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities) VALUES ('vm-1', 'vm-1', '[]')`);
+      sql.exec(`INSERT INTO workers (hostname, session_name, secret_hash, credential_id, harness, kind, tier_ceiling, lease_timeout_ms, settings_hash, first_seen_at, last_seen_at)
+                VALUES ('vm-1', 's', 'h', 'vm-1', 'opencode', 'vm', 'critical', 900000, '', 1, 1)`);
+      sql.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status) VALUES ('docs:T-1', 1, 'r-1', 'abcdef', '', 1, 'active')`);
+      sql.exec(`INSERT INTO events (seq, at, kind, ticket_id, claim_id, actor, detail_json, repository_id) VALUES (7, 1, 'claimed', 'docs:T-1', 1, 'worker:1', '{}', 'docs'), (9, 2, 'cutover', NULL, NULL, 'owner:x', '{}', 'docs')`);
+
+      sql.exec(MIGRATIONS.find((x) => x.id === 13)!.sql);
+
+      expect(sql.exec('SELECT seq, kind, ticket_id, claim_id, repository_id FROM events ORDER BY seq').toArray()).toEqual([
+        { seq: 7, kind: 'claimed', ticket_id: 'docs:T-1', claim_id: 1, repository_id: 'docs' }, { seq: 9, kind: 'cutover', ticket_id: null, claim_id: null, repository_id: 'docs' }]);
+      expect(sql.exec(`SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'events' ORDER BY name`).toArray().map((r) => r.name))
+        .toEqual(['events_by_claim', 'events_by_repository', 'events_by_ticket']);
+      // The mirror's cursor carries on: the next event follows the last seq.
+      sql.exec(`INSERT INTO events (at, kind, ticket_id, actor) VALUES (3, 'advanced', 'docs:T-1', 'worker:1')`);
+      expect(sql.exec('SELECT max(seq) AS s FROM events').one()).toEqual({ s: 10 });
+      expect(() => sql.exec(`INSERT INTO events (at, kind, actor) VALUES (3, 'nonsense', 'x')`)).toThrow(/CHECK/);
+      expect(sql.exec('SELECT station, leg, start_path, offered_leg, course_id, regressed_since, ended_regressed, end_detail, advice_json FROM claims').toArray()).toEqual([
+        { station: '', leg: null, start_path: '[]', offered_leg: null, course_id: null, regressed_since: null, ended_regressed: 0, end_detail: null, advice_json: null }]);
+      expect(sql.exec(`SELECT dflt_value FROM pragma_table_info('tickets') WHERE name = 'expedite'`).toArray()).toEqual([{ dflt_value: '0' }]);
+    });
+  });
+});

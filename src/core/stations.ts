@@ -31,8 +31,9 @@ export class Stations {
     return this.c.store.exec(q, ...p);
   }
 
-  /** The graph of a repository's course in force, or null when it has none. Cached per request:
-   *  the course table changes only with a registry, applied before any station. */
+  /** The graph of a repository's course in force, or null when it has none. Cached until the next
+   *  board post, which resets it before and after it runs and again once its registry is applied:
+   *  the course table changes only there. */
   graph(repo: string, course: string): Graph | null {
     const key = `${repo}\u0000${course}`;
     if (!this.graphs.has(key)) {
