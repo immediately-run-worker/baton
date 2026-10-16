@@ -31,6 +31,11 @@ describe('the forge path and web_base (R-BTN-92)', () => {
     const base = 'https://github.com/immediately-run/docs';
     expect(underWebBase('https://github.com/immediately-run/docs/pull/1', base)).toBe(true);
     expect(underWebBase('https://GitHub.com/Immediately-Run/Docs/blob/main/x', base)).toBe(true);
+    // Dot segments are judged as written, inside the base too (round 1, 1-A-4, 1-B-1).
+    for (const bad of ['https://github.com/immediately-run/docs/x/../pull/1', 'https://github.com/immediately-run/docs/%2e%2e/docs/pull/1', 'https://github.com/immediately-run/docs/pull/1/../2', 'https://github.com/immediately-run/docs//pull/1']) {
+      expect([bad, underWebBase(bad, base)]).toEqual([bad, false]);
+    }
+    expect(isWebBase('github', 'https://github.com/x/../immediately-run/docs', 'immediately-run/docs')).toBe(false);
     for (const bad of ['https://github.com/immediately-run/docs-evil/pull/1', 'https://github.com:444/immediately-run/docs/pull/1', 'https://u@github.com/immediately-run/docs',
       'http://github.com/immediately-run/docs', 'https://github.com/immediately-run/docs/%2e%2e/x', 'https://github.com/immediately-run/docs/a%2Fb', 'javascript:alert(1)', 'https://github.com/immediately-run/docs#x']) {
       expect([bad, underWebBase(bad, base)]).toEqual([bad, false]);
@@ -59,7 +64,38 @@ describe('registrations off GitHub (R-BTN-92, R-BTN-93)', () => {
     expect(() => checkRegistration({ id: 'plain', github: 'server/plain', forge: 'git', remote: 'ssh://h/p', web_base: 'https://h/server/plain', default_branch: 'main', sync_keys: [{ public_key: key, role: 'sync' }] })).toThrow(/web_base/);
     expect(checkRegistration({ id: 'lab', github: 'group/lab', forge: 'gitlab', remote: 'https://gitlab.test/group/lab.git', web_base: 'https://gitlab.test/group/lab', default_branch: 'main', ci_identity: { kind: 'gitlab-ci', issuer: 'https://gitlab.test' } }))
       .toMatchObject({ ci_identity: { kind: 'gitlab-ci', issuer: 'https://gitlab.test', mirror: false } });
-    expect(() => checkRegistration({ id: 'lab', github: 'group/lab', forge: 'gitlab', remote: 'https://gitlab.test/group/lab.git', web_base: 'https://gitlab.test/group/lab', default_branch: 'main', ci_identity: { kind: 'github-actions' } })).toThrow(/github-actions/);
+    expect(() => checkRegistration({ id: 'lab', github: 'group/lab', forge: 'gitlab', remote: 'https://gitlab.test/group/lab.git', web_base: 'https://gitlab.test/group/lab', default_branch: 'main', ci_identity: { kind: 'github-actions' } })).toThrow(/github-actions|workflows/);
+  });
+
+  it('round 1: github.com alone takes workflows; remotes carry no credential; a GitLab issuer is its own instance', () => {
+    const ghe = { id: 'ghe', github: 'o/r', forge: 'github', web_base: 'https://ghe.corp/o/r', remote: 'https://ghe.corp/o/r.git', default_branch: 'main' };
+    expect(() => checkRegistration({ ...ghe, sync_workflow: '.github/workflows/s.yml' })).toThrow(/github.com only/);
+    expect(checkRegistration({ ...ghe, sync_keys: [{ public_key: key, role: 'sync' }] })).toMatchObject({ ci_identity: null });
+    expect(() => checkRegistration({ id: 'tea', github: 'o/r', forge: 'gitea', web_base: 'https://tea.example/o/r', remote: 'https://tea.example/o/r.git', default_branch: 'main', sync_workflow: '.github/workflows/s.yml' })).toThrow(/github.com only/);
+    for (const remote of ['https://x-access-token:secret@github.com/o/r.git', 'https://user@github.com/o/r.git', 'ssh://git:pw@host/o/r.git']) {
+      expect([remote, () => checkRegistration({ id: 'ops', github: 'o/r', remote, default_branch: 'main', sync_workflow: '.github/workflows/s.yml' })]).toEqual([remote, expect.any(Function)]);
+      expect(() => checkRegistration({ id: 'ops', github: 'o/r', remote, default_branch: 'main', sync_workflow: '.github/workflows/s.yml' })).toThrow(/credential/);
+    }
+    expect(checkRegistration({ id: 'ops', github: 'o/r', remote: 'git@github.com:o/r.git', default_branch: 'main', sync_workflow: '.github/workflows/s.yml' }).remote).toBe('git@github.com:o/r.git');
+    expect(() => checkRegistration({ id: 'lab', github: 'group/lab', forge: 'gitlab', remote: 'https://gitlab.test/group/lab.git', web_base: 'https://gitlab.test/group/lab', default_branch: 'main', ci_identity: { kind: 'gitlab-ci', issuer: 'https://gitlab.other' } })).toThrow(/GitLab instance/);
+  });
+
+  it('register refuses sync keys it cannot add; registerWithKeys and the seed add them (round 1, 1-A-1, 1-A-7)', async () => {
+    const entry = { id: 'plain', github: 'server/plain', forge: 'git', remote: 'ssh://git@h/plain.git', default_branch: 'main', sync_keys: [{ public_key: key, role: 'sync' }] };
+    await withCore(async (c) => {
+      expect(() => c.registry.register(entry)).toThrow(/registerWithKeys/);
+      const config = { BATON_REPOSITORIES: JSON.stringify([entry]) } as never;
+      expect(c.registry.seed(config)).toEqual(['plain']);
+      await c.registry.seedSyncKeys(config, []);
+      await c.registry.seedSyncKeys(config, []); // a second start finds the key in place
+      expect(c.registry.syncKey('SHA256:' + 'x')).toBeNull();
+      expect(c.store.exec(`SELECT repository_id, role, added_by FROM sync_keys`).toArray()).toEqual([{ repository_id: 'plain', role: 'sync', added_by: 'admin:seed' }]);
+      // The same key listed for another repository is a conflict, as a malformed seed throws.
+      const other = { ...entry, id: 'plain2', github: 'server/plain2' };
+      const both = { BATON_REPOSITORIES: JSON.stringify([entry, other]) } as never;
+      c.registry.seed(both);
+      await expect(c.registry.seedSyncKeys(both, [])).rejects.toMatchObject({ code: 'conflict' });
+    });
   });
 });
 

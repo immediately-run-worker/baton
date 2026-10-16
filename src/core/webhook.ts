@@ -122,7 +122,9 @@ export class Webhooks {
     if (this.rows('SELECT 1 FROM webhook_deliveries WHERE delivery_id = ?', d.id).length) return { outcome: 'duplicate' };
     this.c.store.exec('INSERT INTO webhook_deliveries (delivery_id, received_at) VALUES (?, ?)', d.id, now);
     const full = d.repository.toLowerCase();
-    const registered = this.rows<Registered>('SELECT id, github, sync_workflow, mirror_workflow FROM repositories WHERE retired_at IS NULL');
+    // The App serves github.com repositories alone (R-BTN-92, round 1 of R3-1262).
+    const registered = this.rows<Registered>(`SELECT id, github, sync_workflow, mirror_workflow FROM repositories
+       WHERE retired_at IS NULL AND forge = 'github' AND lower(web_base) = 'https://github.com/' || lower(github)`);
     if (this.ownWork(d, full, registered)) return { outcome: 'own-work' };
     const targets = this.targets(full, registered);
     const out = { outcome: 'dispatched' as const, now: [] as string[], trailing: [] as string[] };

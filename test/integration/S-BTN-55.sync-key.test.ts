@@ -24,8 +24,7 @@ beforeEach(async () => {
   sync = await makeKey('ssh-ed25519', 'plain-sync');
   mirror = await makeKey('ecdsa-sha2-nistp256', 'plain-mirror');
   await withCore(async (c) => {
-    c.registry.register({ ...PLAIN, sync_keys: [{ public_key: sync.publicKey, role: 'sync' }] });
-    await c.registry.addSyncKey('plain', sync.publicKey, 'sync', 'admin:test', []);
+    await c.registry.registerWithKeys({ ...PLAIN, sync_keys: [{ public_key: sync.publicKey, role: 'sync' }] }, 'admin:test', []);
     await c.registry.addSyncKey('plain', mirror.publicKey, 'mirror', 'admin:test', []);
   });
 });
@@ -64,6 +63,15 @@ describe(`S-BTN-55 the sync key (${HOST})`, () => {
     expect([asMirror.status, await code(asMirror)]).toEqual([403, 'forbidden']);
     const events = await hostCall(await signed(mirror, '/v1/sync/events?after=0'));
     expect(events.status).toBe(200);
+  });
+
+  it('an administrator key at /v1/sync/* is forbidden, not unauthenticated (round 1, 1-A-9)', async () => {
+    const admin = await makeKey('ssh-ed25519', 'admin');
+    await withCore((c) => {
+      (c as unknown as { ports: { adminKeys: { list: () => string[] } } }).ports.adminKeys = { list: () => [admin.publicKey] };
+    });
+    const res = await hostCall(await signed(admin, '/v1/sync/head'));
+    expect([res.status, await code(res)]).toEqual([403, 'forbidden']);
   });
 
   it('a revoked key’s post and a replay are unauthenticated', async () => {

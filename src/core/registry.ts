@@ -88,11 +88,20 @@ export function checkRegistration(v: unknown, at = 'repository'): Registration {
     bad(`${at}.web_base`, forge === 'git' ? 'a git repository has none' : 'must be https://<host>[:<port>]/<forge path>, with no userinfo, query or fragment');
   }
   const remote = r.remote !== undefined ? r.remote : forge === 'github' ? `https://github.com/${github}.git` : undefined;
-  if (typeof remote !== 'string' || remote.length > 500 || !/^(https:\/\/|ssh:\/\/|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:)[^\s\\]+$/.test(remote)) {
-    bad(`${at}.remote`, 'must be an https://, ssh:// or user@host:path URL');
+  // No credential ever reaches SQLite (R-BTN-94): an https remote has no userinfo, an ssh one a user
+  // name at most (round 1, 1-A-5, 1-B-2).
+  if (typeof remote !== 'string' || remote.length > 500
+    || !/^(https:\/\/[A-Za-z0-9.-]+(:\d+)?\/|ssh:\/\/([A-Za-z0-9._-]+@)?[A-Za-z0-9.-]+(:\d+)?\/|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:)[^\s\\@]+$/.test(remote)) {
+    bad(`${at}.remote`, 'must be an https:// URL with no userinfo, an ssh:// URL, or user@host:path — never a credential');
   }
   const syncWorkflow = r.sync_workflow == null ? '' : str('sync_workflow', WORKFLOW);
+  // GitHub Actions workflows and the App serve github.com alone (R-BTN-92): another forge, or a
+  // GitHub Enterprise host, has none (round 1, 1-A-0, 1-A-6, 1-B-0).
+  const onGithubCom = forge === 'github' && typeof webBase === 'string' && webBase.toLowerCase() === `https://github.com/${github.toLowerCase()}`;
+  if ((syncWorkflow || r.mirror_workflow != null) && !onGithubCom) bad(`${at}.sync_workflow`, 'workflows are GitHub Actions on github.com only');
   const ci = checkCiIdentity(r.ci_identity, forge, syncWorkflow, `${at}.ci_identity`);
+  // A GitLab token's issuer is the repository's own instance (round 1, 1-A-3).
+  if (ci?.kind === 'gitlab-ci' && typeof webBase === 'string' && new URL(ci.issuer).origin !== new URL(webBase).origin) bad(`${at}.ci_identity.issuer`, "must be the web_base's GitLab instance");
   const keys = r.sync_keys === undefined ? []
     : Array.isArray(r.sync_keys) && r.sync_keys.length <= 4 && r.sync_keys.every((k) => k && typeof k === 'object' && typeof (k as Record<string, unknown>).public_key === 'string' && ['sync', 'mirror'].includes((k as Record<string, unknown>).role as string))
       ? (r.sync_keys as Registration['sync_keys']) : bad(`${at}.sync_keys`, 'must be at most 4 {public_key, role: sync|mirror}');
@@ -191,8 +200,11 @@ export class Registry {
 
   /** Register a repository, insert-only: an id or GitHub repository already known is refused
    *  `invalid-params` (retiring and changing one are the administrator's, R3-1240). */
-  register(input: unknown): Repository {
+  register(input: unknown, opts: { keysAddedLater?: boolean } = {}): Repository {
     const r = checkRegistration(input);
+    // Keys are added by registerWithKeys or the seed's seedSyncKeys (their fingerprints need
+    // WebCrypto, an await); never dropped in silence (round 1, 1-A-7).
+    if (r.sync_keys.length && !opts.keysAddedLater) bad('sync_keys', 'are added with registerWithKeys');
     if (this.rows('SELECT 1 FROM repositories WHERE id = ? OR github = ? COLLATE NOCASE', r.id, r.github).length) {
       bad('repository', `${r.id} (${r.github}) is already registered`);
     }
@@ -222,7 +234,7 @@ export class Registry {
     for (const [i, entry] of list.entries()) {
       const r = checkRegistration(entry, `BATON_REPOSITORIES[${i}]`);
       if (this.rows('SELECT 1 FROM repositories WHERE id = ?', r.id).length) continue;
-      this.register(entry);
+      this.register(entry, { keysAddedLater: true });
       added.push(r.id);
     }
     return added;
@@ -248,6 +260,15 @@ export class Registry {
         key.fingerprint, repository, role, line, addedBy, this.c.now());
     });
     return key.fingerprint;
+  }
+
+  /** Register a repository and add its `sync_keys` (R-BTN-93), as `POST /v1/admin/repositories`
+   *  will (R3-1240). */
+  async registerWithKeys(input: unknown, addedBy: string, adminKeys: string[]): Promise<Repository> {
+    const r = checkRegistration(input);
+    const repo = this.register(input, { keysAddedLater: true });
+    for (const k of r.sync_keys) await this.addSyncKey(r.id, k.public_key, k.role, addedBy, adminKeys);
+    return repo;
   }
 
   /** BATON_REPOSITORIES' `sync_keys` at start, until R3-1240's routes: each key not yet known is
@@ -319,7 +340,8 @@ export class Registry {
    *  on that branch. Anything else is `forbidden`. */
   forSync(claims: SyncClaims, role: 'sync' | 'mirror'): Repository {
     const row = this.rows<RepoRow>(
-      `SELECT ${REPO_COLUMNS} FROM repositories WHERE github = ? COLLATE NOCASE AND forge = 'github' AND retired_at IS NULL`, claims.repository)[0];
+      `SELECT ${REPO_COLUMNS} FROM repositories WHERE github = ? COLLATE NOCASE AND forge = 'github'
+       AND lower(web_base) = 'https://github.com/' || lower(github) AND retired_at IS NULL`, claims.repository)[0];
     if (!row) throw new BatonError('forbidden', 'the OIDC token is from a repository this Baton does not serve');
     const branch = `refs/heads/${row.default_branch}`;
     const workflow = role === 'sync' ? row.sync_workflow : row.mirror_workflow;

@@ -133,6 +133,16 @@ describe('G-BTN-13: free text and identifiers are validated before any write', (
       expect([pr, await refusedOf(await post({ pr }))]).toEqual([pr, 1]);
     }
     expect(await refusedOf(await post({ secret: 'x' }))).toBe(1);
+    // A ticket's repos — owner/name or docs' short names under the home's owner (round 1, 1-A-8); the claim above,
+    // whose ticket the board does not carry, took any registered repository's.
+    await rows(`INSERT INTO tickets (id, repository_id, local_id, path, title, status, node, queue, tags, requires_clause, depends_on, blocked_by, repos, snapshot_sha, row_hash)
+                VALUES ('docs:R3-9777', 'docs', 'R3-9777', 'p', 't', 'in-progress', 'ready', 'ready-autonomous', '[]', 'listed', '[]', '[]', '["baton","immediately-run/sandbox"]', 'a', 'h')`);
+    await rows(`UPDATE claims SET status = 'released', ended_at = 1 WHERE id = ?`, claim); // one active claim per worker
+    const withRepos = await seedClaim(id, 'docs:R3-9777', 1);
+    const postOn = (claimId: number | null, pr: string) => workerCall('/v1/runner/activities', { secret, body: { activities: [{ id: `e${Math.random()}`, claim_id: claimId, kind: 'open-pr', source: 'hook', started_at: T0, detail: { pr } }] } });
+    expect(await refusedOf(await postOn(withRepos, 'https://github.com/immediately-run/baton/pull/1'))).toBe(0);
+    expect(await refusedOf(await postOn(withRepos, 'https://github.com/immediately-run/sandbox/pull/2'))).toBe(0);
+    expect(await refusedOf(await postOn(withRepos, 'https://github.com/someone/baton/pull/3'))).toBe(1);
     expect(await refusedOf(await post({ note: 'x'.repeat(2100) }))).toBe(1);
   });
 });

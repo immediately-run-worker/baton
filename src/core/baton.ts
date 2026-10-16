@@ -12,7 +12,7 @@ import { priceFor } from '../shared/sessionUsage.mjs';
 import { familyOf } from '../shared/baton.mjs';
 import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
 import { WorkerApi } from './workerApi';
-import { verifyRequest, withBody, type SyncCredential } from './auth';
+import { parseSshKey, verifyRequest, withBody, type SyncCredential } from './auth';
 import { Claims } from './claims';
 import { Cutover } from './cutover';
 import { Mirror } from './mirror';
@@ -122,9 +122,19 @@ export class BatonCore {
    *  refused. Returns the request with a signed body put back. */
   private async verifySync(req: Request, role: 'sync' | 'mirror'): Promise<{ repo: Repository; req: Request }> {
     if (req.headers.has('X-Baton-Signed')) {
-      const { req: signed, cred } = await this.verifySigned(req, (fp) => this.registry.syncKey(fp)?.public_key ?? this.workers.publicKey(fp));
+      // Every key Baton knows verifies here, so a key in another role is told `forbidden`, not
+      // `unauthenticated` — an administrator's included (round 1, 1-A-9).
+      const admins = new Map<string, string>();
+      for (const line of this.ports.adminKeys.list()) {
+        try {
+          admins.set((await parseSshKey(line)).fingerprint, line);
+        } catch {
+          // an unreadable line is no key
+        }
+      }
+      const { req: signed, cred } = await this.verifySigned(req, (fp) => this.registry.syncKey(fp)?.public_key ?? this.workers.publicKey(fp) ?? admins.get(fp) ?? null);
       const key = this.registry.syncKey(cred);
-      // A worker, probe or courier key is never a sync's (R-BTN-57, R-BTN-93).
+      // A worker, probe, courier or administrator key is never a sync's (R-BTN-57, R-BTN-93).
       if (!key) throw new BatonError('forbidden', 'only a sync key may act as a sync');
       if (key.role !== role) throw new BatonError('forbidden', `this sync key serves its repository's ${key.role}, not its ${role}`);
       return { repo: this.registry.get(key.repository)!, req: signed };

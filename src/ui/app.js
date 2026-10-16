@@ -80,7 +80,7 @@ function renderReady() {
     for (const name of r.requires) reqs.append(el('span', { text: name, cls: 'tag' }));
     body.append(el('tr', {},
       el('td', { text: i + 1, cls: 'num' }),
-      el('td', {}, el('span', { text: r.id, cls: 'muted' }), document.createTextNode(' '), el('a', { text: r.title, attrs: { href: r.url, target: '_blank', rel: 'noopener' } })),
+      el('td', {}, el('span', { text: r.id, cls: 'muted' }), document.createTextNode(' '), httpsLink(r.title, r.url)),
       el('td', { text: r.tier ?? 'untiered' }),
       reqs,
       el('td', { text: r.rank_reason, cls: 'muted' })));

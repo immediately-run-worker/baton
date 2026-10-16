@@ -29,7 +29,10 @@ function cleanUrl(text: string, allowQuery: boolean): URL | null {
   if (u.protocol !== 'https:' || u.username || u.password || u.hash) return null;
   if (!allowQuery && u.search) return null;
   // Percent-decoded, every segment is a name: no `.`, `..`, empty segment or encoded `/` or `\`.
-  const raw = u.pathname.split('/').slice(1);
+  // Judged on the text as written — the URL parser has already resolved dot segments away, and the
+  // text, not the parse, is what is stored and drawn (round 1, 1-A-4, 1-B-1).
+  const written = /^https:\/\/[^/?#]*(\/[^?#]*)?/i.exec(text)?.[1] ?? '';
+  const raw = written.split('/').slice(1);
   for (const seg of raw) {
     let dec: string;
     try {
