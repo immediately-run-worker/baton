@@ -61,6 +61,19 @@ describe('S-BTN-28 the chore course (stations and legs)', () => {
     expect((await claimRow(c.claim_id)).confirmed_at).toBe(T0);
   });
 
+  it('an advance past a given-up self-loop, then a suspension: confirmed whether or not git shows the loop (3-A-1, adjudication)', async () => {
+    // At done-once, redo queued: redo given up (nothing pushed), verify started, then suspended.
+    const w2 = await register('vm-b', { courses: CHORE, tags: ['family:qwen'] });
+    git.place('C-2', placed('done-once', DONE_ONCE, [['redo', 'ready'], ['verify', 'ready']], { next_leg: 'redo' }));
+    await git.refresh();
+    const { json: d } = await claimItem('vm-b', w2.secret, { ticket_id: 'docs:C-2' });
+    await advance('vm-b', w2.secret, d.claim_id, { leg: 'redo' });
+    await advance('vm-b', w2.secret, d.claim_id, { reached: 'done-once', leg: 'verify' });
+    await endClaim('vm-b', w2.secret, d.claim_id, { end_reason: 'suspended:done-once' });
+    expect(await git.refresh()).toMatchObject({ confirmed: 1 }); // git shows no redo
+    expect((await claimRow(d.claim_id)).confirmed_at).toBe(T0);
+  });
+
   it('S-BTN-34 in chore’s terms: a path that goes backwards flags the claim regressed, never stale', async () => {
     const other = await register('vm-b', { courses: CHORE });
     const { json: d } = await claimItem('vm-b', other.secret, { ticket_id: 'docs:C-1' });

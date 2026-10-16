@@ -947,10 +947,14 @@ export class Claims {
   }
 
   /** R-BTN-71: the path an end or a claim is expected at — its `start_path` followed by the legs
-   *  it finished, each with the station it reached. */
+   *  it finished, each with the station it reached. A run of a self-loop (it ends where it began)
+   *  is left out: from the holder's word Baton cannot tell a loop it pushed from one it gave up,
+   *  and without the step both readings of git confirm — a path that shows the run extends the
+   *  expected one by an edge, and one that does not equals it (round 3, 3-A-1, adjudication). */
   private expectedPath(claimId: number, startPath: string): Step[] {
     return [...(JSON.parse(startPath) as Step[]),
-      ...this.rows<{ leg: string; to_station: string }>('SELECT leg, to_station FROM claim_legs WHERE claim_id = ? AND finished_at IS NOT NULL ORDER BY seq', claimId)
+      ...this.rows<{ leg: string; to_station: string }>(
+        'SELECT leg, to_station FROM claim_legs WHERE claim_id = ? AND finished_at IS NOT NULL AND to_station != from_station ORDER BY seq', claimId)
         .map((l) => ({ leg: l.leg, reached: l.to_station }))];
   }
 
