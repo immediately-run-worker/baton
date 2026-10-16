@@ -19,6 +19,7 @@ import { Mirror } from './mirror';
 import { checkConfirmations, checkRepositoryId, GIT_BRANCH, GIT_REPO } from './validate';
 import { Courses } from './courses';
 import { Observations } from './observations';
+import { Webhooks, type Delivery } from './webhook';
 import { Registry, TICKET_ID, qualify, repositoryOf, tierPosition, type Repository, type SyncClaims } from './registry';
 import type { Ports, Row, SqlValue, Store, Workflow } from './ports';
 
@@ -36,6 +37,7 @@ export class BatonCore {
   readonly registry: Registry;
   readonly courses: Courses;
   readonly observations: Observations;
+  readonly webhooks: Webhooks;
   readonly store: Store;
   /** §12: workflows to dispatch once the current request or alarm has committed, one per
    *  repository and kind. */
@@ -55,6 +57,7 @@ export class BatonCore {
     this.registry = new Registry({ store, now: () => this.now() });
     this.courses = new Courses({ store });
     this.observations = new Observations({ store, now: () => this.now() });
+    this.webhooks = new Webhooks({ store, now: () => this.now() });
     const want = (wf: Workflow) => this.pendingDispatch.set(`${wf.repository}:${wf.kind}`, wf);
     this.claims = new Claims({ store, now: () => this.now(), dispatch: (kind, ticketId) => want({ repository: repositoryOf(ticketId), kind }) });
     this.cutover = new Cutover({ store, now: () => this.now() });
@@ -69,6 +72,8 @@ export class BatonCore {
     this.store.transaction(() => this.registry.seed(this.ports.config));
     await this.seedKeys();
     if ((await this.ports.scheduler.get()) == null) await this.ports.scheduler.set(this.now() + ALARM_EVERY_MS);
+    // A trailing webhook dispatch owed from before a restart keeps its time (round 1, 1-A-4).
+    await this.armBy(this.webhooks.nextTrailing());
   }
 
   /** The worker keys from BATON_KEYS (R3-1239). A list that cannot be seeded changes nothing
@@ -116,10 +121,39 @@ export class BatonCore {
     return this.registry.forSync(JSON.parse(raw) as SyncClaims, role);
   }
 
-  /** §3: the one alarm, every 60 seconds. */
+  /** R-BTN-73: a verified delivery's fields, from the front. Its syncs go after the response;
+   *  a suppressed one waits for its window's trailing dispatch, which the alarm sends, armed
+   *  early for it. */
+  private async delivery(req: Request) {
+    const raw = req.headers.get('X-Baton-Webhook');
+    if (!raw) throw new BatonError('unauthenticated', 'no webhook principal');
+    const out = this.store.transaction(() => this.webhooks.receive(JSON.parse(raw) as Delivery));
+    if (out.outcome === 'dispatched') {
+      this.syncNow(out.now);
+      if (out.trailing.length) await this.armBy(this.webhooks.nextTrailing());
+    }
+    return out;
+  }
+
+  /** Dispatch these repositories' syncs after the response; a failure waits for the next
+   *  trigger or the schedule (R-BTN-73: never retried more than once). */
+  private syncNow(repositories: string[]) {
+    if (repositories.length) this.ports.dispatch.defer(Promise.all(repositories.map((repository) => this.dispatcher({ repository, kind: 'sync' }).catch(() => false))));
+  }
+
+  /** The alarm fires by `at` (§3: one alarm; set earlier, never later). */
+  private async armBy(at: number | null) {
+    if (at == null) return;
+    const current = await this.ports.scheduler.get();
+    if (current == null || at < current) await this.ports.scheduler.set(at);
+  }
+
+  /** §3: the one alarm, every 60 seconds — earlier when a webhook's trailing dispatch is due. */
   async alarm(): Promise<void> {
     // Re-armed first, so one failing tick never ends the cycle.
     await this.ports.scheduler.set(this.now() + ALARM_EVERY_MS);
+    this.syncNow(this.store.transaction(() => this.webhooks.dueTrailing()));
+    await this.armBy(this.webhooks.nextTrailing());
     // Claims first, so a worker reaped this tick has its messages expired in the same tick.
     try {
       this.store.transaction(() => {
@@ -200,6 +234,11 @@ export class BatonCore {
           const body = await readJson(req);
           return json(this.store.transaction(() => this.mirror.foreignClaim(repo.id, body)));
         }
+      }
+      if (req.method === 'POST' && url.pathname === '/v1/github/webhook') {
+        // §11: 204, and nothing of Baton's in the App's delivery log (round 1, 1-A-0).
+        await this.delivery(req);
+        return new Response(null, { status: 204 });
       }
       if (req.method === 'GET' && url.pathname === '/v1/ui/state') return json(this.uiState());
       const routed = await this.workerRoute(req, url);

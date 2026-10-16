@@ -82,6 +82,8 @@ const bindings = {
   CREDENTIALS: JSON.stringify(CREDENTIALS),
   BATON_KEYS: JSON.stringify(sshKeys.map((k) => ({ key: k.publicKey, name: k.name, allowed_capabilities: VENUE }))),
   TEST_SSH_KEYS: JSON.stringify(sshKeys),
+  // R-BTN-73: the GitHub App's webhook secret, the run's own.
+  BATON_GITHUB_WEBHOOK_SECRET: `test-webhook-${createHash('sha256').update(String(Math.random())).digest('hex').slice(0, 16)}`,
 };
 
 export default defineConfig({

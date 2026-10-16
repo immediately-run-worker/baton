@@ -6,6 +6,7 @@ import roadmapPr from './fixtures/courses/roadmap-pr/course.json';
 import { ACTIVITY_KINDS } from '../src/core/validate';
 import { call as hostCall, config as env, tick as hostTick, withCore } from '#host';
 import { signedRequest, type SignOptions, type TestKey } from './lib/sshKeys';
+import { deliverySignature } from '../src/core/webhook';
 
 export { HOST, withCore } from '#host';
 
@@ -219,3 +220,18 @@ export async function captureDispatches() {
 
 /** A qualified ticket id in docs, the repository the fixtures post (R-BTN-47). */
 export const q = (local: string) => `docs:${local}`;
+
+// ── GitHub App webhooks (R3-1247) ─────────────────────────────────────────────────────────
+
+/** A GitHub App delivery of `event` with `payload`, signed with the run's webhook secret
+ *  unless `secret` says otherwise (R-BTN-73). */
+export async function webhookCall(event: string, payload: unknown, { id = requestId(), secret = env.BATON_GITHUB_WEBHOOK_SECRET!, signature }: { id?: string; secret?: string; signature?: string } = {}) {
+  const body = JSON.stringify(payload);
+  const sig = signature ?? (await deliverySignature(secret, new TextEncoder().encode(body)));
+  return call('/v1/github/webhook', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-GitHub-Event': event, 'X-GitHub-Delivery': id, 'X-Hub-Signature-256': sig }, body });
+}
+
+/** The core's armed alarm (§3), as its scheduler reports it. */
+export function armedAt() {
+  return withCore((c) => (c as unknown as { ports: { scheduler: { get(): Promise<number | null> } } }).ports.scheduler.get());
+}

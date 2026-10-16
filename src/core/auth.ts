@@ -460,7 +460,7 @@ export async function verifyRequest(
 /** A request's body, refused `invalid-params` as soon as it passes `max` bytes — by its
  *  Content-Length before a byte is read, else while it streams — so no body is buffered whole
  *  before its size is judged. */
-async function readCapped(req: Request, max: number): Promise<Uint8Array> {
+export async function readCapped(req: Request, max: number): Promise<Uint8Array> {
   const tooLarge = () => new BatonError('invalid-params', 'the body is too large');
   if (Number(req.headers.get('Content-Length') ?? 0) > max) throw tooLarge();
   if (!req.body) return new Uint8Array();
