@@ -8,3 +8,4 @@ declare module '*/shared/baton.mjs';
 declare module '*/shared/vocabulary.mjs';
 declare module '*/shared/sessionUsage.mjs';
 declare module '*/shared/batonSync.mjs';
+declare module '*/cli/baton.mjs';

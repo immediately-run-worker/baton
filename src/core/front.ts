@@ -16,12 +16,36 @@ export type Forward = (req: Request) => Promise<Response>;
 
 const STATIC: Record<string, [string, string]> = {
   '/': [page, 'text/html; charset=utf-8'],
+  '/login': [page, 'text/html; charset=utf-8'],
   '/ui/app.css': [style, 'text/css; charset=utf-8'],
   '/ui/app.js': [script, 'text/javascript; charset=utf-8'],
 };
+/** What anyone may fetch: the login page and the code it runs, which hold no data (R-BTN-57's
+ *  one-time link is opened before any session exists). The dashboard and its API need a principal. */
+const PUBLIC = new Set(['/login', '/ui/app.css', '/ui/app.js']);
+/** R-BTN-16: the one cookie Baton reads — its own dashboard session. */
+const SESSION_COOKIE = '__Host-baton_session';
+
+function cookie(req: Request, name: string): string | null {
+  for (const part of (req.headers.get('Cookie') ?? '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return part.slice(i + 1).trim();
+  }
+  return null;
+}
+
+/** The dashboard's principal (R-BTN-57, R-BTN-16): Cloudflare Access when the operator put it in
+ *  front and the request carries its assertion — optional hardening — else Baton's own session
+ *  cookie, which the core checks against its SQLite and BATON_ADMIN_KEYS on every request. */
+async function dashboardPrincipal(req: Request, env: Config): Promise<Record<string, string>> {
+  if (req.headers.has('Cf-Access-Jwt-Assertion')) return { 'X-Baton-Owner': await verifyOwner(req, env) };
+  const session = cookie(req, SESSION_COOKIE);
+  if (!session) throw new BatonError('unauthenticated', 'a dashboard session is required: `baton admin open` mints a link');
+  return { 'X-Baton-Session': session };
+}
 
 /** The headers that carry a verified principal to the object. A request never brings its own. */
-const PRINCIPAL_HEADERS = ['X-Baton-Credential', 'X-Baton-Owner', 'X-Baton-Sync', 'X-Baton-Signed', 'X-Baton-Webhook'];
+const PRINCIPAL_HEADERS = ['X-Baton-Credential', 'X-Baton-Owner', 'X-Baton-Sync', 'X-Baton-Signed', 'X-Baton-Webhook', 'X-Baton-Session'];
 
 async function route(req: Request, env: Config, to: Forward): Promise<Response> {
   const { pathname } = new URL(req.url);
@@ -69,17 +93,40 @@ async function route(req: Request, env: Config, to: Forward): Promise<Response> 
     const credential = await verifyWorker(req, env);
     return forward(req, to, { 'X-Baton-Credential': credential });
   }
-  if (pathname === '/' || pathname.startsWith('/ui/') || pathname.startsWith('/v1/ui/')) {
-    const owner = await verifyOwner(req, env);
+  if (pathname.startsWith('/v1/admin/') || pathname.startsWith('/v1/owner/')) {
+    // R-BTN-57, R-BTN-58: an administrator's or an owner's key signs every request; the core
+    // checks which, and for which repository.
+    if (!req.headers.has('Signature-Input') && !req.headers.has('Signature')) throw new BatonError('unauthenticated', 'sign with an administrator or owner key (R-BTN-13)');
+    const signed = await verifyRequest(req, null, { origin: env.BATON_ORIGIN });
+    return forward(withBody(req, signed.body), to, { 'X-Baton-Signed': signed.keyid });
+  }
+  if (pathname === '/v1/login') {
+    // R-BTN-16: against login CSRF, the token comes as JSON from this Baton's own page.
+    if (req.method !== 'POST') throw new BatonError('not-found', 'no such route');
+    checkStateChanging(req, env);
+    return forward(req, to, {});
+  }
+  if (pathname === '/' || pathname.startsWith('/ui/') || pathname.startsWith('/v1/ui/') || PUBLIC.has(pathname)) {
+    if (PUBLIC.has(pathname)) return serve(pathname, req);
+    const principal = await dashboardPrincipal(req, env);
     if (pathname.startsWith('/v1/ui/')) {
       if (req.method !== 'GET' && req.method !== 'HEAD') checkStateChanging(req, env);
-      return forward(req, to, { 'X-Baton-Owner': owner });
+      return forward(req, to, principal);
     }
-    const file = STATIC[pathname];
-    if (!file || req.method !== 'GET') throw new BatonError('not-found', 'no such page');
-    return new Response(file[0], { headers: { 'Content-Type': file[1], 'Cache-Control': 'no-store' } });
+    // The dashboard page: a session is checked by the core, which keeps them.
+    if (principal['X-Baton-Session']) {
+      const ok = await forward(new Request(new URL('/v1/ui/session', req.url)), to, principal);
+      if (!ok.ok) return ok;
+    }
+    return serve(pathname, req);
   }
   throw new BatonError('not-found', 'no such route');
+}
+
+function serve(pathname: string, req: Request): Response {
+  const file = STATIC[pathname];
+  if (!file || req.method !== 'GET') throw new BatonError('not-found', 'no such page');
+  return new Response(file[0], { headers: { 'Content-Type': file[1], 'Cache-Control': 'no-store' } });
 }
 
 /** The one core (§3): every request reaches it carrying only the principal the front verified. */

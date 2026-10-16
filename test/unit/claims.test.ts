@@ -288,7 +288,7 @@ describe('G-BTN-40: the matching query and gatesFor agree; git overtaking a clai
     for (const w of workers) {
       const { id } = await register(w.cred, { session_name: w.session, ...w.over });
       const decl = w.over.capabilities;
-      const facts = { tier_ceiling: w.over.tier_ceiling, declared: decl, tags: [], courses: (w.over.courses ?? [{ repository: 'docs', course: 'roadmap-pr', version: 3 }]) as { repository: string; course: string; version: number }[] };
+      const facts = { tier_ceiling: w.over.tier_ceiling, declared: decl, tags: [], grants: null, courses: (w.over.courses ?? [{ repository: 'docs', course: 'roadmap-pr', version: 3 }]) as { repository: string; course: string; version: number }[] };
       // The reference: gatesFor over the snapshot's own items, in its ready order — each at its
       // course's start, its start leg ready (the interim post's placement).
       const expected = snap.ready.filter((rid: string) => {

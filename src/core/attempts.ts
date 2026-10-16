@@ -29,10 +29,14 @@ export function nonRetryableClass(endReason: string): 'capability' | 'spec' | nu
   return null;
 }
 
-/** R-BTN-23: what follows the `count`-th failed attempt since the last hold-lift. */
-export function afterFailure(count: number): { hold: 'attempts-exhausted' } | { retryAfterMs: number } | null {
-  if (count >= ATTEMPTS_HOLD_AT) return { hold: 'attempts-exhausted' };
-  if (count >= 1) return { retryAfterMs: BACKOFF_MS[count - 1] };
+/** R-BTN-23: what follows the `count`-th failed attempt since the last hold-lift — by the
+ *  repository's owners' `retry` setting where they set one (R-BTN-66), else 1 h, 4 h and a hold at
+ *  the third. Past the listed backoffs the last one repeats until the hold. */
+export function afterFailure(count: number, policy: { backoff_ms: number[]; max_failed: number } | null = null): { hold: 'attempts-exhausted' } | { retryAfterMs: number } | null {
+  const holdAt = policy?.max_failed ?? ATTEMPTS_HOLD_AT;
+  const backoff = policy?.backoff_ms ?? BACKOFF_MS;
+  if (count >= holdAt) return { hold: 'attempts-exhausted' };
+  if (count >= 1) return backoff.length ? { retryAfterMs: backoff[Math.min(count, backoff.length) - 1] } : null;
   return null;
 }
 

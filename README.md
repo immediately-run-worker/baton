@@ -22,6 +22,7 @@ How Baton differs from a durable-execution engine such as Temporal, and where ea
 | `src/core/workerApi.ts` | The worker API (§11): heartbeat and registration, activities, messages, suspensions, mode and shadow reports, the Workers view |
 | `src/core/claims.ts` | The lease (§6, R3-1212): claim and end, matching (§7.2 rules 1–9 via `isEligible`), the alarm's reaps, the fence before re-issue, confirmations, git winning over a stale claim, the Running / Timeline / Needs you data |
 | `src/core/attempts.ts` | Pure: the retry policy (§6.10 R-BTN-23) — which ends count, backoff, holds, the review-capacity run, the resume record (R-BTN-24) |
+| `src/core/admin.ts` | Administrators and owners (R-BTN-57/-58, R-BTN-66/-67): repositories, probes, grants, owners, owner bars, required bars, `retry`, `transcript_repos`, login links and dashboard sessions — the one set of validated functions the signed `/v1/admin/*` and `/v1/owner/*` routes and the `baton` CLI share |
 | `src/core/registry.ts` | The registered repositories (R-BTN-47): a checked, insert-only registration, the `BATON_REPOSITORIES` seed, the one repository a sync token binds to (R-BTN-15), qualified ticket ids (`docs:R3-1205`) |
 | `src/core/cutover.ts` | The one-way cutover (R-BTN-28): `POST /v1/ui/cutover`, the legacy import, adoption on the owner's confirmation |
 | `src/core/validate.ts` | Pure: every worker- and owner-supplied field checked before any write (§10.4) |
@@ -35,6 +36,7 @@ How Baton differs from a durable-execution engine such as Temporal, and where ea
 | `src/local/` | The local host: `node:sqlite` as the `Store` (`store.ts`), one queue for every request and alarm tick (`queue.ts`), a timer as the alarm (`host.ts`), `node:http` (`server.ts`), the command line (`main.ts`) |
 | `src/migrations/` | Numbered schema migrations, applied before the object serves |
 | `src/ui/` | The dashboard: one HTML page, one stylesheet, one ES module (`textContent` only) |
+| `cli/` | `baton admin …` and `baton owner …` (`baton.mjs`): one request per command, signed with the key file `-i` names by `ssh-keygen -Y sign` (`sign.mjs`) |
 | `src/shared/` | **Vendored** from docs `scripts/lib/` — never edit here (R-BTN-37); `batonSync.mjs` is the board sync's own decision code, which S-BTN-13 drives |
 | `test/unit/`, `test/integration/` | Vitest; `S-BTN-n` scenarios in `integration/`. Project `cloudflare` runs everything in the Workers runtime; project `local` runs every scenario again on the local host, plus the Node-only tests |
 | `test/hosts/` | The two hosts the harness drives, behind one interface (`#host`) |
@@ -65,7 +67,8 @@ origin, in another namespace, by an unknown or revoked key, or with a nonce it h
 that key in 10 minutes. The front checks the shape, `@authority` and the digest before the
 object; the object checks the clock, the key, the signature and the nonce.
 
-Until R3-1240's owner grants, the secret `BATON_KEYS` seeds the worker keys at start:
+A repository's owner grants a key (below); until then, or for a machine no owner has granted, the
+secret `BATON_KEYS` seeds worker keys at start:
 `[{"key": "ssh-ed25519 AAAA… comment", "name": "<the one hostname it registers>",
 "allowed_capabilities": ["capability", …]}]`. A seeded key the list no longer names is revoked,
 for good; a machine whose key is lost gets a new one. An unset `BATON_KEYS` changes nothing (`[]`
@@ -79,6 +82,37 @@ credential's hash revokes it on its next call. Bearer tokens go once every worke
 
 After the first heartbeat a worker also presents the per-session secret it registered
 (R-BTN-14). Only the credential named `test` may send `test_harness` (R-BTN-32).
+
+## Administrators and owners
+
+Whoever deploys Baton is its administrator (R-BTN-57): the secret `BATON_ADMIN_KEYS` (locally
+`--admin-keys`) lists their SSH public keys, one per line, read on every request. Owners are per
+repository (R-BTN-58), named by an administrator when it registers the repository. Every
+management request is signed like a worker's, and the CLI is the one path:
+
+```
+baton admin -i ~/.ssh/baton_admin repo add immediately-run/ops --id ops --owner-key ops-owner.pub
+baton admin -i ~/.ssh/baton_admin repo set docs --weight 2        # or --tiers routine,judgement,critical
+baton admin -i ~/.ssh/baton_admin grant docs --key op.pub --hostname op-mac --capabilities human-operator
+baton admin -i ~/.ssh/baton_admin revoke SHA256:…                 # any key, at once
+baton admin -i ~/.ssh/baton_admin open                            # a one-time dashboard link (5 minutes)
+baton owner -i ~/.ssh/docs_owner grant docs --key vm.pub --hostname vm-a --capabilities agent-venue --max-tier judgement
+baton owner -i ~/.ssh/docs_owner bar docs --course '*' --tag account:go_plus --applies claim --starts-at 2026-10-17T00:00:00Z --reason go-quota
+baton owner -i ~/.ssh/docs_owner settings docs --required-bar '*' --course roadmap-pr --except implement,review,adjudicate --tag-prefix family: \
+                                               --retry 1h,4h --max-failed 3
+```
+
+`--url` (or `BATON_URL`) picks the Baton. A key holds one role — administrator, owner, worker,
+probe, courier or sync — and a key in a second is `conflict`. A granted key works only where it
+is granted, with what that repository granted (rules 4 and 7) and under its `max_tier`; only an
+administrator grants `human-operator`. Owner bars join the posted barred tags of their course
+(or every course, `*`), at claims and, with `--applies claim+advance`, advances; a leg missing a
+required bar's tag prefix waits on `policy` under Needs you. Tiers, `retry` and
+`transcript_repos` come only from Baton: a snapshot changes none of them. The dashboard shows them
+under Limits, read-only.
+
+The dashboard takes Cloudflare Access where it is configured, or the `__Host-baton_session`
+cookie a login link sets (12 hours; it ends when its key leaves `BATON_ADMIN_KEYS`).
 
 ## Repositories and their syncs
 

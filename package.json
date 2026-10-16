@@ -2,9 +2,12 @@
   "name": "@immediately-run/baton",
   "private": true,
   "type": "module",
-  "description": "Baton — work-item leases, workers and the factory dashboard, on a Cloudflare Durable Object or as a local Node process (BATON_SPEC §3a).",
+  "description": "Baton \u2014 work-item leases, workers and the factory dashboard, on a Cloudflare Durable Object or as a local Node process (BATON_SPEC \u00a73a).",
   "engines": {
     "node": ">=22.13"
+  },
+  "bin": {
+    "baton": "cli/baton.mjs"
   },
   "scripts": {
     "test": "vitest run && MODEL_SAMPLES=1000 npm run model",

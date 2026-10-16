@@ -13,6 +13,10 @@ export interface GateWorker {
   tier_ceiling: string;
   tags: string[];
   courses: { repository: string; course: string; version: number }[];
+  /** R-BTN-58: the key's grants by repository, each with the capabilities it may use there; null
+   *  for a key no owner or administrator granted — a bearer token or a BATON_KEYS seed key, which
+   *  keep their interim reach until the seed retires (spec-silent, recorded on R3-1240). */
+  grants: Record<string, { capabilities: string[] }> | null;
 }
 
 /** What is asked for: the ticket's filter fields (R-BTN-33). */
@@ -60,6 +64,7 @@ export type GateVerdict = { ok: true } | { ok: false; rule: number; code: string
 export const GATE_CODES = {
   1: 'not-ready',
   3: 'claimed',
+  7: 'not-granted',
   4: 'missing-capability',
   5: 'above-tier-ceiling',
   6: 'operator-only',
@@ -79,9 +84,10 @@ export function claimHolds(c: { status: string; confirmed_at: number | null; fen
 /**
  * Whether `worker` may take `leg` of `ticket` now, at a claim or at an advance, naming the first
  * rule that refuses. At a claim: the leg is ready and a sync has run since the ticket's last end
- * (rule 1), the lease (3), capabilities (4), tier (5), operator-only (6), the posted barred tags
- * (8), the course version (9) and the backoff (10). At an advance only the rules that bind a
- * holder (§7.2): the hold (3), 4–6, 8 with the holder's own bars joined, and 10 — rule 1 is the
+ * (rule 1), the lease (3), the grant (7), capabilities (4), tier (5), operator-only (6), the
+ * barred tags — posted and owner bars — (8), the course version (9) and the backoff (10). At an
+ * advance only the rules that bind a holder (§7.2): the hold (3), 4–7, 8 with the holder's own
+ * bars and the owner bars that apply at advances joined, and 10 — rule 1 is the
  * edge and run limit the caller checks against the course file, the lease is the holder's own,
  * and rule 9 is not re-checked, so a course change never strands a claim halfway (R-BTN-22).
  */
@@ -92,12 +98,20 @@ export function gatesFor(worker: GateWorker, ticket: GateTicket, leg: GateLeg, p
   }
   if (facts.override?.hold) return refuse(3, 'held');
 
-  const held = capabilitiesOf(worker.declared);
-  for (const need of capabilitiesOf(ticket.requires)) if (!held.has(need)) return refuse(4);
+  // Rule 7 (R-BTN-58): the key holds a grant for the ticket's repository.
+  const grant = worker.grants ? worker.grants[ticket.repository] ?? null : undefined;
+  if (grant === null) return refuse(7);
 
+  // Rule 4: what it declared, within what this repository granted it.
+  const held = capabilitiesOf(worker.declared);
+  const granted = grant ? new Set(grant.capabilities) : null;
+  for (const need of capabilitiesOf(ticket.requires)) if (!held.has(need) || (granted && !granted.has(need))) return refuse(4);
+
+  // Rule 5: the caller passes the lower of the declared ceiling and the grant's max_tier.
   if (!fitsTier(ticket.tier, worker.tier_ceiling, ticket.tiers)) return refuse(5);
 
-  if (ticket.operator_only && !worker.declared.includes('human-operator')) return refuse(6);
+  // Rule 6: declared, and — for a granted key — granted by an administrator.
+  if (ticket.operator_only && (!worker.declared.includes('human-operator') || (granted && !granted.has('human-operator')))) return refuse(6);
 
   const barred = new Set([...leg.bars, ...(phase === 'advance' ? facts.holderBars ?? [] : [])]);
   if (worker.tags.some((t) => barred.has(t))) return refuse(8);

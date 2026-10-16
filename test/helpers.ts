@@ -330,3 +330,19 @@ export async function advance(cred: keyof typeof TOKENS, secret: string, claimId
   const res = await workerCall(`/v1/runner/claims/${claimId}/advance`, { cred, secret, body });
   return { status: res.status, json: (await res.json()) as Record<string, any> };
 }
+
+// ── administration (R3-1240) ──────────────────────────────────────────────────────────────
+
+/** BATON_ADMIN_KEYS for this test (R-BTN-57): the core reads the port on every call. */
+export function setAdminKeys(...keys: TestKey[]) {
+  return withCore((c) => {
+    (c as unknown as { ports: { adminKeys: { list: () => string[] } } }).ports.adminKeys = { list: () => keys.map((k) => k.publicKey) };
+  });
+}
+
+/** A request signed by `key` (an administrator's or an owner's), at the core's clock. */
+export async function keyCall(key: TestKey, path: string, body?: unknown, method?: string) {
+  const created = Math.floor((await withCore((c) => c.now())) / 1000);
+  const res = await hostCall(await signedRequest(key, ORIGIN + path, { created, method, body: body === undefined ? undefined : JSON.stringify(body) }));
+  return { status: res.status, json: (await res.json()) as Record<string, any> };
+}

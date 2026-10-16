@@ -8,7 +8,7 @@ import { inject } from 'vitest';
 
 const T0 = Date.parse('2026-10-16T12:00:00Z');
 const worker = (over: Partial<GateWorker> = {}): GateWorker => ({
-  declared: ['agent-venue'], tier_ceiling: 'critical', tags: ['family:glm'], courses: [{ repository: 'docs', course: 'roadmap-pr', version: 3 }], ...over,
+  declared: ['agent-venue'], tier_ceiling: 'critical', tags: ['family:glm'], courses: [{ repository: 'docs', course: 'roadmap-pr', version: 3 }], grants: null, ...over,
 });
 const ticket = (over: Partial<GateTicket> = {}): GateTicket => ({
   repository: 'docs', course: 'roadmap-pr', tier: 'judgement', requires: ['agent-venue'], operator_only: false, tiers: ['routine', 'judgement', 'critical'], ...over,

@@ -4,6 +4,7 @@
 // file. A posted file that fails `validateCourse` keeps the previous one in force and is listed
 // under Needs you; with no previous one there is nothing to keep, so the post is refused.
 import { validateCourse, type CourseViolation } from './course';
+import { graphOf, resolveLeg } from './graph';
 import { BatonError } from './http';
 import { FREE_TEXT_MAX } from './text';
 import type { Store } from './ports';
@@ -117,7 +118,7 @@ export interface CourseRow {
 }
 
 export class Courses {
-  constructor(private readonly c: { store: Store }) {}
+  constructor(private readonly c: { store: Store; requiredBars?: (repo: string) => { course: string; leg: string }[] }) {}
 
   private rows<T>(q: string, ...p: unknown[]): T[] {
     return this.c.store.exec<T>(q, ...p).toArray();
@@ -138,6 +139,16 @@ export class Courses {
       const violations: CourseViolation[] = e.oversized
         ? [{ rule: 'bound', path: '', message: `the course file is over ${COURSE_FILE_MAX_BYTES} bytes` }]
         : validateCourse(e.course);
+      // R-BTN-67: a file that no longer has a leg an owner's required bar names — by its name or a
+      // `renamed_from` — is held until an owner updates or drops the bar.
+      if (!violations.length) {
+        const g = graphOf(e.course);
+        for (const bar of this.c.requiredBars?.(repo) ?? []) {
+          if (bar.course === e.id && bar.leg !== '*' && !resolveLeg(g, bar.leg)) {
+            violations.push({ rule: 'required-bar', path: `legs.${bar.leg}`, message: `an owner's required bar names the leg ${bar.leg}, which this file no longer has` });
+          }
+        }
+      }
       if (violations.length) {
         if (!this.get(repo, e.id)) {
           throw new BatonError('invalid-params', `registry: ${e.id}'s course file fails R-BTN-69 and no earlier one is in force — ${storedViolations(violations).slice(0, 3).map((v) => `${v.path || '(file)'}: ${v.message}`).join('; ')}`);

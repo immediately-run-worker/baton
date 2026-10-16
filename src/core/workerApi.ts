@@ -43,6 +43,8 @@ export interface Ctx {
   fenced?: (workerId: number, incarnation: number, claimId: number) => boolean;
   /** §11: where the claim is and what git shows of its ticket (R3-1232), from the claims. */
   claimView?: (claimId: number) => Record<string, unknown>;
+  /** R-BTN-67: the owner bars in force, for the heartbeat's `bars`. */
+  bars?: (now: number) => unknown[];
 }
 
 export class WorkerApi {
@@ -65,7 +67,7 @@ export class WorkerApi {
 
   /** Mirror the `CREDENTIALS` secret into `credentials`, and mark revoked a credential whose
    *  token hash is gone. Returns the credential's row, or throws `forbidden`. */
-  credential(id: string): { id: string; hostname: string; allowed: string[]; kind: string } {
+  credential(id: string): { id: string; hostname: string; allowed: string[]; kind: string; granted: boolean } {
     let policy: Record<string, { hostname: string; allowed_capabilities: string[] }> = {};
     let hashes: Record<string, string> = {};
     try {
@@ -79,10 +81,17 @@ export class WorkerApi {
     const marker = fnv1a(`${this.c.config.CREDENTIALS ?? ''}\u0000${this.c.config.TOKEN_HASHES ?? ''}`);
     const now = this.c.now();
     if (this.setting('credentials_marker') !== marker) this.mirrorCredentials(policy, hashes, marker, now);
-    const row = this.rows<{ id: string; hostname: string; allowed_capabilities: string; revoked_at: number | null; kind: string }>(
-      'SELECT id, hostname, allowed_capabilities, revoked_at, kind FROM credentials WHERE id = ?', id)[0];
+    const row = this.rows<{ id: string; hostname: string; allowed_capabilities: string; revoked_at: number | null; kind: string; created_by: string | null }>(
+      'SELECT id, hostname, allowed_capabilities, revoked_at, kind, created_by FROM credentials WHERE id = ?', id)[0];
     if (!row || row.revoked_at != null) throw new BatonError('forbidden', 'this credential is not registered or is revoked');
-    return { id: row.id, hostname: row.hostname, allowed: JSON.parse(row.allowed_capabilities), kind: row.kind };
+    // R-BTN-58: a key an owner or administrator granted may declare what its grants together give
+    // it — expanded capabilities, `human-operator` only from an administrator's grant.
+    if (row.created_by && /^(owner|admin):/.test(row.created_by)) {
+      const caps = new Set(this.rows<{ capabilities: string }>('SELECT capabilities FROM worker_grants WHERE credential_id = ? AND revoked_at IS NULL', id)
+        .flatMap((g) => JSON.parse(g.capabilities) as string[]));
+      return { id: row.id, hostname: row.hostname, allowed: [...caps, 'none'].sort(), kind: row.kind, granted: true };
+    }
+    return { id: row.id, hostname: row.hostname, allowed: JSON.parse(row.allowed_capabilities), kind: row.kind, granted: false };
   }
 
   /** The `credentials` table is the secrets' mirror (§4), for the dashboard and the worker rows'
@@ -141,6 +150,7 @@ export class WorkerApi {
       if (keys.some((k) => k.id === parsed.fingerprint)) throw new Error(`${at}: the key is listed twice`);
       // R-BTN-57: a key holds one role — a sync key (R-BTN-93) is never a worker's.
       if (this.rows('SELECT 1 FROM sync_keys WHERE fingerprint = ?', parsed.fingerprint).length) throw new Error(`${at}: the key is a sync key (one role per key)`);
+      if (this.rows('SELECT 1 FROM repository_owners WHERE fingerprint = ? AND removed_at IS NULL', parsed.fingerprint).length) throw new Error(`${at}: the key is an owner key (one role per key)`);
       if (keys.some((k) => k.name === name)) throw new Error(`${at}: ${name} already has a key (one key per name)`);
       // Only the type and the base64: a comment is a label for people, never stored.
       keys.push({ id: parsed.fingerprint, public_key: `${parsed.type} ${key.trim().split(' ')[1]}`, name, allowed: JSON.stringify([...allowed_capabilities].sort()) });
@@ -262,7 +272,11 @@ export class WorkerApi {
   private heartbeatTx(credentialId: string, presented: string | null, settingsHash: string, hb: Heartbeat) {
     const cred = this.credential(credentialId);
     if (hb.hostname !== cred.hostname) throw new BatonError('forbidden', `this credential may register only ${cred.hostname}`);
-    const outside = hb.capabilities.filter((c) => !cred.allowed.includes(c));
+    // A granted key's allow-list is expanded capabilities: a declared role passes when all of its
+    // capabilities are granted.
+    const outside = hb.capabilities.filter((c) => cred.granted
+      ? !(c === 'human-operator' ? cred.allowed.includes(c) : [...capabilitiesOf([c])].every((x) => cred.allowed.includes(x)))
+      : !cred.allowed.includes(c));
     if (outside.length) throw new BatonError('forbidden', `this credential may not declare ${outside.join(', ')}`);
     // R-BTN-32: only the test credential may run a test-harness sidecar.
     if (hb.test_harness && cred.id !== 'test') throw new BatonError('forbidden', 'test_harness is refused from any credential but the test one');
@@ -344,6 +358,8 @@ export class WorkerApi {
       lease_timeout_s: fresh.lease_timeout_ms / 1000,
       claim: claim ? { ...claim, ...this.c.claimView?.(claim.id), activity: this.currentActivity(w.id) } : null,
       messages: this.deliver(w.id, now),
+      // R-BTN-67: the owner bars in force, so harness hooks can act on them offline.
+      bars: this.c.bars?.(now) ?? [],
       suspensions: this.suspensionsFor(now),
       // R-BTN-22: the declared courses below their min_worker_version — no new claim on them.
       stale_courses: this.staleCourses(w.id),

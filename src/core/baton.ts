@@ -9,6 +9,7 @@ import { MIGRATIONS } from '../migrations';
 import { BatonError, errorResponse, json } from './http';
 import { checkPayload, DEFAULT_COURSE, inPeak, nextPeakChange, rowFor, rowForTicket, rowHash, stationOf, type BoardPayload, type PostedStation } from './board';
 import { Stations, type Seen } from './stations';
+import { Admin, SESSION_COOKIE, SESSION_MS } from './admin';
 import { priceFor } from '../shared/sessionUsage.mjs';
 import { familyOf } from '../shared/baton.mjs';
 import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
@@ -41,6 +42,7 @@ export class BatonCore {
   readonly observations: Observations;
   readonly webhooks: Webhooks;
   readonly stations: Stations;
+  readonly admin: Admin;
   readonly store: Store;
   /** §12: workflows to dispatch once the current request or alarm has committed, one per
    *  repository and kind. */
@@ -58,16 +60,19 @@ export class BatonCore {
     this.outside = ports.gate ? (work) => ports.gate!.outside(work) : (work) => work();
     const store = ports.store;
     this.registry = new Registry({ store, now: () => this.now() });
-    this.courses = new Courses({ store });
+    this.courses = new Courses({ store, requiredBars: (repo) => this.admin.requiredBars(repo) });
     this.observations = new Observations({ store, now: () => this.now() });
     this.webhooks = new Webhooks({ store, now: () => this.now() });
     const want = (wf: Workflow) => this.pendingDispatch.set(`${wf.repository}:${wf.kind}`, wf);
-    this.stations = new Stations({ store, now: () => this.now() });
-    this.claims = new Claims({ store, now: () => this.now(), stations: this.stations, dispatch: (kind, ticketId) => want({ repository: repositoryOf(ticketId), kind }) });
+    this.admin = new Admin({ store, now: () => this.now(), registry: this.registry, adminKeys: () => ports.adminKeys.list(), origin: ports.config.BATON_ORIGIN,
+      dispatchSync: (repository) => want({ repository, kind: 'sync' }) });
+    this.stations = new Stations({ store, now: () => this.now(), requiredBars: (repo) => this.admin.requiredBars(repo) });
+    this.claims = new Claims({ store, now: () => this.now(), stations: this.stations, admin: this.admin, dispatch: (kind, ticketId) => want({ repository: repositoryOf(ticketId), kind }) });
     this.cutover = new Cutover({ store, now: () => this.now() });
     this.mirror = new Mirror({ store, now: () => this.now() });
     this.workers = new WorkerApi({ store, config: ports.config, now: () => this.now(), fenced: (w, inc, id) => this.claims.fenced(w, inc, id),
-      claimView: (id) => this.claims.holderView(id) });
+      claimView: (id) => this.claims.holderView(id),
+      bars: (now) => this.admin.bars(null, now).map(({ id: _id, release_holders: _r, ...b }) => ({ repository: b.repository_id, course: b.course, tag: b.tag, legs: b.legs, applies: b.applies, starts_at: b.starts_at, ends_at: b.ends_at, reason: b.reason })) });
   }
 
   /** Before the first request (§3): every migration applied — the core refuses to serve until
@@ -238,7 +243,11 @@ export class BatonCore {
         // its mirror workflow; each touches that repository alone.
         if (req.method === 'GET' && url.pathname === '/v1/sync/head') return json(this.head((await this.verifySync(req, 'sync')).repo.id));
         // R-BTN-62: the next number of the repository's counter, before the sync reads anything.
-        if (req.method === 'POST' && url.pathname === '/v1/sync/observation') return json(this.observations.observe((await this.verifySync(req, 'sync')).repo.id));
+        if (req.method === 'POST' && url.pathname === '/v1/sync/observation') {
+          const repo = (await this.verifySync(req, 'sync')).repo.id;
+          // R-BTN-67: with the owner bars in force or scheduled for the repository, each with its course.
+          return json({ ...this.observations.observe(repo), bars: this.admin.bars([repo], this.now(), true).map(({ repository_id: _r, ...b }) => b) });
+        }
         if (req.method === 'POST' && url.pathname === '/v1/sync/board') {
           const { repo, req: signed } = await this.verifySync(req, 'sync');
           const body = await readJson(signed);
@@ -272,8 +281,25 @@ export class BatonCore {
         await this.delivery(req);
         return new Response(null, { status: 204 });
       }
+      if (url.pathname.startsWith('/v1/admin/') || url.pathname.startsWith('/v1/owner/')) return await this.adminRoute(req, url);
+      if (req.method === 'POST' && url.pathname === '/v1/login') {
+        // R-BTN-57, R-BTN-16: the one-time link's token for the session cookie — `__Host-`,
+        // host-only, Secure, HttpOnly, SameSite=Strict, at most 12 hours.
+        const value = await this.admin.login(await readJson(req));
+        const res = json({ ok: true });
+        res.headers.set('Set-Cookie', `${SESSION_COOKIE}=${value}; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MS / 1000}`);
+        return res;
+      }
+      let owner: string | null = null;
+      if (url.pathname.startsWith('/v1/ui/')) {
+        // The dashboard's principal: an Access email the front verified, or a session minted from
+        // an administrator's key still in BATON_ADMIN_KEYS (R-BTN-57).
+        owner = req.headers.get('X-Baton-Owner') ?? (await this.admin.session(req.headers.get('X-Baton-Session')));
+        if (!owner) throw new BatonError('unauthenticated', 'the dashboard session ended or is unknown');
+        if (req.method === 'GET' && url.pathname === '/v1/ui/session') return json({ ok: true });
+      }
       if (req.method === 'GET' && url.pathname === '/v1/ui/state') return json(this.uiState());
-      const routed = await this.workerRoute(req, url);
+      const routed = await this.workerRoute(req, url, owner);
       if (routed) return routed;
       throw new BatonError('not-found', `no route ${req.method} ${url.pathname}`);
     } catch (e) {
@@ -308,10 +334,9 @@ export class BatonCore {
    *  `X-Baton-Credential` (a bearer token's credential, verified), `X-Baton-Signed` (a signed
    *  request's keyid, pre-checked; verifySigned finishes it here) or `X-Baton-Owner` (the Access
    *  email); it strips all of them from every incoming request first. */
-  private async workerRoute(req: Request, url: URL): Promise<Response | null> {
+  private async workerRoute(req: Request, url: URL, owner: string | null): Promise<Response | null> {
     const p = url.pathname;
     const m = req.method;
-    const owner = req.headers.get('X-Baton-Owner');
     let cred = req.headers.get('X-Baton-Credential');
     const secret = req.headers.get('X-Worker-Secret');
     if (req.headers.has('X-Baton-Signed')) {
@@ -440,6 +465,59 @@ export class BatonCore {
       }
     }
     return null;
+  }
+
+  /**
+   * `/v1/admin/*` and `/v1/owner/{repository}/*` (R-BTN-57, R-BTN-58, §11): signed by an
+   * administrator's key (BATON_ADMIN_KEYS) or by an owner key of that repository. A key Baton
+   * does not know is `unauthenticated`; a known key outside its role or repository `forbidden`.
+   */
+  private async adminRoute(req: Request, url: URL): Promise<Response> {
+    if (!req.headers.has('X-Baton-Signed')) throw new BatonError('unauthenticated', 'sign with an administrator or owner key');
+    const admins = await this.admin.adminFingerprints();
+    const signed = await this.verifySigned(req, (fp) => admins.get(fp) ?? this.admin.ownerKey(fp));
+    const fp = signed.cred;
+    const p = url.pathname;
+    const m = req.method;
+    const body = async () => readJson(signed.req);
+    const seg = (raw: string) => {
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        throw new BatonError('invalid-params', 'a malformed path segment');
+      }
+    };
+    if (p.startsWith('/v1/admin/')) {
+      if (!admins.has(fp)) throw new BatonError('forbidden', 'an administrator’s key is required (R-BTN-57)');
+      const actor = `admin:${fp}`;
+      if (m === 'POST' && p === '/v1/admin/repositories') return json(await this.admin.repositories(actor, await body()));
+      if (m === 'POST' && p === '/v1/admin/probes') return json(await this.admin.addProbe(actor, await body()));
+      if (m === 'POST' && p === '/v1/admin/grants') {
+        const b = await body();
+        const repo = checkRepositoryId((b as { repository?: unknown } | null)?.repository);
+        return json(await this.admin.grant(actor, repo, b, 'admin'));
+      }
+      const revoke = /^\/v1\/admin\/keys\/([^/]+)\/revoke$/.exec(p);
+      if (m === 'POST' && revoke) return json(this.admin.revokeKey(actor, seg(revoke[1])));
+      if (m === 'POST' && p === '/v1/admin/login-links') return json(await this.admin.loginLink(fp));
+      throw new BatonError('not-found', `no route ${m} ${p}`);
+    }
+    const o = /^\/v1\/owner\/([^/]+)\/(.+)$/.exec(p);
+    if (!o) throw new BatonError('not-found', `no route ${m} ${p}`);
+    const repo = checkRepositoryId(seg(o[1]));
+    // Owning one repository confers nothing on another (R-BTN-58).
+    if (!this.admin.owns(fp, repo)) throw new BatonError('forbidden', `this key does not own ${repo}`);
+    const actor = `owner:${fp}`;
+    const rest = o[2];
+    if (m === 'POST' && rest === 'grants') return json(await this.admin.grant(actor, repo, await body(), 'owner'));
+    const rg = /^grants\/([^/]+)\/revoke$/.exec(rest);
+    if (m === 'POST' && rg) return json(this.admin.revokeGrant(actor, repo, seg(rg[1])));
+    if (m === 'POST' && rest === 'owners') return json(await this.admin.owners(actor, repo, await body()));
+    if (m === 'POST' && rest === 'bars') return json(this.admin.setBar(actor, repo, await body()));
+    const lift = /^bars\/(\d+)\/lift$/.exec(rest);
+    if (m === 'POST' && lift) return json(this.admin.liftBar(actor, repo, Number(lift[1])));
+    if (m === 'PUT' && rest === 'settings') return json(this.admin.setSettings(actor, repo, await body()));
+    throw new BatonError('not-found', `no route ${m} ${p}`);
   }
 
   /** A ticket in a path: a qualified id (R-BTN-47) of a registered repository. A malformed
@@ -669,9 +747,8 @@ export class BatonCore {
    *  Returns whether the payload carried fleet data this repository may not write. */
   private reference(repo: string, p: BoardPayload): boolean {
     const exec = (q: string, ...a: unknown[]) => this.store.exec(q, ...a);
-    // §6.8: the repository's transcript repositories, from its baton.json until its owners set
-    // them (R-BTN-66, R3-1240).
-    if (p.transcript_repos) exec('UPDATE repositories SET transcript_repos = ? WHERE id = ?', JSON.stringify(p.transcript_repos), repo);
+    // §6.8, R-BTN-66: a repository's transcript repositories are its owners' setting, never read
+    // from a board post (R3-1240); a sync that still sends them is not refused for it.
     // The rest is the instance's: only the fleet repository writes it (interim, R3-1231 2b).
     const carries = p.providers != null || p.matrix != null || p.reviewers != null;
     if (this.registry.fleetRepository() !== repo) return carries;
@@ -727,7 +804,7 @@ export class BatonCore {
       // Ready: a ticket whose queued leg its sync posts ready (R-BTN-70), the interim post's
       // included — it places each ready item at its course's start (round 2, 2-A-4).
       `SELECT t.id, t.repository_id, t.local_id, t.path, t.title, t.project, t.status, t.node, t.queue, t.tags, t.tier, t.requires_clause, t.operator_only, t.ord, t.rank,
-              t.expedite, s.station, s.next_leg, s.to_end
+              t.expedite, t.snapshot_sha, s.station, s.next_leg, s.to_end
        FROM tickets t JOIN repositories p ON p.id = t.repository_id
        JOIN ticket_stations s ON s.ticket_id = t.id
        JOIN ticket_next_legs a ON a.ticket_id = t.id AND a.leg = s.next_leg AND a.state = 'ready'
@@ -744,6 +821,8 @@ export class BatonCore {
       url: ((w) => fileUrl(w.forge, w.web_base, w.default_branch, r.path as string))(where.get(r.repository_id as string)!),
       project: r.project,
       tier: r.tier,
+      // The commit that last changed the ticket's row — a re-tier shows beside it (S-BTN-39).
+      changed_in: r.snapshot_sha,
       queue: r.queue,
       node: r.node,
       rank: r.rank,
@@ -785,6 +864,8 @@ export class BatonCore {
     return {
       server_time: now, repositories, ready, ready_by_tier: byTier, providers, held, workers: this.workers.workersView(now), suspensions,
       running: this.claims.running(now), timeline: this.claims.timeline(now),
+      // R-BTN-66: owners, grants, owner bars and settings — read-only; the CLI changes them.
+      limits: this.admin.view(now),
       // R-BTN-69: a refused course file, the previous one staying in force.
       needs_you: { ...this.claims.needsYou(now), adoptions: this.cutover.adoptions(), courses_refused: this.courses.refusals(), keys: this.keysNotice() },
     };

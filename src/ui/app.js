@@ -1,6 +1,8 @@
 // app.js — the dashboard (BATON_SPEC §14): Needs you, Running, Timeline, Ready, Providers,
-// Workers and Suspensions, with the owner's actions (status request, release, force-reap,
-// accept a held history, suspend and lift). It polls
+// Workers, Suspensions and Limits (owners, grants, owner bars and settings — read-only: the
+// `baton` CLI changes them, R-BTN-66), with the owner's actions (status request, release,
+// force-reap, accept a held history, suspend and lift). At /login it trades the one-time token in
+// the URL's fragment for a session (R-BTN-57, R-BTN-16) and goes to /. It polls
 // GET /v1/ui/state every 10 seconds and renders with textContent only (§10.4): no markup is
 // ever built from server text.
 
@@ -81,7 +83,8 @@ function renderReady() {
     body.append(el('tr', {},
       el('td', { text: i + 1, cls: 'num' }),
       el('td', {}, el('span', { text: r.id, cls: 'muted' }), document.createTextNode(' '), httpsLink(r.title, r.url)),
-      el('td', { text: r.tier ?? 'untiered' }),
+      // A ticket's tier is git's: shown beside the commit that last changed the ticket (S-BTN-39).
+      el('td', { text: `${r.tier ?? 'untiered'}${r.changed_in ? ` · ${short(r.changed_in)}` : ''}` }),
       reqs,
       el('td', { text: r.rank_reason, cls: 'muted' })));
   });
@@ -353,6 +356,10 @@ function renderNeeds() {
     }
     list.append(el('li', { text: `${b.ticket_id}: the holder barred ${(d.declared_only ?? []).join(', ')} from ${d.leg ?? 'a leg'}, which the sync does not; the sync's reading binds` }));
   }
+  // R-BTN-67: a leg missing an owner's required bar waits on policy; the board still moves.
+  for (const p of n.policy ?? []) {
+    list.append(el('li', { text: `${p.ticket_id}: ${p.leg} waits on policy since ${fmtTime(p.waiting_since)} — the sync posts no tag an owner's required bar asks for` }));
+  }
   // R-BTN-69: a refused course file; the one in force stays until a passing one is posted.
   for (const c of n.courses_refused ?? []) {
     const first = c.violations[0];
@@ -407,6 +414,43 @@ function renderNeeds() {
   document.getElementById('needs-section').hidden = !list.children.length;
 }
 
+/** A stored JSON column, parsed; shown as given when it does not parse. */
+function parsed(text, fallback) {
+  try {
+    return text == null ? fallback : JSON.parse(text);
+  } catch {
+    return fallback;
+  }
+}
+
+// R-BTN-66/-67: the limits agents cannot change, as Baton holds them. Read-only here.
+function renderLimits() {
+  const l = state.limits;
+  const box = document.getElementById('limits');
+  box.replaceChildren();
+  if (!l) return;
+  const list = (title, lines, empty) => {
+    box.append(el('h3', { text: title }));
+    const ul = el('ul');
+    for (const line of lines) ul.append(el('li', { text: line }));
+    if (!lines.length) ul.append(el('li', { text: empty, cls: 'muted' }));
+    box.append(ul);
+  };
+  list('Owners', l.owners.map((o) => `${o.repository_id}: ${o.fingerprint} (added by ${o.added_by}, ${fmtTime(o.added_at)})`), 'No repository has an owner key yet.');
+  list('Grants', l.grants.map((g) => `${g.repository_id}: ${g.hostname}${g.label ? ` (${g.label})` : ''} — ${parsed(g.capabilities, []).join(', ') || 'no capabilities'}${g.max_tier != null ? ` · up to ${g.max_tier}` : ''} · by ${g.granted_by}`), 'No key is granted.');
+  list('Owner bars', l.bars.map((b) => `#${b.id} ${b.repository_id}: ${b.tag} barred from ${b.course === '*' ? 'every course' : b.course}${b.legs.length ? ` (${b.legs.join(', ')})` : ''} at ${b.applies === 'claim' ? 'claims' : 'claims and advances'}, ${fmtTime(b.starts_at)} to ${b.ends_at == null ? 'lifted' : fmtTime(b.ends_at)}${b.release_holders ? ', releasing holders' : ''} — ${b.reason}`), 'No owner bar is in force or scheduled.');
+  list('Settings', l.settings.map((s) => {
+    const parts = [];
+    const required = parsed(s.required_bars, []);
+    for (const r of required) parts.push(`${r.course}:${r.leg}${r.except?.length ? ` except ${r.except.join(', ')}` : ''} must bar a ${r.tag_prefix} tag`);
+    const retry = parsed(s.retry, null);
+    parts.push(retry ? `retry after ${retry.backoff_ms.map((ms) => `${Math.round(ms / 60_000)} min`).join(', ')}; held at failure ${retry.max_failed}` : 'retry: the default');
+    const transcripts = parsed(s.transcript_repos, null);
+    if (transcripts) parts.push(`transcripts: ${transcripts.join(', ')}`);
+    return `${s.repository_id}: ${parts.join(' · ')}`;
+  }), 'No repository is registered.');
+}
+
 function render() {
   renderHead();
   renderReady();
@@ -417,6 +461,7 @@ function render() {
   renderTimeline();
   renderWorkers();
   renderSuspensions();
+  renderLimits();
   document.getElementById('status').textContent = `Updated ${fmtTime(state.server_time)}`;
 }
 
@@ -439,6 +484,25 @@ async function poll() {
   }
 }
 
-document.getElementById('tier').addEventListener('change', () => state && renderReady());
-poll();
-setInterval(poll, POLL_MS);
+/** /login#<token>: the one-time link (R-BTN-57). The token is in the fragment, so it never
+ *  reaches a server log; it is posted as JSON (R-BTN-16) and dropped from the address bar. */
+async function login() {
+  const token = location.hash.slice(1);
+  history.replaceState(null, '', '/login');
+  const status = document.getElementById('status');
+  if (!/^[0-9a-f]{64}$/.test(token)) {
+    status.textContent = 'This login link is incomplete. Run `baton admin open` for a new one.';
+    return;
+  }
+  const res = await fetch('/v1/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token }) });
+  if (res.ok) location.replace('/');
+  else status.textContent = 'This login link is used, expired or unknown. Run `baton admin open` for a new one.';
+}
+
+if (location.pathname === '/login') {
+  login();
+} else {
+  document.getElementById('tier').addEventListener('change', () => state && renderReady());
+  poll();
+  setInterval(poll, POLL_MS);
+}

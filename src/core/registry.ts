@@ -270,6 +270,9 @@ export class Registry {
       if (this.rows('SELECT 1 FROM credentials WHERE id = ? OR public_key = ?', key.fingerprint, key.line).length) {
         throw new BatonError('conflict', 'this key is already a worker, probe or courier key (R-BTN-57: one role per key)');
       }
+      if (this.rows('SELECT 1 FROM repository_owners WHERE fingerprint = ? AND removed_at IS NULL', key.fingerprint).length) {
+        throw new BatonError('conflict', 'this key is an owner key (R-BTN-57: one role per key)');
+      }
       if (this.rows('SELECT 1 FROM sync_keys WHERE fingerprint = ?', key.fingerprint).length) {
         throw new BatonError('conflict', 'this key is already a sync key: a sync key serves one repository in one role (R-BTN-93)');
       }
