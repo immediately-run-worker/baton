@@ -80,6 +80,22 @@ credential's hash revokes it on its next call. Bearer tokens go once every worke
 After the first heartbeat a worker also presents the per-session secret it registered
 (R-BTN-14). Only the credential named `test` may send `test_harness` (R-BTN-32).
 
+## Repositories and their syncs
+
+A repository is a forge path, a remote and a forge (BATON_SPEC §2k R-BTN-92): `forge` is `github`,
+`gitlab`, `gitea` or `git`; `github` holds the forge path (`owner/name`, up to four segments on
+GitLab); `remote` is what its sync and workers clone; `web_base` is its page, from which every link
+Baton accepts or draws is built (`src/core/links.ts`). A `git` repository has no `web_base` and no
+links. `BATON_REPOSITORIES` entries take `forge`, `remote`, `web_base`, `ci_identity` and
+`sync_keys`; a GitHub entry may leave them out.
+
+A sync or mirror authenticates (R-BTN-93) with a **sync key** — an SSH key registered for one
+repository in one role, signing as workers do — or a CI identity token: GitHub Actions OIDC from
+the repository's `sync_workflow`/`mirror_workflow`, or a GitLab CI `id_tokens` JWT whose audience
+is `<origin>#sync` or `<origin>#mirror`, from an issuer `BATON_FORGE_SECRETS` lists
+(`{"<repository>": {"forge": "gitlab", "gitlab_issuer": "https://gitlab.example.com"}}`). A key
+holds one role: a sync key is never a worker's, nor the reverse.
+
 ## GitHub App webhooks
 
 `POST /v1/github/webhook` takes the GitHub App's deliveries (R-BTN-73): `push`, `pull_request`,

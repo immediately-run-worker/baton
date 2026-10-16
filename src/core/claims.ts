@@ -4,6 +4,7 @@
 // stale claim (R-BTN-35). The lock is the two partial unique indexes: a claim inserts and lets
 // SQLite refuse a second holder, never check-then-insert without them (R-BTN-4).
 import { BatonError } from './http';
+import { transcriptUrl } from './links';
 import { isUniqueViolation, logEvent, randomHex } from './db';
 import { familyOf, isEligible, RULE_CODES, suspended } from '../shared/baton.mjs';
 import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
@@ -777,7 +778,7 @@ export class Claims {
               // §6.8: a link built only from validated parts — the activity's own transcript, else the session's.
               const t = this.rows<{ repo: string; path: string }>(
                 `SELECT repo, path FROM transcripts WHERE claim_id = ? AND (activity_id = ? OR activity_id IS NULL) ORDER BY activity_id IS NULL, id LIMIT 1`, c.id, a.id)[0];
-              return { ...a, transcript_url: t ? `https://github.com/${t.repo}/blob/HEAD/${t.path}` : null };
+              return { ...a, transcript_url: t ? transcriptUrl(t.repo, t.path) : null };
             }),
         })),
       })),

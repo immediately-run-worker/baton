@@ -9,7 +9,7 @@ import { claimItem, cutover, endClaim, hbBody, payload, register, rows, setClock
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');
 const H = 3_600_000;
-const PR = 'https://github.com/immediately-run/baton/pull/42';
+const PR = 'https://github.com/immediately-run/docs/pull/42'; // the ticket's home repository (R-BTN-92's link rule)
 
 beforeEach(async () => {
   await setClock(T0);

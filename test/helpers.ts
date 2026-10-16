@@ -28,6 +28,12 @@ export function syncToken(over: Record<string, unknown> = {}, opts: { issuer?: s
   return sign({ ...SYNC_CLAIMS, ...over }, { issuer: opts.issuer ?? env.OIDC_ISSUER, audience: opts.audience ?? env.BATON_ORIGIN });
 }
 
+/** A GitLab CI `id_tokens` JWT from `issuer` (R-BTN-93), its audience `<origin>#<role>` unless given. */
+export function gitlabToken(over: Record<string, unknown> = {}, opts: { issuer?: string; audience?: string; role?: 'sync' | 'mirror' } = {}) {
+  return sign({ project_path: 'group/lab', ref: 'main', ref_type: 'branch', ...over },
+    { issuer: opts.issuer ?? 'https://gitlab.test', audience: opts.audience ?? `${env.BATON_ORIGIN}#${opts.role ?? 'sync'}` });
+}
+
 /** A Cloudflare Access token for `email`. */
 export function accessToken(email = 'owner@example.com', opts: { audience?: string } = {}) {
   return sign({ email }, { issuer: `https://${env.ACCESS_TEAM_DOMAIN}`, audience: opts.audience ?? env.ACCESS_AUD });

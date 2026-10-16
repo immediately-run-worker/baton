@@ -12,7 +12,7 @@ import { priceFor } from '../shared/sessionUsage.mjs';
 import { familyOf } from '../shared/baton.mjs';
 import { fitsTier, TIERS } from '../shared/vocabulary.mjs';
 import { WorkerApi } from './workerApi';
-import { verifyRequest, withBody } from './auth';
+import { parseSshKey, verifyRequest, withBody, type SyncCredential } from './auth';
 import { Claims } from './claims';
 import { Cutover } from './cutover';
 import { Mirror } from './mirror';
@@ -20,6 +20,7 @@ import { checkConfirmations, checkRepositoryId, GIT_BRANCH, GIT_REPO } from './v
 import { Courses } from './courses';
 import { Observations } from './observations';
 import { Webhooks, type Delivery } from './webhook';
+import { fileUrl } from './links';
 import { Registry, TICKET_ID, qualify, repositoryOf, tierPosition, type Repository, type SyncClaims } from './registry';
 import type { Ports, Row, SqlValue, Store, Workflow } from './ports';
 
@@ -70,6 +71,7 @@ export class BatonCore {
   async start(): Promise<void> {
     this.migrate();
     this.store.transaction(() => this.registry.seed(this.ports.config));
+    await this.registry.seedSyncKeys(this.ports.config, this.ports.adminKeys.list());
     await this.seedKeys();
     if ((await this.ports.scheduler.get()) == null) await this.ports.scheduler.set(this.now() + ALARM_EVERY_MS);
     // A trailing webhook dispatch owed from before a restart keeps its time (round 1, 1-A-4).
@@ -114,11 +116,37 @@ export class BatonCore {
     return this.ports.dispatch.send({ github: repo.github, workflow: path.slice(path.lastIndexOf('/') + 1), ref: repo.default_branch });
   }
 
-  /** The repository a verified sync token acts for (R-BTN-15): the front passed its claims. */
-  private syncRepository(req: Request, role: 'sync' | 'mirror'): Repository {
+  /** R-BTN-93's one verifier: the repository a sync credential acts for in `role` — a sync key
+   *  (signed; its signature, clock and nonce checked here, as every key's are), or a CI identity
+   *  token the front verified (GitHub Actions OIDC, GitLab CI `id_tokens`). Anything else is
+   *  refused. Returns the request with a signed body put back. */
+  private async verifySync(req: Request, role: 'sync' | 'mirror'): Promise<{ repo: Repository; req: Request }> {
+    if (req.headers.has('X-Baton-Signed')) {
+      // Every key Baton knows verifies here, so a key in another role is told `forbidden`, not
+      // `unauthenticated` — an administrator's included (round 1, 1-A-9).
+      const admins = new Map<string, string>();
+      for (const line of this.ports.adminKeys.list()) {
+        try {
+          admins.set((await parseSshKey(line)).fingerprint, line);
+        } catch {
+          // an unreadable line is no key
+        }
+      }
+      const { req: signed, cred } = await this.verifySigned(req, (fp) => this.registry.syncKey(fp)?.public_key ?? this.workers.publicKey(fp) ?? admins.get(fp) ?? null);
+      // An administrator key is never a sync's, even one added to BATON_ADMIN_KEYS after it was
+      // registered as a sync key (round 3, 3-A-2).
+      if (admins.has(cred)) throw new BatonError('forbidden', 'an administrator key holds no other role (R-BTN-57)');
+      const key = this.registry.syncKey(cred);
+      // A worker, probe, courier or administrator key is never a sync's (R-BTN-57, R-BTN-93).
+      if (!key) throw new BatonError('forbidden', 'only a sync key may act as a sync');
+      if (key.role !== role) throw new BatonError('forbidden', `this sync key serves its repository's ${key.role}, not its ${role}`);
+      return { repo: this.registry.get(key.repository)!, req: signed };
+    }
     const raw = req.headers.get('X-Baton-Sync');
     if (!raw) throw new BatonError('unauthenticated', 'no sync principal');
-    return this.registry.forSync(JSON.parse(raw) as SyncClaims, role);
+    const claims = JSON.parse(raw) as SyncCredential;
+    const repo = claims.kind === 'gitlab' ? this.registry.forGitlab(claims, role) : this.registry.forSync(claims, role);
+    return { repo, req };
   }
 
   /** R-BTN-73: a verified delivery's fields, from the front. Its syncs go after the response;
@@ -204,12 +232,12 @@ export class BatonCore {
       if (url.pathname.startsWith('/v1/sync/')) {
         // R-BTN-15: the board's routes take only the repository's sync workflow, the feed's only
         // its mirror workflow; each touches that repository alone.
-        if (req.method === 'GET' && url.pathname === '/v1/sync/head') return json(this.head(this.syncRepository(req, 'sync').id));
+        if (req.method === 'GET' && url.pathname === '/v1/sync/head') return json(this.head((await this.verifySync(req, 'sync')).repo.id));
         // R-BTN-62: the next number of the repository's counter, before the sync reads anything.
-        if (req.method === 'POST' && url.pathname === '/v1/sync/observation') return json(this.observations.observe(this.syncRepository(req, 'sync').id));
+        if (req.method === 'POST' && url.pathname === '/v1/sync/observation') return json(this.observations.observe((await this.verifySync(req, 'sync')).repo.id));
         if (req.method === 'POST' && url.pathname === '/v1/sync/board') {
-          const repo = this.syncRepository(req, 'sync');
-          const body = await readJson(req);
+          const { repo, req: signed } = await this.verifySync(req, 'sync');
+          const body = await readJson(signed);
           let p: BoardPayload;
           try {
             p = checkPayload(body);
@@ -223,15 +251,15 @@ export class BatonCore {
           return json(await this.board(repo, p));
         }
         if (req.method === 'GET' && url.pathname === '/v1/sync/events') {
-          const repo = this.syncRepository(req, 'mirror');
+          const { repo } = await this.verifySync(req, 'mirror');
           const after = Number(url.searchParams.get('after') ?? 0);
           const limit = Number(url.searchParams.get('limit') ?? 200);
           if (!Number.isInteger(after) || after < 0 || !Number.isInteger(limit)) throw new BatonError('invalid-params', 'after and limit must be integers');
           return json(this.mirror.events(repo.id, after, limit));
         }
         if (req.method === 'POST' && url.pathname === '/v1/sync/foreign-claim') {
-          const repo = this.syncRepository(req, 'mirror');
-          const body = await readJson(req);
+          const { repo, req: signed } = await this.verifySync(req, 'mirror');
+          const body = await readJson(signed);
           return json(this.store.transaction(() => this.mirror.foreignClaim(repo.id, body)));
         }
       }
@@ -263,11 +291,11 @@ export class BatonCore {
    *  minutes of this clock — then its nonce, unseen for that key. The crypto runs outside the
    *  turn (§3); the nonce is checked and written after it. Returns the request with its body
    *  put back and the credential: the key's fingerprint. */
-  private async verifySigned(req: Request): Promise<{ req: Request; cred: string }> {
+  private async verifySigned(req: Request, lookup: (fp: string) => string | null = (fp) => this.workers.publicKey(fp)): Promise<{ req: Request; cred: string }> {
     const now = this.now();
-    const v = await this.outside(() => verifyRequest(req, (fp) => this.workers.publicKey(fp), { origin: this.ports.config.BATON_ORIGIN, now }));
+    const v = await this.outside(() => verifyRequest(req, lookup, { origin: this.ports.config.BATON_ORIGIN, now }));
     // Another request ran meanwhile: the key may have been revoked since it was read.
-    if (!this.workers.publicKey(v.keyid)) throw new BatonError('unauthenticated', 'the key is not registered or is revoked');
+    if (!lookup(v.keyid)) throw new BatonError('unauthenticated', 'the key is not registered or is revoked');
     this.workers.acceptNonce(v.keyid, v.nonce, now);
     return { req: withBody(req, v.body), cred: v.keyid };
   }
@@ -630,7 +658,7 @@ export class BatonCore {
       const sha = this.headOf(repo.id);
       const head = sha ? this.sql('SELECT sha, parent_sha, received_at, ticket_count FROM board_snapshots WHERE repository_id = ? AND sha = ?', repo.id, sha)[0] ?? null : null;
       const courses = this.courses.all().filter((c) => c.repository_id === repo.id).map(({ id, version, min_worker_version, skill }) => ({ id, version, min_worker_version, skill }));
-      return { id: repo.id, github: repo.github, default_branch: repo.default_branch, weight: repo.weight, head, mode: this.workers.mode(repo.id), courses };
+      return { id: repo.id, github: repo.github, forge: repo.forge, web_base: repo.web_base, default_branch: repo.default_branch, weight: repo.weight, head, mode: this.workers.mode(repo.id), courses };
     });
     const where = new Map(repositories.map((r) => [r.id, r]));
     const items = this.sql<Record<string, SqlValue>>(
@@ -646,7 +674,7 @@ export class BatonCore {
       repository_id: r.repository_id,
       local_id: r.local_id,
       title: r.title,
-      url: `https://github.com/${where.get(r.repository_id as string)!.github}/blob/${where.get(r.repository_id as string)!.default_branch}/${r.path}`,
+      url: ((w) => fileUrl(w.forge, w.web_base, w.default_branch, r.path as string))(where.get(r.repository_id as string)!),
       project: r.project,
       tier: r.tier,
       queue: r.queue,

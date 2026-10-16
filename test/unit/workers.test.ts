@@ -120,14 +120,33 @@ describe('G-BTN-13: free text and identifiers are validated before any write', (
     expect(await rows('SELECT count(*) AS n FROM workers')).toEqual([{ n: 0 }]);
   });
 
-  it('an activity detail takes only its kind’s keys, a PR URL from immediately-run, and 2 KB at most', async () => {
+  it('an activity detail takes only its kind’s keys, a PR URL of the ticket’s repositories, and 2 KB at most', async () => {
     const { id, secret } = await register('vm-a');
     const claim = await seedClaim(id, 'docs:R3-9001');
     const post = (detail: unknown) => workerCall('/v1/runner/activities', { secret, body: { activities: [{ id: `d${Math.random()}`, claim_id: claim, kind: 'open-pr', source: 'hook', started_at: T0, detail }] } });
     const refusedOf = async (res: Response) => ((await res.json()) as { refused: unknown[] }).refused.length;
-    expect(await refusedOf(await post({ pr: 'https://github.com/immediately-run/baton/pull/4' }))).toBe(0);
+    expect(await refusedOf(await post({ pr: 'https://github.com/immediately-run/docs/pull/4' }))).toBe(0);
     expect(await refusedOf(await post({ pr: 'https://evil.example/pull/4' }))).toBe(1);
+    // R-BTN-92's link rule (R3-1262): only the ticket's home or its repos:, whole segments, its forge's PR path.
+    for (const pr of ['https://github.com/immediately-run/docs-evil/pull/4', 'https://github.com/immediately-run/docs/pulls/4',
+      'https://github.com:8443/immediately-run/docs/pull/4', 'https://x@github.com/immediately-run/docs/pull/4', 'https://github.com/immediately-run/docs/pull/4/../../x/pull/4']) {
+      expect([pr, await refusedOf(await post({ pr }))]).toEqual([pr, 1]);
+    }
     expect(await refusedOf(await post({ secret: 'x' }))).toBe(1);
+    // A ticket's repos — owner/name or docs' short names under the home's owner (round 1, 1-A-8); the claim above,
+    // whose ticket the board does not carry, took any registered repository's.
+    await rows(`INSERT INTO tickets (id, repository_id, local_id, path, title, status, node, queue, tags, requires_clause, depends_on, blocked_by, repos, snapshot_sha, row_hash)
+                VALUES ('docs:R3-9777', 'docs', 'R3-9777', 'p', 't', 'in-progress', 'ready', 'ready-autonomous', '[]', 'listed', '[]', '[]', '["baton","immediately-run/sandbox"]', 'a', 'h')`);
+    await rows(`UPDATE claims SET status = 'released', ended_at = 1 WHERE id = ?`, claim); // one active claim per worker
+    const withRepos = await seedClaim(id, 'docs:R3-9777', 1);
+    const postOn = (claimId: number | null, pr: string) => workerCall('/v1/runner/activities', { secret, body: { activities: [{ id: `e${Math.random()}`, claim_id: claimId, kind: 'open-pr', source: 'hook', started_at: T0, detail: { pr } }] } });
+    expect(await refusedOf(await postOn(withRepos, 'https://github.com/immediately-run/baton/pull/1'))).toBe(0);
+    expect(await refusedOf(await postOn(withRepos, 'https://github.com/immediately-run/sandbox/pull/2'))).toBe(0);
+    expect(await refusedOf(await postOn(withRepos, 'https://github.com/someone/baton/pull/3'))).toBe(1);
+    // An `orient` activity has no claim (round 2, 2-A-5): any registered repository's PR, and no other.
+    const orient = (pr: string) => workerCall('/v1/runner/activities', { secret, body: { activities: [{ id: `o${Math.random()}`, claim_id: null, kind: 'orient', source: 'hook', started_at: T0, detail: { pr } }] } });
+    expect(await refusedOf(await orient('https://github.com/immediately-run/docs/pull/4'))).toBe(0);
+    expect(await refusedOf(await orient('https://github.com/someone/docs/pull/4'))).toBe(1);
     expect(await refusedOf(await post({ note: 'x'.repeat(2100) }))).toBe(1);
   });
 });

@@ -3,6 +3,7 @@
 // body, Status notes, exit criteria and PR list never reach Baton; the dashboard links each
 // item to its file on GitHub instead.
 import { capabilitiesOf } from '../shared/vocabulary.mjs';
+import { parseTranscriptRepo } from './links';
 import { BatonError } from './http';
 import { checkRegistry, COURSE_ID, type RegistryEntry } from './courses';
 import { LOCAL_ID, SESSION_NAME } from './validate';
@@ -219,8 +220,8 @@ function checkReference(p: BoardPayload) {
     catalog('matrix.agents', p.matrix.agents);
   }
   if (p.reviewers !== undefined) catalog('reviewers', p.reviewers);
-  if (p.transcript_repos !== undefined && !(Array.isArray(p.transcript_repos) && p.transcript_repos.length <= 20 && p.transcript_repos.every((r) => typeof r === 'string' && /^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(r)))) {
-    bad('transcript_repos', 'must be a list of owner/name repositories');
+  if (p.transcript_repos !== undefined && !(Array.isArray(p.transcript_repos) && p.transcript_repos.length <= 20 && p.transcript_repos.every((r) => typeof r === 'string' && parseTranscriptRepo(r) !== null))) {
+    bad('transcript_repos', 'must be a list of repositories, each a GitHub owner/name or <forge>:<web_base>');
   }
 }
 

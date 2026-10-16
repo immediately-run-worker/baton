@@ -83,6 +83,9 @@ const bindings = {
   BATON_KEYS: JSON.stringify(sshKeys.map((k) => ({ key: k.publicKey, name: k.name, allowed_capabilities: VENUE }))),
   TEST_SSH_KEYS: JSON.stringify(sshKeys),
   // R-BTN-73: the GitHub App's webhook secret, the run's own.
+  // R-BTN-93/94 (R3-1262): the GitLab issuer the deployment trusts, and its key set under the test bindings.
+  BATON_FORGE_SECRETS: JSON.stringify({ lab: { forge: 'gitlab', gitlab_issuer: 'https://gitlab.test' } }),
+  TEST_GITLAB_JWKS: keys.jwks,
   BATON_GITHUB_WEBHOOK_SECRET: `test-webhook-${createHash('sha256').update(String(Math.random())).digest('hex').slice(0, 16)}`,
 };
 

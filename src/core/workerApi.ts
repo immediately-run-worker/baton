@@ -6,6 +6,7 @@
 import { BatonError } from './http';
 import { logEvent } from './db';
 import { NONCE_TTL_MS, parseSshKey } from './auth';
+import { isForgePath, isPullRequestUrl, transcriptUrl, type Forge } from './links';
 import { DEFAULT_TRANSCRIPT_REPOS, repositoryOf, transcriptReposOf } from './registry';
 
 export { DEFAULT_TRANSCRIPT_REPOS };
@@ -136,6 +137,8 @@ export class WorkerApi {
         throw new Error(`${at}.allowed_capabilities must be capability names`);
       }
       if (keys.some((k) => k.id === parsed.fingerprint)) throw new Error(`${at}: the key is listed twice`);
+      // R-BTN-57: a key holds one role — a sync key (R-BTN-93) is never a worker's.
+      if (this.rows('SELECT 1 FROM sync_keys WHERE fingerprint = ?', parsed.fingerprint).length) throw new Error(`${at}: the key is a sync key (one role per key)`);
       if (keys.some((k) => k.name === name)) throw new Error(`${at}: ${name} already has a key (one key per name)`);
       // Only the type and the base64: a comment is a label for people, never stored.
       keys.push({ id: parsed.fingerprint, public_key: `${parsed.type} ${key.trim().split(' ')[1]}`, name, allowed: JSON.stringify([...allowed_capabilities].sort()) });
@@ -495,12 +498,34 @@ export class WorkerApi {
     return { ok: true, refused };
   }
 
+  /** §10.4 as amended (R-BTN-92): an activity's pull-request URL belongs to the claim's ticket's
+   *  home repository or one of its `repos:` — a forge path on the home's forge host — by the link
+   *  rule over the home's `web_base`; with no claim, to any registered repository. */
+  private checkPullRequest(url: string, claimId: number | null, field: string) {
+    type Home = { forge: string; web_base: string | null; github: string; repos: string };
+    const ofClaim = claimId === null ? [] : this.rows<Home>(
+      `SELECT p.forge, p.web_base, p.github, t.repos FROM claims c JOIN tickets t ON t.id = c.ticket_id JOIN repositories p ON p.id = t.repository_id WHERE c.id = ?`, claimId);
+    // A claim whose ticket the board no longer carries, or no claim: any registered repository.
+    const homes = ofClaim.length ? ofClaim : this.rows<Home>(`SELECT forge, web_base, github, '[]' AS repos FROM repositories WHERE retired_at IS NULL`);
+    for (const h of homes) {
+      if (!h.web_base) continue;
+      const host = h.web_base.slice(0, h.web_base.length - h.github.length);
+      // docs' interim post sends short names; one is that name under the home's owner (R-BTN-92).
+      const owner = h.github.slice(0, h.github.indexOf('/'));
+      const repos = (JSON.parse(h.repos) as string[]).map((r) => (r.includes('/') ? r : `${owner}/${r}`));
+      const paths = [h.github, ...repos.filter((r) => isForgePath(h.forge as Forge, r))];
+      if (paths.some((path) => isPullRequestUrl(h.forge as Forge, url, host + path))) return;
+    }
+    bad(field, 'must be a pull request of the ticket’s repositories, under its forge');
+  }
+
   private upsertActivity(workerId: number, a: ActivityReport, now: number) {
     const existing = this.rows<{ kind: string; claim_id: number | null; ended_at: number | null; parent_id: string | null }>(
       'SELECT kind, claim_id, ended_at, parent_id FROM activities WHERE worker_id = ? AND id = ?', workerId, a.id)[0];
     if (existing && (existing.kind !== a.kind || (existing.claim_id ?? null) !== (a.claim_id ?? null))) {
       bad(`activity ${a.id}`, 'kind and claim_id cannot change');
     }
+    if (typeof a.detail?.pr === 'string') this.checkPullRequest(a.detail.pr, a.claim_id, `activity ${a.id}.detail.pr`);
     if (a.claim_id !== null) {
       const claim = this.rows<{ worker_id: number; status: string; ended_at: number | null }>(
         'SELECT worker_id, status, ended_at FROM claims WHERE id = ?', a.claim_id)[0];
@@ -702,7 +727,7 @@ export class WorkerApi {
         claim: this.activeClaim(id),
         activity: this.currentActivity(id),
         // §6.8: built only as a blob link from validated parts, never a reported URL.
-        transcript_url: transcript ? `https://github.com/${transcript.repo}/blob/HEAD/${transcript.path}` : null,
+        transcript_url: transcript ? transcriptUrl(transcript.repo, transcript.path) : null,
         last_report: this.rows(`SELECT payload_json, sent_at FROM messages WHERE from_worker_id = ? AND kind = 'status_report' ORDER BY id DESC LIMIT 1`, id)[0] ?? null,
       };
     });

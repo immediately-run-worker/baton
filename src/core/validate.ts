@@ -47,8 +47,6 @@ const PREFIX = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const MODEL = /^[A-Za-z0-9._/:-]{1,200}$/;
 const NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const ACTIVITY_ID = /^[A-Za-z0-9._:-]{1,64}$/;
-/** §10.4: the PR URLs an activity's detail may carry. */
-export const PR_URL = /^https:\/\/github\.com\/immediately-run\/[A-Za-z0-9._-]+\/pull\/\d+$/;
 /** §6.8: a transcript path — no `..` segment is checked separately. */
 const TRANSCRIPT_PATH = /^[A-Za-z0-9._/-]{1,256}$/;
 
@@ -293,7 +291,9 @@ export function checkDetail(kind: string, detail: unknown, field: string): Recor
     if (!type) bad(`${field}.${k}`, `is not a ${kind} detail key (${Object.keys(schema).join(', ')})`);
     if (type === NUM && (typeof v !== 'number' || !Number.isFinite(v))) bad(`${field}.${k}`, 'must be a number');
     if (type === BOOL && typeof v !== 'boolean') bad(`${field}.${k}`, 'must be a boolean');
-    if (type === PR && (typeof v !== 'string' || !PR_URL.test(v))) bad(`${field}.${k}`, 'must be an immediately-run pull request URL');
+    // The shape here; whose pull request it is — the claim's home repository or one of its
+    // `repos:`, by R-BTN-92's link rule — is checked where the claim is known (WorkerApi).
+    if (type === PR && (typeof v !== 'string' || v.length > 1000 || !v.startsWith('https://'))) bad(`${field}.${k}`, 'must be a pull request URL');
     if (type === TEXT) freeText(v, `${field}.${k}`, 200);
   }
   return detail as Record<string, unknown>;
