@@ -336,14 +336,14 @@ describe('§14: Running, Timeline and Needs you', () => {
     await workerCall('/v1/runner/activities', { secret, body: { activities: [
       { id: 'r1', claim_id: c.claim_id, kind: 'review-round', seq: 1, source: 'skill', started_at: T0 },
       { id: 'rv', claim_id: c.claim_id, parent_id: 'r1', kind: 'reviewer', label: 'review-pr-glm', source: 'hook', started_at: T0 },
-      { id: 'pr', claim_id: c.claim_id, kind: 'open-pr', source: 'hook', started_at: T0, ended_at: T0 + 1, outcome: 'succeeded', detail: { pr: 'https://github.com/immediately-run/baton/pull/5' } },
+      { id: 'pr', claim_id: c.claim_id, kind: 'open-pr', source: 'hook', started_at: T0, ended_at: T0 + 1, outcome: 'succeeded', detail: { pr: 'https://github.com/immediately-run/docs/pull/5' } },
     ] } });
     await beat('vm-a', secret, { transcripts: [{ repo: 'immediately-run/claude-sessions', path: 'cc/s.jsonl' }] });
     const lanes = (await uiState()).timeline.lanes;
     expect(lanes).toHaveLength(1);
     const acts = lanes[0].claims[0].activities;
     expect(acts.find((a: any) => a.id === 'rv')).toMatchObject({ parent_id: 'r1', transcript_url: 'https://github.com/immediately-run/claude-sessions/blob/HEAD/cc/s.jsonl' });
-    expect(JSON.parse(acts.find((a: any) => a.id === 'pr').detail_json)).toEqual({ pr: 'https://github.com/immediately-run/baton/pull/5' });
+    expect(JSON.parse(acts.find((a: any) => a.id === 'pr').detail_json)).toEqual({ pr: 'https://github.com/immediately-run/docs/pull/5' });
     await setClock(T0 + 900_000); // silent past its lease: no longer a lane
     expect((await uiState()).timeline.lanes).toEqual([]);
   });

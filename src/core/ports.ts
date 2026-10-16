@@ -91,6 +91,10 @@ export interface Config {
   /** §10.3: a fine-grained token, Actions: write on docs only, for workflow_dispatch. Absent,
    *  the two workflows run on their 15-minute schedules. */
   GITHUB_DISPATCH_TOKEN?: string;
+  /** R-BTN-94: per repository, `{forge, gitlab_issuer?, webhook?, dispatch?}` as JSON — what the
+   *  Worker knows of each repository's forge before the object, and its forge secrets (R3-1262
+   *  reads `gitlab_issuer`; R3-1263 and R3-1264 the rest). */
+  BATON_FORGE_SECRETS?: string;
   /** R-BTN-73: the GitHub App's webhook secret. Absent, every delivery is refused. */
   BATON_GITHUB_WEBHOOK_SECRET?: string;
   /** Test bindings only (vitest.config.ts, §13a): never set by a deploy or a local start. */
@@ -100,6 +104,8 @@ export interface Config {
   TEST_SIGNING_JWK?: string;
   /** The test SSH keys' private halves (test/lib/sshKeys.ts), for the harness to sign with. */
   TEST_SSH_KEYS?: string;
+  /** The key set GitLab CI tokens verify against under the test bindings (§13a). */
+  TEST_GITLAB_JWKS?: string;
 }
 
 /** §3: the two awaits at which another request may run — a signed request's signature check

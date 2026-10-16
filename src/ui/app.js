@@ -131,8 +131,9 @@ const button = (text, onClick) => {
   return b;
 };
 
-/** A link only to GitHub: the server builds it from validated parts (§6.8); this is belt and braces. */
-const githubLink = (text, href) => (typeof href === 'string' && href.startsWith('https://github.com/')
+/** A link only over https: the server builds every link from a repository's `web_base` by
+ *  R-BTN-92's rule (§6.8, §10.4); this is belt and braces against any other scheme. */
+const httpsLink = (text, href) => (typeof href === 'string' && href.startsWith('https://')
   ? el('a', { text, attrs: { href, target: '_blank', rel: 'noopener' } })
   : el('span', { text }));
 
@@ -152,7 +153,7 @@ function renderWorkers() {
     // R-BTN-48: the courses its checkouts run, flagged where below the course's minimum.
     const runs = (w.courses ?? []).map((c) => `${c.repository}:${c.course} v${c.version}${c.min_worker_version != null && c.version < c.min_worker_version ? ` (below ${c.min_worker_version})` : ''}`).join(', ') || 'declares no course';
     who.append(el('div', { text: runs, cls: 'muted' }));
-    if (w.transcript_url) who.append(el('div', {}, githubLink('transcript', w.transcript_url)));
+    if (w.transcript_url) who.append(el('div', {}, httpsLink('transcript', w.transcript_url)));
     const st = w.reaped_at != null ? 'reaped' : w.alive ? 'alive' : 'lease lapsed';
     const stateCell = el('td', {}, el('div', { text: st, cls: w.alive ? 'alive' : 'dead' }), el('div', { text: `seen ${fmtTime(w.last_seen_at)}`, cls: 'muted' }), el('div', { text: `active ${fmtTime(w.last_activity_at)}`, cls: 'muted' }));
     const claim = el('td', { text: w.claim ? w.claim.ticket_id : '—' });
@@ -261,14 +262,14 @@ function showActivity(a) {
   if (a.detail_json) {
     try {
       for (const [k, v] of Object.entries(JSON.parse(a.detail_json))) {
-        if (k === 'pr') box.append(el('div', {}, githubLink(String(v), v)));
+        if (k === 'pr') box.append(el('div', {}, httpsLink(String(v), v)));
         else box.append(el('div', { text: `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`, cls: 'muted' }));
       }
     } catch {
       box.append(el('div', { text: 'detail unreadable', cls: 'muted' }));
     }
   }
-  if (a.transcript_url) box.append(el('div', {}, githubLink('transcript', a.transcript_url)));
+  if (a.transcript_url) box.append(el('div', {}, httpsLink('transcript', a.transcript_url)));
   box.hidden = false;
 }
 
@@ -358,7 +359,7 @@ function renderNeeds() {
       }
       if (r?.last_activity) parts.push(`last: ${r.last_activity.kind}${r.last_activity.outcome ? ` ${r.last_activity.outcome}` : ''}`);
       const line = el('div', { text: parts.join(' · '), cls: 'muted' });
-      for (const pr of r?.prs ?? []) line.append(document.createTextNode(' '), githubLink('PR', pr));
+      for (const pr of r?.prs ?? []) line.append(document.createTextNode(' '), httpsLink('PR', pr));
       li.append(line);
     }
     li.append(button('Lift hold', () => {

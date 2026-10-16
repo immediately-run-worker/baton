@@ -2,7 +2,7 @@
 // principal for the path, applies the R-BTN-16 rules, serves the dashboard's static files, and
 // forwards the API to the core — through the Durable Object on Cloudflare, through the request
 // queue locally (R-BTN-55). Every response leaves with the security headers.
-import { verifyOwner, verifyRequest, verifySyncToken, verifyWorker, checkStateChanging, withBody } from './auth';
+import { verifyOwner, verifyRequest, verifySyncCredential, verifyWorker, checkStateChanging, withBody } from './auth';
 import { BatonError, errorResponse, withSecurityHeaders } from './http';
 import { pickDelivery, verifyDelivery } from './webhook';
 import type { Config } from './ports';
@@ -26,9 +26,14 @@ const PRINCIPAL_HEADERS = ['X-Baton-Credential', 'X-Baton-Owner', 'X-Baton-Sync'
 async function route(req: Request, env: Config, to: Forward): Promise<Response> {
   const { pathname } = new URL(req.url);
   if (pathname.startsWith('/v1/sync/')) {
-    // R-BTN-15: the token is verified here; the core binds its claims to one repository's
-    // sync or mirror workflow (Registry.forSync), so the front names no repository.
-    const claims = await verifySyncToken(req, env);
+    // R-BTN-93: a sync key's signature is pre-checked here like every signed request, and its key
+    // checked in the core; a CI identity token is verified here, and the core binds its claims to
+    // one repository and role (Registry.forSync, forGitlab), so the front names no repository.
+    if (req.headers.has('Signature-Input') || req.headers.has('Signature')) {
+      const signed = await verifyRequest(req, null, { origin: env.BATON_ORIGIN });
+      return forward(withBody(req, signed.body), to, { 'X-Baton-Signed': signed.keyid });
+    }
+    const claims = await verifySyncCredential(req, env);
     return forward(req, to, { 'X-Baton-Sync': JSON.stringify(claims) });
   }
   if (pathname === '/v1/github/webhook') {
