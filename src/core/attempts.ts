@@ -36,7 +36,8 @@ export function afterFailure(count: number, policy: { backoff_ms: number[]; max_
   const holdAt = policy?.max_failed ?? ATTEMPTS_HOLD_AT;
   const backoff = policy?.backoff_ms ?? BACKOFF_MS;
   if (count >= holdAt) return { hold: 'attempts-exhausted' };
-  if (count >= 1) return backoff.length ? { retryAfterMs: backoff[Math.min(count, backoff.length) - 1] } : null;
+  // The last backoff repeats; a policy always has one (checkRetry), as the default does.
+  if (count >= 1) return { retryAfterMs: backoff[Math.min(count, backoff.length) - 1] };
   return null;
 }
 

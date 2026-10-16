@@ -49,8 +49,11 @@ describe('S-BTN-32 owners and grants', () => {
   it('a granted key works where it is granted, with what that repository granted', async () => {
     expect((await keyCall(docsOwner, '/v1/owner/docs/grants', { public_key: k.publicKey, hostname: 'k-host', capabilities: ['agent-venue'] })).status).toBe(200);
     const secret = 'secret-k';
+    // A course of a repository no grant covers is refused (§10.1).
+    expect((await workerAs(k, '/v1/runner/heartbeat', hbBody('vm-a', { hostname: 'k-host', session_name: 'k', secret_hash: await sha256(secret),
+      courses: [{ repository: 'docs', course: 'roadmap-pr', version: 3 }, { repository: 'ops', course: 'roadmap-pr', version: 3 }] }))).status).toBe(403);
     const hb = await workerAs(k, '/v1/runner/heartbeat', hbBody('vm-a', { hostname: 'k-host', session_name: 'k', secret_hash: await sha256(secret),
-      courses: [{ repository: 'docs', course: 'roadmap-pr', version: 3 }, { repository: 'ops', course: 'roadmap-pr', version: 3 }] }));
+      courses: [{ repository: 'docs', course: 'roadmap-pr', version: 3 }] }));
     expect(hb.status).toBe(200);
     // Recommended docs' tickets, never ops' (rule 7: no ops grant).
     const offered = await recommended(hb.json.worker_id as number);

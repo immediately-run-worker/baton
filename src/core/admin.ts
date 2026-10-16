@@ -7,11 +7,11 @@
 // sync key. Each act is an `admin` event; a bar change also dispatches the repository's sync.
 import { BatonError, SESSION_COOKIE } from './http';
 import { logEvent, randomHex } from './db';
-import { parseSshKey, type SshKey } from './auth';
+import { KEY_FINGERPRINT, parseSshKey, type SshKey } from './auth';
 import { capabilitiesOf } from '../shared/vocabulary.mjs';
-import { COURSE_ID, HOSTNAME, RELEASE_END_REASONS, TAG, checkRepositoryId } from './validate';
+import { COURSE_ID, HOSTNAME, TAG, checkRepositoryId } from './validate';
 import { parseTranscriptRepo } from './links';
-import { tierPosition, type Registry } from './registry';
+import { checkRegistration, tierPosition, type Registration, type Registry } from './registry';
 import { graphOf, resolveLeg, type Graph } from './graph';
 import type { Store } from './ports';
 import { sha256Hex } from './workerApi';
@@ -29,6 +29,8 @@ const LEGS_MAX = 64;
 const OWNERS_MAX = 16;
 const CAPABILITIES_MAX = 64;
 const BACKOFFS_MAX = 8;
+/** A registered repository's fields §11's change form may set besides weight, tiers and keys. */
+const LINK_FIELDS = ['remote', 'web_base', 'ci_identity', 'sync_workflow', 'mirror_workflow'] as const;
 /** A capability or role name, as a heartbeat declares one. */
 const CAPABILITY = /^[a-z0-9][a-z0-9-]{0,63}$/;
 /** A login link's token and a session's value: 32 random bytes, hex. */
@@ -63,6 +65,10 @@ export interface OwnerBar {
 const bad = (field: string, why: string): never => {
   throw new BatonError('invalid-params', `${field}: ${why}`);
 };
+/** A key's fingerprint as a path or body names it, checked before any SQL (§10.4; round 2, 2-A-3). */
+const fingerprintOf = (v: unknown, field: string): string => (typeof v === 'string' && KEY_FINGERPRINT.test(v) ? v : bad(field, 'must be a key fingerprint, SHA256:…'));
+/** A bearer-token credential's id (CREDENTIALS' keys). */
+const TOKEN_CREDENTIAL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const isObj = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 const only = (b: Record<string, unknown>, keys: string[], at: string) => {
   for (const k of Object.keys(b)) if (!keys.includes(k)) bad(`${at}.${k}`, 'unknown field');
@@ -73,9 +79,11 @@ const lineOf = (key: SshKey, text: string) => `${key.type} ${text.trim().split(/
 /** R-BTN-67: an owner bar's reason becomes `released:<reason>`; never one of §6.5's closed
  *  reasons, so an owner bar's release is never counted as a failed attempt (§6.10). */
 export function isOwnerBarReason(r: unknown): r is string {
-  return typeof r === 'string' && COURSE_ID.test(r) && !(RELEASE_END_REASONS as readonly string[]).includes(r)
-    && !['done', 'cannot-finish', 'leg-timeout', 'awaiting-review-capacity'].includes(r) && !r.startsWith('cannot-finish');
+  return typeof r === 'string' && COURSE_ID.test(r) && !(CLOSED_RELEASE_REASONS as readonly string[]).includes(r) && !r.startsWith('cannot-finish');
 }
+/** §6.5's closed release reasons, which an owner bar's never is. `provider-suspended` is not one:
+ *  R-BTN-67 gives it as an owner bar's own reason (round 2, 2-A-0). */
+const CLOSED_RELEASE_REASONS = ['done', 'stale-board', 'cannot-finish', 'lease-lost', 'requested', 'owner-cancel', 'course-changed', 'leg-timeout', 'awaiting-review-capacity', 'provider-exhausted'] as const;
 
 /** Whether `tags` meet a required bar: one of them starts with its prefix (R-BTN-67). */
 export const meetsRequiredBar = (bar: RequiredBar, tags: string[]) => tags.some((t) => t.startsWith(bar.tag_prefix));
@@ -211,7 +219,7 @@ export class Admin {
    *  its sync keys, and — for a repository registered before owners existed (BATON_REPOSITORIES'
    *  seed; spec-silent, recorded on R3-1240) — owner keys. Everything else is its registration's. */
   private async changeRepository(actor: string, id: string, b: Record<string, unknown>) {
-    only(b, ['id', 'weight', 'tiers', 'sync_keys_add', 'sync_keys_remove', 'owner_keys_add'], 'body');
+    only(b, ['id', 'weight', 'tiers', 'sync_keys_add', 'sync_keys_remove', 'owner_keys_add', ...LINK_FIELDS], 'body');
     const newOwners = b.owner_keys_add === undefined ? [] : await this.ownerKeys(b.owner_keys_add, 'owner_keys_add');
     const weight = b.weight === undefined ? undefined
       : Number.isInteger(b.weight) && (b.weight as number) >= 0 && (b.weight as number) <= 10_000 ? (b.weight as number) : bad('weight', 'must be an integer from 0 to 10000');
@@ -220,7 +228,22 @@ export class Admin {
         ? (b.tiers as string[]) : bad('tiers', 'must be 1–16 distinct tier names, lowest first');
     const add = b.sync_keys_add === undefined ? [] : Array.isArray(b.sync_keys_add) && b.sync_keys_add.length <= 4 && b.sync_keys_add.every((k) => isObj(k) && typeof k.public_key === 'string' && ['sync', 'mirror'].includes(k.role as string))
       ? (b.sync_keys_add as { public_key: string; role: 'sync' | 'mirror' }[]) : bad('sync_keys_add', 'must be at most 4 {public_key, role: sync|mirror}');
-    const remove = b.sync_keys_remove === undefined ? [] : Array.isArray(b.sync_keys_remove) && b.sync_keys_remove.every((f) => typeof f === 'string') ? (b.sync_keys_remove as string[]) : bad('sync_keys_remove', 'must be fingerprints');
+    const remove = b.sync_keys_remove === undefined ? [] : Array.isArray(b.sync_keys_remove) && b.sync_keys_remove.length <= 4
+      ? b.sync_keys_remove.map((f, i) => fingerprintOf(f, `sync_keys_remove[${i}]`)) : bad('sync_keys_remove', 'must be at most 4 fingerprints');
+    // §11's remote, web_base, ci_identity and workflows: the whole registration they leave behind is
+    // checked as a registration is — never the forge or forge path (R-BTN-92; round 2, 2-A-4).
+    let linked: Registration | null = null;
+    if (LINK_FIELDS.some((k) => b[k] !== undefined)) {
+      const cur = this.c.registry.get(id)!;
+      const keys = [
+        ...this.rows<{ fingerprint: string; public_key: string; role: 'sync' | 'mirror' }>('SELECT fingerprint, public_key, role FROM sync_keys WHERE repository_id = ? AND revoked_at IS NULL', id)
+          .filter((k) => !remove.includes(k.fingerprint)).map(({ public_key, role }) => ({ public_key, role })),
+        ...add,
+      ];
+      const current = { id, github: cur.github, forge: cur.forge, remote: cur.remote, ...(cur.web_base != null ? { web_base: cur.web_base } : {}), ci_identity: cur.ci_identity,
+        default_branch: cur.default_branch, sync_workflow: cur.sync_workflow || null, mirror_workflow: cur.mirror_workflow, sync_keys: keys };
+      linked = checkRegistration({ ...current, ...Object.fromEntries(LINK_FIELDS.filter((k) => b[k] !== undefined).map((k) => [k, b[k]])) }, 'body');
+    }
     // Every check before any write: the sync keys commit in transactions of their own, so a
     // refusal after them would leave the change half applied.
     const admins = await this.adminFingerprints();
@@ -253,9 +276,16 @@ export class Admin {
         }
       }
       for (const fp of remove) this.exec('UPDATE sync_keys SET revoked_at = ? WHERE fingerprint = ? AND repository_id = ? AND revoked_at IS NULL', this.c.now(), fp, id);
+      if (linked) {
+        this.exec('UPDATE repositories SET remote = ?, web_base = ?, ci_identity = ?, sync_workflow = ?, mirror_workflow = ?, dispatch = ? WHERE id = ?',
+          linked.remote, linked.web_base, linked.ci_identity ? JSON.stringify(linked.ci_identity) : null, linked.sync_workflow, linked.mirror_workflow,
+          // The App serves github.com alone, as at registration.
+          linked.forge === 'github' && linked.web_base?.toLowerCase() === `https://github.com/${linked.github.toLowerCase()}` ? '{"kind":"github-app"}' : null, id);
+      }
       this.event(actor, { act: 'repository-changed', repository: id, ...(weight !== undefined ? { weight } : {}), ...(tiers ? { tiers } : {}),
         ...(add.length ? { sync_keys_added: add.length } : {}), ...(remove.length ? { sync_keys_removed: remove } : {}),
-        ...(newOwners.length ? { owners_added: newOwners.map((o) => o.fingerprint) } : {}) }, id);
+        ...(newOwners.length ? { owners_added: newOwners.map((o) => o.fingerprint) } : {}),
+        ...(linked ? Object.fromEntries(LINK_FIELDS.filter((k) => b[k] !== undefined).map((k) => [k, (linked as unknown as Record<string, unknown>)[k]])) : {}) }, id);
     });
     return { ok: true };
   }
@@ -284,10 +314,13 @@ export class Admin {
   /** `POST /v1/admin/keys/{fingerprint}/revoke`: any key, at once — a worker, probe or courier
    *  credential, a sync key, or an owner key on every repository it owns. A worker's grants go
    *  with it, so its next call is refused. An administrator key is revoked by editing the secret. */
-  revokeKey(actor: string, fingerprint: string) {
+  revokeKey(actor: string, raw: string) {
+    // A key's fingerprint, or a bearer-token credential's id while tokens serve (R3-1239).
+    const fingerprint = KEY_FINGERPRINT.test(raw) || TOKEN_CREDENTIAL.test(raw) ? raw : bad('fingerprint', 'must be a key fingerprint, SHA256:…, or a token credential’s id');
     return this.c.store.transaction(() => {
       const now = this.c.now();
-      this.exec('UPDATE credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL', now, fingerprint);
+      // `revoked_by` keeps an administrator's revoke through a later CREDENTIALS/TOKEN_HASHES edit (round 2, 2-A-2).
+      this.exec('UPDATE credentials SET revoked_at = ?, revoked_by = ? WHERE id = ? AND revoked_at IS NULL', now, actor, fingerprint);
       let changed = this.changed();
       this.exec('UPDATE worker_grants SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL', now, fingerprint);
       this.exec('UPDATE sync_keys SET revoked_at = ? WHERE fingerprint = ? AND revoked_at IS NULL', now, fingerprint);
@@ -405,7 +438,8 @@ export class Admin {
   }
 
   /** `POST /v1/owner/{repository}/grants/{fingerprint}/revoke`: this repository's grant only. */
-  revokeGrant(actor: string, repository: string, fingerprint: string) {
+  revokeGrant(actor: string, repository: string, raw: string) {
+    const fingerprint = fingerprintOf(raw, 'fingerprint');
     return this.c.store.transaction(() => {
       this.exec('UPDATE worker_grants SET revoked_at = ? WHERE credential_id = ? AND repository_id = ? AND revoked_at IS NULL', this.c.now(), fingerprint, repository);
       if (!this.changed()) throw new BatonError('not-found', `no grant of ${fingerprint} on ${repository}`);
@@ -423,7 +457,7 @@ export class Admin {
     const b = body as Record<string, unknown>;
     if (b.remove === true) {
       only(b, ['fingerprint', 'remove'], 'body');
-      const fp = typeof b.fingerprint === 'string' ? b.fingerprint : bad('fingerprint', 'must be a key fingerprint');
+      const fp = fingerprintOf(b.fingerprint, 'fingerprint');
       return this.c.store.transaction(() => {
         const left = this.rows<{ fingerprint: string }>('SELECT fingerprint FROM repository_owners WHERE repository_id = ? AND removed_at IS NULL', repository);
         if (!left.some((o) => o.fingerprint === fp)) throw new BatonError('not-found', `${fp} does not own ${repository}`);
@@ -545,9 +579,11 @@ export class Admin {
         ? [...new Set(x.except as string[])] : bad(`${at}.except`, `must be at most ${LEGS_MAX} leg names`);
       if (except && leg !== '*') bad(`${at}.except`, "only with leg '*'");
       const prefix = typeof x.tag_prefix === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:/@+-]{0,63}$/.test(x.tag_prefix) ? x.tag_prefix : bad(`${at}.tag_prefix`, 'must be a tag prefix');
-      if (leg !== '*') {
+      // A named course is one the repository registers, as an owner bar's is (round 2, 2-A-1).
+      if (course !== '*') {
         const file = this.rows<{ course_json: string }>('SELECT course_json FROM courses WHERE repository_id = ? AND id = ?', repository, course)[0]?.course_json;
-        if (file && !resolveLeg(graphOf(JSON.parse(file)), leg)) bad(`${at}.leg`, `${course}'s course file has no leg ${leg}`);
+        if (!file) bad(`${at}.course`, `${repository} registers no course ${course}`);
+        if (leg !== '*' && !resolveLeg(graphOf(JSON.parse(file!)), leg)) bad(`${at}.leg`, `${course}'s course file has no leg ${leg}`);
       }
       return { course, leg, ...(except ? { except } : {}), tag_prefix: prefix };
     });

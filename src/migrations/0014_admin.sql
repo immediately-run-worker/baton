@@ -65,6 +65,8 @@ ALTER TABLE repositories ADD COLUMN required_bars TEXT NOT NULL DEFAULT '[]'; --
 -- A key's label for people, and a probe's instances (R-BTN-53; read by R3-1251).
 ALTER TABLE credentials ADD COLUMN label TEXT;
 ALTER TABLE credentials ADD COLUMN allowed_instances TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE credentials ADD COLUMN revoked_by TEXT;           -- 'admin:<fingerprint>' when an administrator revoked it (spec-silent): a
+                                                         -- later CREDENTIALS/TOKEN_HASHES edit never un-revokes it
 
 -- The event log gains `admin` (every administrator's and owner's act). Nothing references
 -- `events`, so it is rebuilt with the wider check, every row and its seq carried over.

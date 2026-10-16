@@ -7,7 +7,7 @@ import roadmapPr from '../fixtures/courses/roadmap-pr/course.json';
 import chore from '../fixtures/courses/chore/course.json';
 import { requiredBarCovers, isOwnerBarReason, checkRetry } from '../../src/core/admin';
 import { graphOf } from '../../src/core/graph';
-import { adminSession, ownerCall, call, captureDispatches, claimItem, hbBody, ORIGIN, sessionCall, sha256, tick, withCore, course, cutover, Git, keyCall, placed, recommended, register, rows, setAdminKeys, setClock } from '../helpers';
+import { adminSession, ownerCall, workerCall, call, captureDispatches, claimItem, hbBody, ORIGIN, sessionCall, sha256, tick, withCore, course, cutover, Git, keyCall, placed, recommended, register, rows, setAdminKeys, setClock } from '../helpers';
 import { makeKey, signedRequest, type TestKey } from '../lib/sshKeys';
 import { call as hostCall } from '#host';
 
@@ -80,7 +80,7 @@ describe('R-BTN-57: administrators', () => {
   });
 
   it('revoking an unknown key is not-found; a revoked key is never granted again', async () => {
-    expect(await code(adm('/keys/SHA256%3Anope/revoke', {}))).toBe('not-found');
+    expect(await code(adm('/keys/SHA256%3Annnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn/revoke', {}))).toBe('not-found');
     await own('/grants', { public_key: worker.publicKey, hostname: 'w-host', capabilities: [] });
     expect(await code(adm(`/keys/${encodeURIComponent(worker.fingerprint)}/revoke`, {}))).toBe(200);
     expect(await code(own('/grants', { public_key: worker.publicKey, capabilities: [] }))).toBe('conflict');
@@ -129,7 +129,7 @@ describe('R-BTN-58: owners', () => {
 
   it('owners: never the last; removing a non-owner is not-found', async () => {
     expect(await code(own('/owners', { fingerprint: owner.fingerprint, remove: true }))).toBe('conflict');
-    expect(await code(own('/owners', { fingerprint: 'SHA256:nope', remove: true }))).toBe('not-found');
+    expect(await code(own('/owners', { fingerprint: 'SHA256:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn', remove: true }))).toBe('not-found');
     const second = await makeKey('ssh-ed25519', 'second');
     expect(await code(own('/owners', { public_key: second.publicKey }))).toBe(200);
     expect(await code(own('/owners', { fingerprint: owner.fingerprint, remove: true }))).toBe(200);
@@ -271,5 +271,56 @@ describe('round 1: one role per key, revocations that stay, bars that name what 
     expect((await sessionCall(await adminSession(admin), '/v1/ui/state')).status).toBe(200);
     await setAdminKeys();
     expect((await access()).status).toBe(200);
+  });
+});
+
+describe('round 2', () => {
+  it('provider-suspended is an owner bar’s reason, as R-BTN-67 gives it; §6.5’s closed reasons are not (2-A-0)', async () => {
+    expect(isOwnerBarReason('provider-suspended')).toBe(true);
+    for (const r of ['stale-board', 'lease-lost', 'requested', 'owner-cancel', 'course-changed']) expect([r, isOwnerBarReason(r)]).toEqual([r, false]);
+    expect(await code(own('/bars', { course: '*', tag: 'account:go_plus', applies: 'claim', reason: 'provider-suspended' }))).toBe(200);
+  });
+
+  it('a required bar names a course the repository registers (2-A-1)', async () => {
+    expect(await code(own('/settings', { required_bars: [{ course: 'roadmap-pr2', leg: '*', tag_prefix: 'family:' }] }, 'PUT'))).toBe('invalid-params');
+    expect(await code(own('/settings', { required_bars: [{ course: '*', leg: '*', tag_prefix: 'family:' }] }, 'PUT'))).toBe(200);
+  });
+
+  it('an administrator’s revoke of a token credential survives a later CREDENTIALS/TOKEN_HASHES edit (2-A-2)', async () => {
+    const w = await register('vm-a');
+    expect(await code(adm('/keys/vm-a/revoke', {}))).toBe(200);
+    const hb = () => workerCall('/v1/runner/heartbeat', { cred: 'vm-a', secret: w.secret, body: hbBody('vm-a') });
+    const refused = (await hb()).status;
+    expect(refused).not.toBe(200);
+    // The secrets change: the mirror runs again, and the revoke stands.
+    await rows(`DELETE FROM baton_settings WHERE key = 'credentials_marker'`);
+    expect((await hb()).status).toBe(refused);
+    expect(await rows(`SELECT revoked_by FROM credentials WHERE id = 'vm-a'`)).toEqual([{ revoked_by: `admin:${admin.fingerprint}` }]);
+  });
+
+  it('every fingerprint is checked before SQL (2-A-3)', async () => {
+    const junk = `<b>${'x'.repeat(5000)}</b>`;
+    expect(await code(adm(`/keys/${encodeURIComponent(junk)}/revoke`, {}))).toBe('invalid-params');
+    expect(await code(own(`/grants/${encodeURIComponent(junk)}/revoke`, {}))).toBe('invalid-params');
+    expect(await code(own('/owners', { fingerprint: junk, remove: true }))).toBe('invalid-params');
+    expect(await code(adm('/repositories', { id: 'docs', sync_keys_remove: [junk] }))).toBe('invalid-params');
+    expect(await rows(`SELECT count(*) AS n FROM events WHERE detail_json LIKE '%<b>%'`)).toEqual([{ n: 0 }]);
+  });
+
+  it('the change form sets §11’s remote, web_base, ci_identity and workflows, checked as a registration (2-A-4)', async () => {
+    expect(await code(adm('/repositories', { id: 'docs', remote: 'https://user:pw@github.com/immediately-run/docs.git' }))).toBe('invalid-params');
+    expect(await code(adm('/repositories', { id: 'docs', forge: 'gitlab' }))).toBe('invalid-params');
+    expect(await code(adm('/repositories', { id: 'docs', ci_identity: null }))).toBe('invalid-params'); // no sync key: no credential left
+    expect(await code(adm('/repositories', { id: 'docs', remote: 'git@github.com:immediately-run/docs.git', sync_workflow: '.github/workflows/sync2.yml' }))).toBe(200);
+    expect(await rows(`SELECT remote, sync_workflow FROM repositories WHERE id = 'docs'`)).toEqual([{ remote: 'git@github.com:immediately-run/docs.git', sync_workflow: '.github/workflows/sync2.yml' }]);
+  });
+
+  it('a granted key declares no course of a repository it is not granted (2-A-6)', async () => {
+    await own('/grants', { public_key: worker.publicKey, hostname: 'w-host', capabilities: ['agent-venue'] });
+    const created = Math.floor((await withCore((c) => c.now())) / 1000);
+    const body = hbBody('vm-a', { hostname: 'w-host', session_name: 'w', secret_hash: await sha256('s'),
+      courses: [{ repository: 'docs', course: 'roadmap-pr', version: 3 }, { repository: 'ops', course: 'roadmap-pr', version: 3 }] });
+    const res = await hostCall(await signedRequest(worker, `${ORIGIN}/v1/runner/heartbeat`, { created, body: JSON.stringify(body) }));
+    expect(res.status).toBe(403);
   });
 });

@@ -101,7 +101,8 @@ export class WorkerApi {
       const allowed = JSON.stringify([...(p.allowed_capabilities ?? [])].sort());
       this.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, revoked_at) VALUES (?, ?, ?, ?)
                  ON CONFLICT (id) DO UPDATE SET hostname = excluded.hostname, allowed_capabilities = excluded.allowed_capabilities,
-                   revoked_at = CASE WHEN excluded.revoked_at IS NULL THEN NULL ELSE COALESCE(credentials.revoked_at, excluded.revoked_at) END
+                   revoked_at = CASE WHEN credentials.revoked_by IS NOT NULL THEN credentials.revoked_at
+                                     WHEN excluded.revoked_at IS NULL THEN NULL ELSE COALESCE(credentials.revoked_at, excluded.revoked_at) END
                  WHERE credentials.kind = 'token'`,
         cid, p.hostname, allowed, Object.hasOwn(hashes, cid) ? null : now);
     }
@@ -278,6 +279,12 @@ export class WorkerApi {
       ? !(c === 'human-operator' ? cred.allowed.includes(c) : [...capabilitiesOf([c])].every((x) => cred.allowed.includes(x)))
       : !cred.allowed.includes(c));
     if (outside.length) throw new BatonError('forbidden', `this credential may not declare ${outside.join(', ')}`);
+    // §10.1: a granted key declares only courses of repositories its grants cover (round 2, 2-A-6).
+    if (cred.granted) {
+      const granted = new Set(this.rows<{ repository_id: string }>('SELECT repository_id FROM worker_grants WHERE credential_id = ? AND revoked_at IS NULL', cred.id).map((r) => r.repository_id));
+      const foreign = [...new Set(hb.courses.map((c) => c.repository).filter((r) => !granted.has(r)))];
+      if (foreign.length) throw new BatonError('forbidden', `this credential is granted no access to ${foreign.join(', ')}; it may not declare their courses`);
+    }
     // R-BTN-32: only the test credential may run a test-harness sidecar.
     if (hb.test_harness && cred.id !== 'test') throw new BatonError('forbidden', 'test_harness is refused from any credential but the test one');
 

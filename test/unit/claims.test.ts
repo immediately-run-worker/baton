@@ -329,7 +329,9 @@ describe('G-BTN-40: the matching query and gatesFor agree; git overtaking a clai
         expect([c.name, r.status]).toEqual([c.name, 200]);
       }
       const created = Math.floor((await withCore((x) => x.now())) / 1000);
-      const body = hbBody('vm-a', { hostname: `g-${i}`, session_name: c.name, secret_hash: await sha256(c.name), capabilities: c.declared, tier_ceiling: c.ceiling });
+      // A granted key declares courses only of repositories it is granted on (§10.1).
+      const courses = Object.keys(c.grants).map((repository) => ({ repository, course: 'roadmap-pr', version: 3 }));
+      const body = hbBody('vm-a', { hostname: `g-${i}`, session_name: c.name, secret_hash: await sha256(c.name), capabilities: c.declared, tier_ceiling: c.ceiling, courses });
       const res = await hostCall(await signedRequest(key, `${ORIGIN}/v1/runner/heartbeat`, { created, body: JSON.stringify(body) }));
       const hb = (await res.json()) as { worker_id: number };
       expect([c.name, res.status]).toEqual([c.name, 200]);
@@ -339,7 +341,7 @@ describe('G-BTN-40: the matching query and gatesFor agree; git overtaking a clai
       }]));
       // Rule 5 under the grant's cap: the lower of the declared ceiling and max_tier.
       const ceiling = docs?.max_tier && TIERS.indexOf(docs.max_tier) < TIERS.indexOf(c.ceiling) ? docs.max_tier : c.ceiling;
-      const facts = { tier_ceiling: ceiling, declared: c.declared, tags: [], grants, courses: [{ repository: 'docs', course: 'roadmap-pr', version: 3 }] };
+      const facts = { tier_ceiling: ceiling, declared: c.declared, tags: [], grants, courses };
       const expected = board.states.A.ready.filter((rid: string) => {
         const it = itemsOf('A').find((x) => x.id === rid)!;
         const ticket = { repository: 'docs', course: 'roadmap-pr', tier: it.tier, requires: it.requires, operator_only: it.tags.includes('OP') || (it.requires ?? []).includes('human-operator'), tiers: TIERS };
