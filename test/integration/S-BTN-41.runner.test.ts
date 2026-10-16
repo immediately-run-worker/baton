@@ -297,6 +297,10 @@ describe('S-BTN-41 the runner', () => {
     home.commit(); // the course-only root, before any legs
     const clone = mkdtempSync(join(tmpdir(), 'baton-clone-'));
     execFileSync('git', ['clone', '-q', home.dir, clone], { stdio: 'ignore' });
+    // A fresh clone carries no identity of its own (CI has no global one), and the stub's
+    // close commits from the leg's checkout.
+    execFileSync('git', ['-C', clone, 'config', 'user.email', 'relay@test']);
+    execFileSync('git', ['-C', clone, 'config', 'user.name', 'relay test']);
     const fetched: string[] = [];
     home.leg('build', `return { reached: 'built', next: 'check' };`);
     home.leg('check', `return { suspend: true, reached: 'checked' };`);
