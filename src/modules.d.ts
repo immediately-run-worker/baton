@@ -9,3 +9,4 @@ declare module '*/shared/vocabulary.mjs';
 declare module '*/shared/sessionUsage.mjs';
 declare module '*/shared/batonSync.mjs';
 declare module '*/cli/baton.mjs';
+declare module '*/scripts/check-traces.mjs';

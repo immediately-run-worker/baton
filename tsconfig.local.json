@@ -30,6 +30,8 @@
     "test/provided.d.ts",
     "test/unit/local-queue.test.ts",
     "test/unit/boundary-host.test.ts",
-    "test/unit/cli.test.ts"
+    "test/unit/cli.test.ts",
+    "test/unit/check-traces.test.ts",
+    "test/model/replay.test.ts"
   ]
 }

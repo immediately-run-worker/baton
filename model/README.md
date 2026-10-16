@@ -15,6 +15,7 @@ defect: it is filed against BATON_SPEC with the trace, never fixed by weakening 
 | `witnesses.qnt` | the reachability witnesses, each an invariant that must fail |
 | `instances.qnt` | `sim` (R3-1243's bounds: 3 workers, 2 tickets, 2 overlapping sync runs) and `small` (2 workers, 1 ticket, 1 sync run, for Apalache) |
 | `regressions.qnt` | one deterministic run per defect the reviews found (24), each asserting the merged spec does not reach it |
+| `replay.qnt` | the traces `test/model/replay.test.ts` drives the core with (R3-1244): `sim`'s instance, every action the harness can make the core take |
 | `check.mjs` | `npm run model` |
 
 ## Commands
@@ -32,6 +33,44 @@ defect: it is filed against BATON_SPEC with the trace, never fixed by weakening 
 Simulation uses Quint's TypeScript backend: the Rust evaluator is fetched from GitHub
 releases at first use, which a sandboxed agent cannot always reach.
 
+## Code against the model (R3-1244)
+
+The model checks the design; three checks hold the code to it.
+
+- **Correspondence markers** (`npm run model:links`, `scripts/check-model-links.mjs`, in `npm
+  test`). Each action names its implementation above it — `// @impl src/core/<file>.ts#<fn>`, or
+  `// @impl external — <who>` for a step only the environment takes (a worker's push, git, time)
+  — and each implementing function names the action back with a hash of the action's text,
+  `// @model <action> sha256:<12 hex>`. A model change fails the check, naming the functions to
+  re-check; re-stamping the hash (`node scripts/check-model-links.mjs --stamp` prints them) is
+  the reviewed step.
+- **Scenario traces** (`npm run traces`, `scripts/check-traces.mjs`, in `npm test`). Every S-BTN
+  scenario's run on the local host is recorded, one step per request or alarm tick, with the
+  state projection after it (`test/integration/trace.ts`: observation numbers, the model's
+  repository's tickets as posted, claims and their legs, holds, owner bars, workers' tags, the
+  required bar). Each trace replays as a deterministic Quint run: Baton's action with the
+  environment's steps that make it possible, then the projection the model must reach. A
+  rejection names the scenario, the step, the model action and the field. A step the model has
+  no action for — a claim the harness wrote, cutover's legacy claims, a course file that is not
+  the model's — ends the part of the trace the model can judge; every trace prints its checked
+  steps and why it stopped.
+- **Model-based tests** (`test/model/replay.test.ts`, in `npm test`). 200 traces drawn from
+  `replay.qnt` (half from every actor, half from the happy path's) drive the core on the local
+  host, comparing its projection with the trace's state after every step. `REPLAY_TRACES` sets
+  the count.
+
+To replay scenarios with their own workers and required bar, `FAMILIES`, `TAGS`, `REQUIRED` and
+`MAX_TIME` are constants of `baton.qnt`; every checked instance keeps R3-1243's values.
+
+**Where code and model differ, and why it is safe.** Baton renews a lease on every
+authenticated call, not only on heartbeats and claims (it reaps later); it force-reaps a worker
+already silent past its lease without a fence (R-BTN-19's fence, already timed out: the model's
+`forceReap` and `fenceTimeout` in one step); its one alarm reaps every lapsed lease at once; it
+voids an observation number by its clock alone. `replay.qnt` draws only traces in which these
+coincide with the model's single steps, and says so. The model keeps a reaped claim's leg as its
+worker's view; Baton keeps no worker's view, so a leg is compared while its claim is active.
+Claim hooks (`claimFinish(…, "refuse")`) are not driven: core calls none until R3-1236.
+
 ## What is modelled
 
 - **The course** is `roadmap-pr`'s `course.json` (§2e, R-BTN-69): `filed` → `pr-open` →
@@ -46,8 +85,12 @@ releases at first use, which a sandboxed agent cannot always reach.
   bars, the holder's own `bars` (rule 8, R-BTN-60, R-BTN-67) — the required bar over posted plus
   holder bars (R-BTN-67), and the hook's refusal. Git first (R-BTN-8): a leg's evidence is
   pushed before the advance that finishes it, and may land, be rejected or be lost.
-- **Ends** (R-BTN-71, §6.5): `done` at an end station, `suspended` at the `to` reached or the
-  `from` given up, `release`.
+- **Ends** (R-BTN-71, §6.5): `done`, `suspended` at the `to` reached or the `from` given up,
+  `release`. A `done` may come from any station — the runner also ends done when git shows the
+  ticket closed (§11, R-BTN-72), which Baton cannot see — and is confirmed only by an end
+  station or a closure (R-BTN-10). *(R3-1244's scenario traces found the model requiring an end
+  station, narrower than the spec; `progressStep` keeps the runner's own rule, so its runs still
+  reach merges.)*
 - **Time and the lease** (§6.3, §6.6, R-BTN-4, R-BTN-6, R-BTN-19, R-BTN-26): abstract ticks;
   a claim's lease lasts `TIMEOUT` ticks from the last heartbeat and the alarm reaps it then —
   its worker dead, or alive and silent (asleep). A worker acts on the claim *it believes* it

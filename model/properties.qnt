@@ -9,7 +9,9 @@ module properties {
   const P_OWNER_BUDGET: int
   import baton(TICKETS = P_TICKETS, WORKERS = P_WORKERS, SLOTS = P_SLOTS,
                MAX_CLAIMS = P_MAX_CLAIMS, GIT_BUDGET = P_GIT_BUDGET,
-               OWNER_BUDGET = P_OWNER_BUDGET).* from "./baton"
+               OWNER_BUDGET = P_OWNER_BUDGET,
+               FAMILIES = Set("family:a", "family:b"), TAGS = Map("w1" -> Set("family:a"), "w2" -> Set("family:b"), "w3" -> Set("family:a")),
+               REQUIRED = Set("fix", "merge"), MAX_TIME = 12).* from "./baton"
   action pinit = init
   action pstep = step
   action pprogress = progressStep

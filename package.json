@@ -10,7 +10,7 @@
     "baton": "cli/baton.mjs"
   },
   "scripts": {
-    "test": "vitest run && MODEL_SAMPLES=1000 npm run model",
+    "test": "rm -rf test/.traces && vitest run && npm run model:links && npm run traces && MODEL_SAMPLES=1000 npm run model",
     "test:baton": "vitest run",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.local.json",
     "vendor": "node scripts/vendor.mjs",
@@ -18,6 +18,8 @@
     "dev": "wrangler dev",
     "start:local": "node scripts/start-local.mjs",
     "model": "node model/check.mjs",
+    "model:links": "node scripts/check-model-links.mjs",
+    "traces": "node scripts/check-traces.mjs",
     "model:verify": "quint verify model/instances.qnt --main=small --init=pinit --step=pstep --invariant=safety --max-steps=5"
   },
   "dependencies": {

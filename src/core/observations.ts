@@ -23,6 +23,8 @@ export class Observations {
   /** `POST /v1/sync/observation`: the head and the next number — refused `sync-busy` while the
    *  last one is outstanding and under 10 minutes old; an older one is voided by handing out the
    *  next. `bars` are the owner bars in force (R-BTN-67): none until Baton keeps owner bars. */
+  // @model syncNumber sha256:f054af5dfb64
+  // @model syncVoid sha256:26644cee5ca9
   observe(repo: string): { sha: string | null; observation: number; bars: unknown[] } {
     return this.c.store.transaction(() => {
       const now = this.c.now();
@@ -40,6 +42,8 @@ export class Observations {
    *  outstanding one, under 10 minutes old, and above the last accepted reading's — else the
    *  post is refused `stale-observation`. Committed before the post is judged, so a number is
    *  used once even when the post is then refused (head-moved, held, invalid). */
+  // @model syncPost sha256:94a83f53cf43
+  // @model syncVoid sha256:26644cee5ca9
   use(repo: string, n: number): void {
     const verdict = this.c.store.transaction(() => {
       const now = this.c.now();
