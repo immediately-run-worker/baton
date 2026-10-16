@@ -1,8 +1,8 @@
 // registry.ts — the registered repositories (BATON_SPEC §2a R-BTN-47, R-BTN-15, R-BTN-66).
 // Only the instance administrator registers or retires one (R-BTN-57; `POST /v1/admin/
-// repositories`, R3-1240). Until that route lands, the deployment seeds them from
-// BATON_REPOSITORIES through the same validated `register`, insert-only: a seed never changes a
-// repository Baton already knows. The sync principal is bound to one repository here.
+// repositories`, src/core/admin.ts). The deployment may also seed them from BATON_REPOSITORIES
+// through the same validated `register`, insert-only: a seed never changes a repository Baton
+// already knows. The sync principal is bound to one repository here.
 import { BatonError } from './http';
 import { parseSshKey } from './auth';
 import type { Config, Store } from './ports';
@@ -170,7 +170,7 @@ export function transcriptReposOf(store: Store, repo: string): string[] {
  *  for that repository; else its single `tier_ceiling` where the ladder has that name; else the
  *  ladder's top if that ceiling is the unrestricted default (`critical`, docs' top), and the
  *  ladder's bottom otherwise — a restricted worker is never widened by a ladder it did not name.
- *  An interim until grants' `max_tier` (R3-1240) caps it. */
+ *  A grant's `max_tier` caps it further (R-BTN-58, Claims.ceiling). */
 export function ceilingIn(repo: string, ladder: string[], ceilings: Record<string, string>, legacy: string): string {
   const named = ceilings[repo];
   if (named !== undefined) return ladder.includes(named) ? named : ladder[0]; // a ceiling it named, never widened
@@ -281,8 +281,7 @@ export class Registry {
     }
   }
 
-  /** Register a repository and add its `sync_keys` (R-BTN-93), as `POST /v1/admin/repositories`
-   *  will (R3-1240). */
+  /** Register a repository and add its `sync_keys` (R-BTN-93), for `POST /v1/admin/repositories`. */
   async registerWithKeys(input: unknown, addedBy: string, adminKeys: string[]): Promise<Repository> {
     const r = checkRegistration(input);
     // Every key is read first; then the repository and its keys go in one transaction, so a key
@@ -295,7 +294,7 @@ export class Registry {
     });
   }
 
-  /** BATON_REPOSITORIES' `sync_keys` at start, until R3-1240's routes: each key not yet known is
+  /** BATON_REPOSITORIES' `sync_keys` at start, beside the administrator's routes: each key not yet known is
    *  added for its repository; one already serving that repository in that role is left; any other
    *  conflict throws, as a malformed seed does. */
   async seedSyncKeys(config: Config, adminKeys: string[]): Promise<void> {

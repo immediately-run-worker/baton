@@ -4,8 +4,11 @@ import { describe, it, expect, inject, beforeEach } from 'vitest';
 import { confirmations } from '../../src/shared/batonSync.mjs';
 import { gatesFor } from '../../src/core/gates';
 import {
-  beat, claimItem, claimRow, cutover, q, endClaim, hbBody, ORIGIN, ownerCall, payload, recommended, refresh, register, requestId, rows, setClock, sha256, syncCall, withCore, workerCall, tick,
+  beat, claimItem, claimRow, cutover, q, endClaim, hbBody, keyCall, ORIGIN, ownerCall, payload, recommended, refresh, register, requestId, rows, setAdminKeys, setClock, sha256, syncCall, withCore, workerCall, tick,
 } from '../helpers';
+import { makeKey, signedRequest } from '../lib/sshKeys';
+import { capabilitiesOf } from '../../src/shared/vocabulary.mjs';
+import { call as hostCall } from '#host';
 
 const board = inject('board');
 type Item = { id: string; status: string; tier: string | null; tags: string[]; requires: string[] | null; queue: string; node: string };
@@ -298,6 +301,54 @@ describe('G-BTN-40: the matching query and gatesFor agree; git overtaking a clai
       });
       const got = await recommended(id);
       expect([w.session, got]).toEqual([w.session, expected.map(q)]);
+    }
+  });
+
+  // Granted keys (R-BTN-58): rule 4 within the grant, rule 5 under its max_tier, rule 6 by a
+  // granted human-operator, rule 7 where granted — the query's grant clauses against gatesFor
+  // (round 1, 1-A-9 / 1-B-9).
+  it('on fixture board A, for granted keys', async () => {
+    const admin = await makeKey('ssh-ed25519', 'admin');
+    const docsOwner = await makeKey('ssh-ed25519', 'docs-owner');
+    const opsOwner = await makeKey('ssh-ed25519', 'ops-owner');
+    await setAdminKeys(admin);
+    expect((await keyCall(admin, '/v1/admin/repositories', { id: 'docs', owner_keys_add: [docsOwner.publicKey] })).status).toBe(200);
+    expect((await keyCall(admin, '/v1/admin/repositories', { id: 'ops', github: 'immediately-run/ops', default_branch: 'main', sync_workflow: '.github/workflows/baton-sync.yml', owner_keys: [opsOwner.publicKey] })).status).toBe(200);
+    const TIERS = ['routine', 'judgement', 'critical'];
+    const cases = [
+      { name: 'venue-judgement', grants: { docs: { capabilities: ['agent-venue'], max_tier: 'judgement' } }, declared: ['agent-venue'], ceiling: 'critical' },
+      { name: 'llm-only', grants: { docs: { capabilities: ['llm-call'] } }, declared: ['llm-call'], ceiling: 'critical' },
+      { name: 'bare-routine', grants: { docs: { capabilities: [], max_tier: 'routine' } }, declared: [], ceiling: 'critical' },
+      { name: 'operator', grants: { docs: { capabilities: ['agent-venue', 'human-operator'] } }, declared: ['agent-venue', 'human-operator'], ceiling: 'critical' },
+      { name: 'ops-only', grants: { ops: { capabilities: ['agent-venue'] } }, declared: ['agent-venue'], ceiling: 'critical' },
+    ];
+    for (const [i, c] of cases.entries()) {
+      const key = await makeKey('ssh-ed25519', c.name);
+      for (const [repo, g] of Object.entries(c.grants) as [string, { capabilities: string[]; max_tier?: string }][]) {
+        const r = await keyCall(admin, '/v1/admin/grants', { repository: repo, public_key: key.publicKey, hostname: `g-${i}`, capabilities: g.capabilities, ...(g.max_tier ? { max_tier: g.max_tier } : {}) });
+        expect([c.name, r.status]).toEqual([c.name, 200]);
+      }
+      const created = Math.floor((await withCore((x) => x.now())) / 1000);
+      const body = hbBody('vm-a', { hostname: `g-${i}`, session_name: c.name, secret_hash: await sha256(c.name), capabilities: c.declared, tier_ceiling: c.ceiling });
+      const res = await hostCall(await signedRequest(key, `${ORIGIN}/v1/runner/heartbeat`, { created, body: JSON.stringify(body) }));
+      const hb = (await res.json()) as { worker_id: number };
+      expect([c.name, res.status]).toEqual([c.name, 200]);
+      const docs = (c.grants as Record<string, { capabilities: string[]; max_tier?: string } | undefined>).docs;
+      const grants = Object.fromEntries(Object.entries(c.grants).map(([repo, g]) => [repo, {
+        capabilities: [...new Set([...capabilitiesOf(g.capabilities), ...(g.capabilities.includes('human-operator') ? ['human-operator'] : [])])],
+      }]));
+      // Rule 5 under the grant's cap: the lower of the declared ceiling and max_tier.
+      const ceiling = docs?.max_tier && TIERS.indexOf(docs.max_tier) < TIERS.indexOf(c.ceiling) ? docs.max_tier : c.ceiling;
+      const facts = { tier_ceiling: ceiling, declared: c.declared, tags: [], grants, courses: [{ repository: 'docs', course: 'roadmap-pr', version: 3 }] };
+      const expected = board.states.A.ready.filter((rid: string) => {
+        const it = itemsOf('A').find((x) => x.id === rid)!;
+        const ticket = { repository: 'docs', course: 'roadmap-pr', tier: it.tier, requires: it.requires, operator_only: it.tags.includes('OP') || (it.requires ?? []).includes('human-operator'), tiers: TIERS };
+        return gatesFor(facts, ticket, { name: 'implement', state: 'ready', bars: [] }, 'claim', { now: T0, claims: [], override: null, minWorkerVersion: 3, headObservation: 1, lastEndObservation: -1 }).ok;
+      });
+      expect([c.name, await recommended(hb.worker_id)]).toEqual([c.name, expected.map(q)]);
+      // Not vacuous: a docs grant with the venue is offered something; an ops-only key nothing of docs'.
+      if (c.name === 'venue-judgement') expect(expected.length).toBeGreaterThan(0);
+      if (c.name === 'ops-only') expect(expected).toEqual([]);
     }
   });
 

@@ -41,6 +41,11 @@ describe('plan: one request per command', () => {
         required_bars: [{ course: 'roadmap-pr', leg: '*', except: ['implement', 'review'], tag_prefix: 'family:' }, { course: 'roadmap-pr', leg: 'merge', tag_prefix: 'account:' }],
         retry: { backoff_ms: [3_600_000, 14_400_000], max_failed: 3 },
       } });
+    expect(plan('owner', ['settings', 'docs', '--no-required-bars', '--retry', 'default', '--unblocked-workflow', 'none'], key).body)
+      .toEqual({ required_bars: [], retry: null, unblocked_trigger: null });
+    expect(plan('owner', ['settings', 'docs', '--unblocked-workflow', '.github/workflows/unblocked.yml'], key).body)
+      .toEqual({ unblocked_trigger: { kind: 'github-app', workflow: '.github/workflows/unblocked.yml' } });
+    expect(() => plan('owner', ['settings', 'docs', '--no-required-bars', '--required-bar', '*', '--course', 'c', '--tag-prefix', 'p'], key)).toThrow('clears them');
     expect(() => plan('owner', ['settings', 'docs'], key)).toThrow('at least one setting');
     expect(() => plan('owner', ['bar', 'docs', '--course', '*', '--tag', 't', '--applies', 'claim', '--starts-at', 'soon', '--reason', 'r'], key)).toThrow('not a date');
   });

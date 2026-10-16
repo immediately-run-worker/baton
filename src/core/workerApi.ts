@@ -43,8 +43,8 @@ export interface Ctx {
   fenced?: (workerId: number, incarnation: number, claimId: number) => boolean;
   /** §11: where the claim is and what git shows of its ticket (R3-1232), from the claims. */
   claimView?: (claimId: number) => Record<string, unknown>;
-  /** R-BTN-67: the owner bars in force, for the heartbeat's `bars`. */
-  bars?: (now: number) => unknown[];
+  /** R-BTN-67: the owner bars in force on the credential's repositories, for the heartbeat's `bars`. */
+  bars?: (now: number, credentialId: string) => unknown[];
 }
 
 export class WorkerApi {
@@ -358,8 +358,8 @@ export class WorkerApi {
       lease_timeout_s: fresh.lease_timeout_ms / 1000,
       claim: claim ? { ...claim, ...this.c.claimView?.(claim.id), activity: this.currentActivity(w.id) } : null,
       messages: this.deliver(w.id, now),
-      // R-BTN-67: the owner bars in force, so harness hooks can act on them offline.
-      bars: this.c.bars?.(now) ?? [],
+      // R-BTN-67: the owner bars in force on its repositories, so harness hooks can act on them offline.
+      bars: this.c.bars?.(now, credentialId) ?? [],
       suspensions: this.suspensionsFor(now),
       // R-BTN-22: the declared courses below their min_worker_version — no new claim on them.
       stale_courses: this.staleCourses(w.id),

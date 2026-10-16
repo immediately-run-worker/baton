@@ -17,8 +17,9 @@
 //   baton owner -i KEY bar REPO --course C|'*' --tag T [--legs a,b] --applies claim|claim+advance
 //                [--starts-at ISO] [--ends-at ISO] [--release-holders] --reason R
 //   baton owner -i KEY bar lift REPO ID
-//   baton owner -i KEY settings REPO [--required-bar LEG|'*' --course C|'*' [--except a,b] --tag-prefix P]…
-//                [--retry 1h,4h --max-failed 3] [--transcript-repos a,b]
+//   baton owner -i KEY settings REPO [--required-bar LEG|'*' --course C|'*' [--except a,b] --tag-prefix P]… | --no-required-bars
+//                [--retry 1h,4h --max-failed 3 | --retry default] [--transcript-repos a,b]
+//                [--unblocked-workflow .github/workflows/F.yml | --unblocked-workflow none]
 //
 // The URL is `--url`, else BATON_URL, else https://baton.immediately.run.
 import { readFileSync } from 'node:fs';
@@ -135,13 +136,22 @@ export function plan(role, argv, readKey = (p) => (/^(ssh|sk|ecdsa)-/.test(p) ? 
       } };
     }
     if (cmd === 'settings') {
-      const { flags, positional, groups } = parseArgs(rest);
+      const { flags, positional, groups } = parseArgs(rest, ['no-required-bars']);
       const body = {};
+      if (flags['no-required-bars']) {
+        if (groups.length) throw new Error('--no-required-bars clears them: name no --required-bar beside it');
+        body.required_bars = [];
+      }
       if (groups.length) {
         body.required_bars = groups.map((g) => ({ course: need(g.course, '--course (after --required-bar)'), leg: g.leg, ...(g.except ? { except: list(g.except) } : {}), tag_prefix: need(g['tag-prefix'], '--tag-prefix (after --required-bar)') }));
       }
-      if (flags.retry) body.retry = { backoff_ms: list(flags.retry).map(duration), max_failed: Number(need(flags['max-failed'], '--max-failed (with --retry)')) };
+      // `--retry default` returns to Baton's default policy (R-BTN-23).
+      if (flags.retry === 'default') body.retry = null;
+      else if (flags.retry) body.retry = { backoff_ms: list(flags.retry).map(duration), max_failed: Number(need(flags['max-failed'], '--max-failed (with --retry)')) };
       if (flags['transcript-repos']) body.transcript_repos = list(flags['transcript-repos']);
+      // R-BTN-77's trigger: a workflow path on GitHub, or `none` to clear it.
+      if (flags['unblocked-workflow'] === 'none') body.unblocked_trigger = null;
+      else if (flags['unblocked-workflow']) body.unblocked_trigger = { kind: 'github-app', workflow: flags['unblocked-workflow'] };
       if (!Object.keys(body).length) throw new Error('baton owner settings REPO names at least one setting');
       return { method: 'PUT', path: `/v1/owner/${need(positional[0], 'the repository id')}/settings`, body };
     }

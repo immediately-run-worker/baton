@@ -72,7 +72,10 @@ export class BatonCore {
     this.mirror = new Mirror({ store, now: () => this.now() });
     this.workers = new WorkerApi({ store, config: ports.config, now: () => this.now(), fenced: (w, inc, id) => this.claims.fenced(w, inc, id),
       claimView: (id) => this.claims.holderView(id),
-      bars: (now) => this.admin.bars(null, now).map(({ id: _id, release_holders: _r, ...b }) => ({ repository: b.repository_id, course: b.course, tag: b.tag, legs: b.legs, applies: b.applies, starts_at: b.starts_at, ends_at: b.ends_at, reason: b.reason })) });
+      // A granted key's repositories are its grants' (R-BTN-58); an ungranted one's, every one it may reach.
+      bars: (now, cred) => this.admin.bars(this.workers.credential(cred).granted
+        ? this.sql<{ repository_id: string }>('SELECT repository_id FROM worker_grants WHERE credential_id = ? AND revoked_at IS NULL', cred).map((r) => r.repository_id)
+        : null, now).map(({ id: _id, release_holders: _r, ...b }) => ({ repository: b.repository_id, course: b.course, tag: b.tag, legs: b.legs, applies: b.applies, starts_at: b.starts_at, ends_at: b.ends_at, reason: b.reason })) });
   }
 
   /** Before the first request (§3): every migration applied — the core refuses to serve until
@@ -292,9 +295,11 @@ export class BatonCore {
       }
       let owner: string | null = null;
       if (url.pathname.startsWith('/v1/ui/')) {
-        // The dashboard's principal: an Access email the front verified, or a session minted from
-        // an administrator's key still in BATON_ADMIN_KEYS (R-BTN-57).
-        owner = req.headers.get('X-Baton-Owner') ?? (await this.admin.session(req.headers.get('X-Baton-Session')));
+        // The dashboard's principal (R-BTN-57): a session minted from an administrator's key still
+        // in BATON_ADMIN_KEYS. Access is hardening in front of it; on its own it serves only while
+        // no administrator key is configured — the deployments that predate them (round 1, 1-A-6).
+        owner = await this.admin.session(req.headers.get('X-Baton-Session'));
+        if (!owner && !(await this.admin.adminFingerprints()).size) owner = req.headers.get('X-Baton-Owner');
         if (!owner) throw new BatonError('unauthenticated', 'the dashboard session ended or is unknown');
         if (req.method === 'GET' && url.pathname === '/v1/ui/session') return json({ ok: true });
       }
@@ -343,6 +348,9 @@ export class BatonCore {
       // R-BTN-13 as amended: the front checked the request's shape, @authority and digest; the
       // key, the signature and the clock are checked here, and the nonce in this turn.
       ({ req, cred } = await this.verifySigned(req));
+      // One role per key (R-BTN-57): a key in BATON_ADMIN_KEYS is never a worker's, even one
+      // granted before it was listed.
+      if ((await this.admin.adminFingerprints()).has(cred)) throw new BatonError('forbidden', 'an administrator key is never a worker key (R-BTN-57)');
     }
     const tx = <T>(f: () => T): T => this.store.transaction(f);
     if (p.startsWith('/v1/runner/')) {
@@ -505,6 +513,8 @@ export class BatonCore {
     const o = /^\/v1\/owner\/([^/]+)\/(.+)$/.exec(p);
     if (!o) throw new BatonError('not-found', `no route ${m} ${p}`);
     const repo = checkRepositoryId(seg(o[1]));
+    // An administrator's key is no owner's, even one added as an owner before it was listed (R-BTN-57).
+    if (admins.has(fp)) throw new BatonError('forbidden', 'an administrator key is never an owner key (R-BTN-57)');
     // Owning one repository confers nothing on another (R-BTN-58).
     if (!this.admin.owns(fp, repo)) throw new BatonError('forbidden', `this key does not own ${repo}`);
     const actor = `owner:${fp}`;

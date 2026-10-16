@@ -5,7 +5,7 @@
 // grants, owners, owner bars and the settings — never read from a board post. Administrators are
 // BATON_ADMIN_KEYS alone. One key holds one role: administrator, owner, worker, probe, courier or
 // sync key. Each act is an `admin` event; a bar change also dispatches the repository's sync.
-import { BatonError } from './http';
+import { BatonError, SESSION_COOKIE } from './http';
 import { logEvent, randomHex } from './db';
 import { parseSshKey, type SshKey } from './auth';
 import { capabilitiesOf } from '../shared/vocabulary.mjs';
@@ -20,7 +20,7 @@ import { sha256Hex } from './workerApi';
 export const LOGIN_LINK_MS = 5 * 60_000;
 export const SESSION_MS = 12 * 3_600_000;
 /** R-BTN-16: the one cookie Baton sets. */
-export const SESSION_COOKIE = '__Host-baton_session';
+export { SESSION_COOKIE };
 /** Spec-silent bounds (recorded on R3-1240): owner bars in force per repository, required bars,
  *  legs per bar, owners per repository, capabilities per grant, backoffs per retry policy. */
 const BARS_MAX = 200;
@@ -31,6 +31,8 @@ const CAPABILITIES_MAX = 64;
 const BACKOFFS_MAX = 8;
 /** A capability or role name, as a heartbeat declares one. */
 const CAPABILITY = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** A login link's token and a session's value: 32 random bytes, hex. */
+const TOKEN = /^[0-9a-f]{64}$/;
 const LABEL = /^[A-Za-z0-9][A-Za-z0-9 ._:@/-]{0,99}$/;
 
 export interface RequiredBar {
@@ -148,6 +150,17 @@ export class Admin {
     return c ? c.kind : null;
   }
 
+  /** Whether `fingerprint` may become an owner of `repository` (null: a new one): no other role
+   *  (R-BTN-57), and not an owner key an administrator revoked — another owner never brings it
+   *  back (round 1, 1-A-3). Throws `conflict`. */
+  private mayOwn(fingerprint: string, admins: Map<string, string>) {
+    if (this.rows('SELECT 1 FROM repository_owners WHERE fingerprint = ? AND revoked_at IS NOT NULL', fingerprint).length) {
+      throw new BatonError('conflict', 'this owner key was revoked; its holder needs a new key');
+    }
+    const role = this.roleOf(fingerprint, admins);
+    if (role && role !== 'owner') throw new BatonError('conflict', `this key is already a ${role} key (R-BTN-57: one role per key)`);
+  }
+
   // ── administrators (R-BTN-57) ───────────────────────────────────────────────────────────
 
   /** `POST /v1/admin/repositories`: register one with its first owner keys, change one (never its
@@ -171,11 +184,22 @@ export class Admin {
       if (!owners.length) bad('owner_keys', 'a repository is registered with at least one owner key');
       const { owner_keys: _o, ...registration } = b;
       const admins = await this.adminFingerprints();
-      for (const o of owners) if (this.roleOf(o.fingerprint, admins)) throw new BatonError('conflict', `owner key ${o.fingerprint} already holds a role (R-BTN-57)`);
+      for (const o of owners) this.mayOwn(o.fingerprint, admins);
+      // One role per key (R-BTN-57): a key named both as owner and as sync key is refused before
+      // either is written — registerWithKeys commits the sync keys in a transaction of its own.
+      const syncKeys = Array.isArray(registration.sync_keys) ? registration.sync_keys : [];
+      for (const k of syncKeys) {
+        const line = isObj(k) && typeof k.public_key === 'string' ? k.public_key : null;
+        const fp = line ? (await parseSshKey(line).catch(() => null))?.fingerprint : null;
+        if (fp && owners.some((o) => o.fingerprint === fp)) throw new BatonError('conflict', 'a key is named both as an owner key and as a sync key (R-BTN-57)');
+      }
       // registerWithKeys runs its own transaction; the owners follow in another, after it.
       await this.c.registry.registerWithKeys(registration, actor, this.c.adminKeys());
       this.c.store.transaction(() => {
-        for (const o of owners) this.insertOwner(id, o, actor);
+        for (const o of owners) {
+          this.mayOwn(o.fingerprint, admins);
+          this.insertOwner(id, o, actor);
+        }
         this.event(actor, { act: 'repository-registered', repository: id, owners: owners.map((o) => o.fingerprint) }, id);
       });
       return { ok: true };
@@ -197,19 +221,22 @@ export class Admin {
     const add = b.sync_keys_add === undefined ? [] : Array.isArray(b.sync_keys_add) && b.sync_keys_add.length <= 4 && b.sync_keys_add.every((k) => isObj(k) && typeof k.public_key === 'string' && ['sync', 'mirror'].includes(k.role as string))
       ? (b.sync_keys_add as { public_key: string; role: 'sync' | 'mirror' }[]) : bad('sync_keys_add', 'must be at most 4 {public_key, role: sync|mirror}');
     const remove = b.sync_keys_remove === undefined ? [] : Array.isArray(b.sync_keys_remove) && b.sync_keys_remove.every((f) => typeof f === 'string') ? (b.sync_keys_remove as string[]) : bad('sync_keys_remove', 'must be fingerprints');
-    for (const k of add) {
-      const key = await parseSshKey(k.public_key);
-      if (this.roleOf(key.fingerprint, await this.adminFingerprints())) throw new BatonError('conflict', `${key.fingerprint} already holds a role (R-BTN-57)`);
-      await this.c.registry.addSyncKey(id, k.public_key, k.role, actor, this.c.adminKeys());
-    }
+    // Every check before any write: the sync keys commit in transactions of their own, so a
+    // refusal after them would leave the change half applied.
     const admins = await this.adminFingerprints();
+    for (const o of newOwners) this.mayOwn(o.fingerprint, admins);
+    const addKeys = await Promise.all(add.map((k) => parseSshKey(k.public_key)));
+    for (const key of addKeys) {
+      if (this.roleOf(key.fingerprint, admins)) throw new BatonError('conflict', `${key.fingerprint} already holds a role (R-BTN-57)`);
+      if (newOwners.some((o) => o.fingerprint === key.fingerprint)) throw new BatonError('conflict', 'a key is named both as an owner key and as a sync key (R-BTN-57)');
+    }
+    for (const k of add) await this.c.registry.addSyncKey(id, k.public_key, k.role, actor, this.c.adminKeys());
     // The ladder a grant's max_tier was a position in, read before the new one is written.
     const old = this.c.registry.get(id)!.tiers;
     this.c.store.transaction(() => {
       for (const o of newOwners) {
-        const role = this.roleOf(o.fingerprint, admins);
-        if (role === 'owner' && this.owns(o.fingerprint, id)) continue;
-        if (role && role !== 'owner') throw new BatonError('conflict', `owner key ${o.fingerprint} is already a ${role} key (R-BTN-57)`);
+        if (this.owns(o.fingerprint, id)) continue;
+        this.mayOwn(o.fingerprint, admins);
         this.insertOwner(id, o, actor);
       }
       if (weight !== undefined) this.exec('UPDATE repositories SET weight = ? WHERE id = ?', weight, id);
@@ -265,7 +292,7 @@ export class Admin {
       this.exec('UPDATE worker_grants SET revoked_at = ? WHERE credential_id = ? AND revoked_at IS NULL', now, fingerprint);
       this.exec('UPDATE sync_keys SET revoked_at = ? WHERE fingerprint = ? AND revoked_at IS NULL', now, fingerprint);
       changed += this.changed();
-      this.exec('UPDATE repository_owners SET removed_at = ? WHERE fingerprint = ? AND removed_at IS NULL', now, fingerprint);
+      this.exec('UPDATE repository_owners SET removed_at = coalesce(removed_at, ?), revoked_at = ? WHERE fingerprint = ? AND revoked_at IS NULL', now, now, fingerprint);
       changed += this.changed();
       if (!changed && !this.rows('SELECT 1 FROM credentials WHERE id = ? UNION SELECT 1 FROM sync_keys WHERE fingerprint = ? UNION SELECT 1 FROM repository_owners WHERE fingerprint = ?', fingerprint, fingerprint, fingerprint).length) {
         throw new BatonError('not-found', 'no key with that fingerprint');
@@ -291,7 +318,7 @@ export class Admin {
   /** `POST /v1/login {token}`: marks the link used and opens a session, returning the cookie's
    *  value — only while the key that minted the link is still an administrator. */
   async login(body: unknown): Promise<string> {
-    const token = isObj(body) && typeof body.token === 'string' && /^[0-9a-f]{64}$/.test(body.token) ? body.token : bad('token', 'must be the link’s token');
+    const token = isObj(body) && typeof body.token === 'string' && TOKEN.test(body.token) ? body.token : bad('token', 'must be the link’s token');
     const hash = await sha256Hex(token);
     const admins = await this.adminFingerprints();
     const value = randomHex(32);
@@ -310,7 +337,7 @@ export class Admin {
   /** The administrator a dashboard session cookie stands for, or null: a live, unrevoked session
    *  whose key is still in BATON_ADMIN_KEYS — checked on every request. */
   async session(value: string | null): Promise<string | null> {
-    if (!value || !/^[0-9a-f]{64}$/.test(value)) return null;
+    if (!value || !TOKEN.test(value)) return null;
     const id = await sha256Hex(value);
     const s = this.rows<{ admin_key: string; expires_at: number; revoked_at: number | null }>('SELECT admin_key, expires_at, revoked_at FROM dashboard_sessions WHERE id_hash = ?', id)[0];
     if (!s || s.revoked_at != null || s.expires_at <= this.c.now()) return null;
@@ -352,8 +379,11 @@ export class Admin {
         this.exec(`INSERT INTO credentials (id, hostname, allowed_capabilities, kind, public_key, created_by, label) VALUES (?, ?, '[]', 'worker', ?, ?, ?)`,
           key.fingerprint, hostname, key.line, actor, label);
       } else if (this.rows(`SELECT 1 FROM credentials WHERE id = ? AND created_by = 'seed'`, key.fingerprint).length) {
-        // A BATON_KEYS key an owner grants is the owner's from now on: its grants bind it, and the
-        // seed never revokes it.
+        // A BATON_KEYS key reaches every repository until grants bind it; binding it would cut it
+        // off from the others, which owning one repository never may (R-BTN-58; round 1, 1-B-0).
+        // Only an administrator takes it over — its grants bind it from then on, and the seed never
+        // revokes it.
+        if (by !== 'admin') throw new BatonError('conflict', 'this key is seeded from BATON_KEYS and reaches every repository; an administrator grants it');
         this.exec('UPDATE credentials SET created_by = ? WHERE id = ?', actor, key.fingerprint);
       }
       if (cred && hostname && hostname !== cred.hostname) {
@@ -407,9 +437,8 @@ export class Admin {
     const [key] = await this.ownerKeys([b.public_key], 'public_key');
     const admins = await this.adminFingerprints();
     return this.c.store.transaction(() => {
-      const role = this.roleOf(key.fingerprint, admins);
-      if (role === 'owner' && this.owns(key.fingerprint, repository)) return { ok: true };
-      if (role && role !== 'owner') throw new BatonError('conflict', `this key is already a ${role} key (R-BTN-57: one role per key)`);
+      if (this.owns(key.fingerprint, repository)) return { ok: true };
+      this.mayOwn(key.fingerprint, admins);
       if (this.rows('SELECT 1 FROM repository_owners WHERE repository_id = ? AND removed_at IS NULL', repository).length >= OWNERS_MAX) bad('public_key', `a repository has at most ${OWNERS_MAX} owners`);
       this.insertOwner(repository, key, actor);
       this.event(actor, { act: 'owner-added', key: key.fingerprint, repository }, repository);
@@ -437,6 +466,14 @@ export class Admin {
     const legs = b.legs === undefined ? [] : Array.isArray(b.legs) && b.legs.length <= LEGS_MAX && b.legs.every((l) => typeof l === 'string' && COURSE_ID.test(l))
       ? [...new Set(b.legs as string[])] : bad('legs', `must be at most ${LEGS_MAX} leg names`);
     if (legs.length && course === '*') bad('legs', "named legs need a named course, not '*'");
+    // A named course is one the repository registers, and each named leg resolves in its file —
+    // a typo would bar nothing (round 1, 1-A-4).
+    if (course !== '*') {
+      const file = this.rows<{ course_json: string }>('SELECT course_json FROM courses WHERE repository_id = ? AND id = ?', repository, course)[0]?.course_json;
+      if (!file) bad('course', `${repository} registers no course ${course}`);
+      const g = graphOf(JSON.parse(file!));
+      for (const l of legs) if (!resolveLeg(g, l)) bad('legs', `${course}'s course file has no leg ${l}`);
+    }
     const applies = b.applies === 'claim' || b.applies === 'claim+advance' ? b.applies : bad('applies', "must be 'claim' or 'claim+advance'");
     const startsAt = b.starts_at === undefined ? now : Number.isSafeInteger(b.starts_at) && (b.starts_at as number) >= 0 ? (b.starts_at as number) : bad('starts_at', 'must be epoch ms');
     const endsAt = b.ends_at == null ? null : Number.isSafeInteger(b.ends_at) && (b.ends_at as number) > Math.max(startsAt, now) ? (b.ends_at as number) : bad('ends_at', 'must be epoch ms after starts_at and now');
@@ -485,6 +522,9 @@ export class Admin {
     return this.c.store.transaction(() => {
       for (const [k, v] of sets) this.exec(`UPDATE repositories SET ${k} = ? WHERE id = ?`, v, repository);
       this.event(actor, { act: 'settings', repository, ...Object.fromEntries(sets.map(([k, v]) => [k, v == null ? null : JSON.parse(v)])) }, repository);
+      // Required bars are applied as a snapshot's legs are stored: the next sync re-stores them
+      // now rather than at the schedule (round 1, 1-A-8).
+      if (b.required_bars !== undefined) this.c.dispatchSync(repository);
       return { ok: true };
     });
   }
@@ -572,8 +612,8 @@ export function checkRetry(v: unknown): RetryPolicy {
   if (!isObj(v)) bad('retry', 'must be {backoff_ms: [..], max_failed}');
   const b = v as Record<string, unknown>;
   only(b, ['backoff_ms', 'max_failed'], 'retry');
-  const backoff = Array.isArray(b.backoff_ms) && b.backoff_ms.length <= BACKOFFS_MAX && b.backoff_ms.every((n) => Number.isSafeInteger(n) && (n as number) >= 60_000 && (n as number) <= 30 * 86_400_000)
-    ? (b.backoff_ms as number[]) : bad('retry.backoff_ms', `must be at most ${BACKOFFS_MAX} backoffs of 1 minute to 30 days`);
+  const backoff = Array.isArray(b.backoff_ms) && b.backoff_ms.length >= 1 && b.backoff_ms.length <= BACKOFFS_MAX && b.backoff_ms.every((n) => Number.isSafeInteger(n) && (n as number) >= 60_000 && (n as number) <= 30 * 86_400_000)
+    ? (b.backoff_ms as number[]) : bad('retry.backoff_ms', `must be 1 to ${BACKOFFS_MAX} backoffs of 1 minute to 30 days`);
   const max = Number.isInteger(b.max_failed) && (b.max_failed as number) >= 1 && (b.max_failed as number) <= 10 ? (b.max_failed as number) : bad('retry.max_failed', 'must be an integer from 1 to 10');
   return { backoff_ms: backoff, max_failed: max };
 }

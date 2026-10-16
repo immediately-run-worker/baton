@@ -7,8 +7,9 @@ import roadmapPr from '../fixtures/courses/roadmap-pr/course.json';
 import chore from '../fixtures/courses/chore/course.json';
 import { requiredBarCovers, isOwnerBarReason, checkRetry } from '../../src/core/admin';
 import { graphOf } from '../../src/core/graph';
-import { call, claimItem, ORIGIN, course, cutover, Git, keyCall, placed, recommended, register, rows, setAdminKeys, setClock } from '../helpers';
-import { makeKey, type TestKey } from '../lib/sshKeys';
+import { adminSession, ownerCall, call, captureDispatches, claimItem, hbBody, ORIGIN, sessionCall, sha256, tick, withCore, course, cutover, Git, keyCall, placed, recommended, register, rows, setAdminKeys, setClock } from '../helpers';
+import { makeKey, signedRequest, type TestKey } from '../lib/sshKeys';
+import { call as hostCall } from '#host';
 
 const T0 = Date.parse('2026-10-16T12:00:00Z');
 let admin: TestKey;
@@ -211,5 +212,64 @@ describe('requiredBarCovers and the reason rule', () => {
     expect(isOwnerBarReason('quota')).toBe(true);
     for (const r of ['done', 'cannot-finish', 'leg-timeout', 'awaiting-review-capacity', 'Bad Reason', '']) expect([r, isOwnerBarReason(r)]).toEqual([r, false]);
     expect(checkRetry({ backoff_ms: [60_000], max_failed: 1 })).toEqual({ backoff_ms: [60_000], max_failed: 1 });
+  });
+});
+
+describe('round 1: one role per key, revocations that stay, bars that name what exists', () => {
+  it('a key named both as owner and as sync key is refused, and nothing is registered (1-A-1)', async () => {
+    const k = await makeKey('ssh-ed25519', 'both');
+    expect(await code(adm('/repositories', { ...REGISTER, owner_keys: [k.publicKey], sync_keys: [{ public_key: k.publicKey, role: 'sync' }] }))).toBe('conflict');
+    expect(await rows(`SELECT id FROM repositories WHERE id = 'ops'`)).toEqual([]);
+    // A change likewise refuses before it writes a sync key.
+    expect(await code(adm('/repositories', { id: 'docs', owner_keys_add: [k.publicKey], sync_keys_add: [{ public_key: k.publicKey, role: 'sync' }] }))).toBe('conflict');
+    expect(await rows('SELECT 1 FROM sync_keys WHERE fingerprint = ?', k.fingerprint)).toEqual([]);
+  });
+
+  it('an owner key an administrator revoked is never added back by another owner (1-A-3)', async () => {
+    const second = await makeKey('ssh-ed25519', 'second');
+    await own('/owners', { public_key: second.publicKey });
+    expect(await code(adm(`/keys/${encodeURIComponent(second.fingerprint)}/revoke`, {}))).toBe(200);
+    expect(await code(own('/owners', { public_key: second.publicKey }))).toBe('conflict');
+    expect(await code(keyCall(second, '/v1/owner/docs/bars', { course: '*', tag: 'a:b', applies: 'claim', reason: 'x' }))).toBe('unauthenticated');
+  });
+
+  it('a key added to BATON_ADMIN_KEYS after it was an owner or a worker acts as neither (1-A-7)', async () => {
+    await own('/grants', { public_key: worker.publicKey, hostname: 'w-host', capabilities: ['agent-venue'] });
+    await setAdminKeys(admin, owner, worker);
+    expect(await code(own('/bars', { course: '*', tag: 'a:b', applies: 'claim', reason: 'x' }))).toBe('forbidden');
+    const created = Math.floor((await withCore((c) => c.now())) / 1000);
+    const res = await hostCall(await signedRequest(worker, `${ORIGIN}/v1/runner/heartbeat`, { created, body: JSON.stringify(hbBody('vm-a', { hostname: 'w-host', session_name: 'w', secret_hash: await sha256('s') })) }));
+    expect(res.status).toBe(403);
+  });
+
+  it('an owner grants no BATON_KEYS-seeded key; an administrator takes it over (1-B-0)', async () => {
+    await rows(`INSERT INTO credentials (id, hostname, allowed_capabilities, kind, public_key, created_by) VALUES (?, 'seeded', '["agent-venue"]', 'worker', ?, 'seed')`,
+      worker.fingerprint, worker.publicKey.split(' ').slice(0, 2).join(' '));
+    expect(await code(own('/grants', { public_key: worker.publicKey, capabilities: [] }))).toBe('conflict');
+    expect(await rows('SELECT created_by FROM credentials WHERE id = ?', worker.fingerprint)).toEqual([{ created_by: 'seed' }]);
+    expect(await code(adm('/grants', { repository: 'docs', public_key: worker.publicKey, capabilities: [] }))).toBe(200);
+    expect(await rows('SELECT created_by FROM credentials WHERE id = ?', worker.fingerprint)).toEqual([{ created_by: `admin:${admin.fingerprint}` }]);
+  });
+
+  it('an owner bar names a course the repository registers, and legs its file has (1-A-4)', async () => {
+    expect(await code(own('/bars', { course: 'chores', tag: 'a:b', applies: 'claim', reason: 'x' }))).toBe('invalid-params');
+    expect(await code(own('/bars', { course: 'roadmap-pr', legs: ['fx'], tag: 'a:b', applies: 'claim', reason: 'x' }))).toBe('invalid-params');
+    expect(await code(own('/bars', { course: 'roadmap-pr', legs: ['fix'], tag: 'a:b', applies: 'claim', reason: 'x' }))).toBe(200);
+  });
+
+  it('a retry policy has at least one backoff (1-B-4); a required-bar change dispatches the sync (1-A-8)', async () => {
+    expect(await code(own('/settings', { retry: { backoff_ms: [], max_failed: 2 } }, 'PUT'))).toBe('invalid-params');
+    const sent = await captureDispatches();
+    expect(await code(own('/settings', { required_bars: [{ course: 'roadmap-pr', leg: 'fix', tag_prefix: 'family:' }] }, 'PUT'))).toBe(200);
+    await tick();
+    expect(sent).toContain('docs:sync');
+  });
+
+  it('the dashboard: Access alone serves only while no administrator key is configured; a session always (1-A-6)', async () => {
+    const access = () => ownerCall('/v1/ui/state');
+    expect((await access()).status).toBe(401);
+    expect((await sessionCall(await adminSession(admin), '/v1/ui/state')).status).toBe(200);
+    await setAdminKeys();
+    expect((await access()).status).toBe(200);
   });
 });

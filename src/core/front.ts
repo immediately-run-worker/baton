@@ -3,7 +3,7 @@
 // forwards the API to the core — through the Durable Object on Cloudflare, through the request
 // queue locally (R-BTN-55). Every response leaves with the security headers.
 import { verifyOwner, verifyRequest, verifySyncCredential, verifyWorker, checkStateChanging, withBody } from './auth';
-import { BatonError, errorResponse, withSecurityHeaders } from './http';
+import { BatonError, SESSION_COOKIE, errorResponse, withSecurityHeaders } from './http';
 import { pickDelivery, verifyDelivery } from './webhook';
 import type { Config } from './ports';
 import page from '../ui/index.html';
@@ -23,8 +23,6 @@ const STATIC: Record<string, [string, string]> = {
 /** What anyone may fetch: the login page and the code it runs, which hold no data (R-BTN-57's
  *  one-time link is opened before any session exists). The dashboard and its API need a principal. */
 const PUBLIC = new Set(['/login', '/ui/app.css', '/ui/app.js']);
-/** R-BTN-16: the one cookie Baton reads — its own dashboard session. */
-const SESSION_COOKIE = '__Host-baton_session';
 
 function cookie(req: Request, name: string): string | null {
   for (const part of (req.headers.get('Cookie') ?? '').split(';')) {
@@ -34,15 +32,27 @@ function cookie(req: Request, name: string): string | null {
   return null;
 }
 
-/** The dashboard's principal (R-BTN-57, R-BTN-16): Cloudflare Access when the operator put it in
- *  front and the request carries its assertion — optional hardening — else Baton's own session
- *  cookie, which the core checks against its SQLite and BATON_ADMIN_KEYS on every request. */
+/** The dashboard's principals (R-BTN-57, R-BTN-16): Baton's own session cookie, which the core
+ *  checks against its SQLite and BATON_ADMIN_KEYS on every request, and Cloudflare Access when
+ *  the operator put it in front — verified here, and enough on its own only while no
+ *  administrator key is configured (the core decides; round 1, 1-A-6). */
 async function dashboardPrincipal(req: Request, env: Config): Promise<Record<string, string>> {
-  if (req.headers.has('Cf-Access-Jwt-Assertion')) return { 'X-Baton-Owner': await verifyOwner(req, env) };
+  const out: Record<string, string> = {};
+  if (req.headers.has('Cf-Access-Jwt-Assertion')) out['X-Baton-Owner'] = await verifyOwner(req, env);
   const session = cookie(req, SESSION_COOKIE);
-  if (!session) throw new BatonError('unauthenticated', 'a dashboard session is required: `baton admin open` mints a link');
-  return { 'X-Baton-Session': session };
+  if (session) out['X-Baton-Session'] = session;
+  if (!Object.keys(out).length) throw new BatonError('unauthenticated', 'a dashboard session is required: `baton admin open` mints a link');
+  return out;
 }
+
+/** A signed request (R-BTN-13 as amended): a half-signed, malformed, foreign-@authority or
+ *  mis-digested one stops here; the core checks the key, the signature, the clock (`created` is
+ *  the core's: the one clock is its, R-BTN-32) and the nonce. */
+async function forwardSigned(req: Request, env: Config, to: Forward): Promise<Response> {
+  const signed = await verifyRequest(req, null, { origin: env.BATON_ORIGIN });
+  return forward(withBody(req, signed.body), to, { 'X-Baton-Signed': signed.keyid });
+}
+const isSigned = (req: Request) => req.headers.has('Signature-Input') || req.headers.has('Signature');
 
 /** The headers that carry a verified principal to the object. A request never brings its own. */
 const PRINCIPAL_HEADERS = ['X-Baton-Credential', 'X-Baton-Owner', 'X-Baton-Sync', 'X-Baton-Signed', 'X-Baton-Webhook', 'X-Baton-Session'];
@@ -53,10 +63,7 @@ async function route(req: Request, env: Config, to: Forward): Promise<Response> 
     // R-BTN-93: a sync key's signature is pre-checked here like every signed request, and its key
     // checked in the core; a CI identity token is verified here, and the core binds its claims to
     // one repository and role (Registry.forSync, forGitlab), so the front names no repository.
-    if (req.headers.has('Signature-Input') || req.headers.has('Signature')) {
-      const signed = await verifyRequest(req, null, { origin: env.BATON_ORIGIN });
-      return forward(withBody(req, signed.body), to, { 'X-Baton-Signed': signed.keyid });
-    }
+    if (isSigned(req)) return forwardSigned(req, env, to);
     const claims = await verifySyncCredential(req, env);
     // A header carries bytes only: characters from U+007F up go as \u escapes (round 3, 3-A-1).
     const ascii = JSON.stringify(claims).replace(/[\u007f-\uffff]/g, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
@@ -82,13 +89,7 @@ async function route(req: Request, env: Config, to: Forward): Promise<Response> 
     return forward(new Request(req.url, { method: 'POST' }), to, { 'X-Baton-Webhook': ascii });
   }
   if (pathname.startsWith('/v1/runner/')) {
-    if (req.headers.has('Signature-Input') || req.headers.has('Signature')) {
-      // R-BTN-13 as amended: a half-signed, malformed, foreign-@authority or mis-digested
-      // request stops here; the core checks the key, the signature, the clock and the nonce.
-      // (`created` is the core's: the one clock is its, R-BTN-32.)
-      const signed = await verifyRequest(req, null, { origin: env.BATON_ORIGIN });
-      return forward(withBody(req, signed.body), to, { 'X-Baton-Signed': signed.keyid });
-    }
+    if (isSigned(req)) return forwardSigned(req, env, to);
     // The transition (R3-1239): a bearer token still serves until every worker signs.
     const credential = await verifyWorker(req, env);
     return forward(req, to, { 'X-Baton-Credential': credential });
@@ -96,9 +97,8 @@ async function route(req: Request, env: Config, to: Forward): Promise<Response> 
   if (pathname.startsWith('/v1/admin/') || pathname.startsWith('/v1/owner/')) {
     // R-BTN-57, R-BTN-58: an administrator's or an owner's key signs every request; the core
     // checks which, and for which repository.
-    if (!req.headers.has('Signature-Input') && !req.headers.has('Signature')) throw new BatonError('unauthenticated', 'sign with an administrator or owner key (R-BTN-13)');
-    const signed = await verifyRequest(req, null, { origin: env.BATON_ORIGIN });
-    return forward(withBody(req, signed.body), to, { 'X-Baton-Signed': signed.keyid });
+    if (!isSigned(req)) throw new BatonError('unauthenticated', 'sign with an administrator or owner key (R-BTN-13)');
+    return forwardSigned(req, env, to);
   }
   if (pathname === '/v1/login') {
     // R-BTN-16: against login CSRF, the token comes as JSON from this Baton's own page.
@@ -113,11 +113,10 @@ async function route(req: Request, env: Config, to: Forward): Promise<Response> 
       if (req.method !== 'GET' && req.method !== 'HEAD') checkStateChanging(req, env);
       return forward(req, to, principal);
     }
-    // The dashboard page: a session is checked by the core, which keeps them.
-    if (principal['X-Baton-Session']) {
-      const ok = await forward(new Request(new URL('/v1/ui/session', req.url)), to, principal);
-      if (!ok.ok) return ok;
-    }
+    // The dashboard page: the core checks the principal — a session against what it keeps, Access
+    // alone only while no administrator key is configured.
+    const ok = await forward(new Request(new URL('/v1/ui/session', req.url)), to, principal);
+    if (!ok.ok) return ok;
     return serve(pathname, req);
   }
   throw new BatonError('not-found', 'no such route');

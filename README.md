@@ -105,14 +105,16 @@ baton owner -i ~/.ssh/docs_owner settings docs --required-bar '*' --course roadm
 `--url` (or `BATON_URL`) picks the Baton. A key holds one role — administrator, owner, worker,
 probe, courier or sync — and a key in a second is `conflict`. A granted key works only where it
 is granted, with what that repository granted (rules 4 and 7) and under its `max_tier`; only an
-administrator grants `human-operator`. Owner bars join the posted barred tags of their course
+administrator grants `human-operator`, or takes over a `BATON_KEYS`-seeded key. Owner bars join the posted barred tags of their course
 (or every course, `*`), at claims and, with `--applies claim+advance`, advances; a leg missing a
 required bar's tag prefix waits on `policy` under Needs you. Tiers, `retry` and
 `transcript_repos` come only from Baton: a snapshot changes none of them. The dashboard shows them
 under Limits, read-only.
 
-The dashboard takes Cloudflare Access where it is configured, or the `__Host-baton_session`
-cookie a login link sets (12 hours; it ends when its key leaves `BATON_ADMIN_KEYS`).
+The dashboard takes the `__Host-baton_session` cookie a login link sets (12 hours; it ends when
+its key leaves `BATON_ADMIN_KEYS`). Cloudflare Access may stand in front as extra hardening; on its
+own it opens the dashboard only while `BATON_ADMIN_KEYS` lists no key — a deployment from before
+administrators — so set that secret, then log in with `baton admin open`.
 
 ## Repositories and their syncs
 

@@ -10,18 +10,22 @@
 // the owner's; the re-tiered ticket is offered to the routine-capped key (a ticket's tier is
 // git's), which the dashboard shows beside the commit that changed it. Runs on both hosts.
 import { describe, it, expect, beforeEach } from 'vitest';
-import { advance, beat, claimItem, cutover, endClaim, Git, hbBody, keyCall, ORIGIN, ownerCall, placed, register, rows, setAdminKeys, setClock, sha256, withCore } from '../helpers';
+import roadmapPr from '../fixtures/courses/roadmap-pr/course.json';
+import chore from '../fixtures/courses/chore/course.json';
+import { adminSession, advance, beat, captureDispatches, claimItem, course, cutover, endClaim, Git, hbBody, keyCall, ORIGIN, placed, register, rows, sessionCall, setAdminKeys, setClock, sha256, tick, withCore } from '../helpers';
 import { makeKey, signedRequest, type TestKey } from '../lib/sshKeys';
 import { call as hostCall } from '#host';
 
 const T0 = Date.parse('2026-10-16T12:00:00Z');
 const H = 3_600_000;
+const M10 = 10 * 60_000;
 const REVIEWED: [string, string][] = [['implement', 'pr-open'], ['review', 'reviewed']];
 const AT_REVIEWED = (bars: Record<string, string[]>) =>
   placed('reviewed', REVIEWED, [['fix', 'ready'], ['adjudicate', 'waiting', 'disagreement'], ['merge', 'ready']], { bars });
 let admin: TestKey;
 let owner: TestKey;
 let git: Git;
+const uiState = async () => (await (await sessionCall(await adminSession(admin), '/v1/ui/state')).json()) as Record<string, any>;
 
 const own = (path: string, body: unknown, method?: string) => keyCall(owner, `/v1/owner/docs${path}`, body, method);
 
@@ -37,7 +41,9 @@ beforeEach(async () => {
   admin = await makeKey('ssh-ed25519', 'admin');
   owner = await makeKey('ssh-ed25519', 'docs-owner');
   await setAdminKeys(admin);
-  git = new Git()
+  git = new Git();
+  git.registry = [course(), course(1, 1, { id: 'chore', skill: 'chore', course: chore, step_kinds: ['other'] })];
+  git
     .add('T-1', { rank: 1 })
     .add('T-2', { rank: 2 })
     .add('T-3', { rank: 3 }, AT_REVIEWED({ fix: ['family:glm'], merge: ['family:glm'] }))
@@ -95,7 +101,7 @@ describe('S-BTN-39 limits agents cannot change', () => {
       { leg: 'fix', state: 'waiting', waiting_on: 'policy' },
       { leg: 'merge', state: 'waiting', waiting_on: 'policy' },
     ]);
-    const state = (await (await ownerCall('/v1/ui/state')).json()) as Record<string, any>;
+    const state = await uiState();
     expect(state.needs_you.policy).toEqual([
       { ticket_id: 'docs:T-3', leg: 'fix', waiting_since: T0 },
       { ticket_id: 'docs:T-3', leg: 'merge', waiting_since: T0 },
@@ -136,10 +142,78 @@ describe('S-BTN-39 limits agents cannot change', () => {
     // An agent re-tiers T-4 in git: the tier is git's, and the grant's cap now admits it.
     git.add('T-4', { rank: 4, tier: 'routine' });
     expect(await git.post()).toMatchObject({ status: 200 });
-    const state = (await (await ownerCall('/v1/ui/state')).json()) as Record<string, any>;
+    const state = await uiState();
     expect(state.ready.find((t: { id: string }) => t.id === 'docs:T-4')).toMatchObject({ tier: 'routine', changed_in: git.head });
     // The dashboard's limits show the grant's cap by name.
     expect(state.limits.grants).toEqual([expect.objectContaining({ repository_id: 'docs', hostname: 'k-host', max_tier: 'routine' })]);
     expect((await workerAs(k, '/v1/runner/claim', { request_id: 'req-k-routine', ticket_id: 'docs:T-4' }, secret)).json).toMatchObject({ ticket_id: 'docs:T-4' });
+  });
+  it('a bar that releases holders sends each tagged holder one release, once; the end it asks for is no failed attempt', async () => {
+    const dispatched = await captureDispatches();
+    const go = await register('vm-a', { tags: ['account:go_plus'] });
+    const held = (await claimItem('vm-a', go.secret, { ticket_id: 'docs:T-1' })).json;
+    const other = await register('vm-b', { tags: ['account:other'] });
+    const kept = (await claimItem('vm-b', other.secret, { ticket_id: 'docs:T-2' })).json;
+    const { json: bar } = await own('/bars', { course: 'roadmap-pr', tag: 'account:go_plus', applies: 'claim', starts_at: T0 + M10, release_holders: true, reason: 'go-quota' });
+    // A bar change dispatches the repository's sync (R-BTN-67).
+    await tick();
+    expect(dispatched).toContain('docs:sync');
+    // Not before it starts.
+    expect((await beat('vm-a', go.secret, { tags: ['account:go_plus'] })).json.messages).toEqual([]);
+    await setClock(T0 + M10);
+    await tick();
+    await tick();
+    const releases = (await beat('vm-a', go.secret, { tags: ['account:go_plus'] })).json.messages.filter((m: { kind: string }) => m.kind === 'release');
+    expect(releases).toEqual([expect.objectContaining({ kind: 'release', payload: expect.objectContaining({ ticket_id: 'docs:T-1', reason: 'go-quota', bar: bar.id }) })]);
+    expect((await beat('vm-b', other.secret, { tags: ['account:other'] })).json.messages).toEqual([]);
+    expect(await rows('SELECT holders_released_at FROM owner_bars WHERE id = ?', bar.id)).toEqual([{ holders_released_at: T0 + M10 }]);
+    // An owner-bar reason no bar has is refused; the bar's own is accepted and never counted failed.
+    expect((await endClaim('vm-a', go.secret, held.claim_id, { end_reason: 'released:other-quota' })).json).toMatchObject({ code: 'invalid-params' });
+    expect((await endClaim('vm-a', go.secret, held.claim_id, { end_reason: 'released:go-quota' })).status).toBe(200);
+    expect(await rows(`SELECT retry_after, hold FROM ticket_overrides WHERE ticket_id = 'docs:T-1'`)).toEqual([]);
+    expect(await rows('SELECT status FROM claims WHERE id = ?', kept.claim_id)).toEqual([{ status: 'active' }]);
+  });
+
+  it('a required bar refuses an advance into a covered leg without its prefix, and the judge names a snapshot that drops it', async () => {
+    const required = [{ course: 'roadmap-pr', leg: '*', except: ['implement', 'fix', 'adjudicate'], tag_prefix: 'family:' }];
+    expect((await own('/settings', { required_bars: required }, 'PUT')).status).toBe(200);
+    const w = await register('vm-a', { tags: ['family:qwen'] });
+    const c = (await claimItem('vm-a', w.secret, { ticket_id: 'docs:T-3' })).json;
+    expect(c).toMatchObject({ station: 'reviewed', legs: ['fix'] });
+    await advance('vm-a', w.secret, c.claim_id, { leg: 'fix' });
+    // Into review (covered), with no family: bar posted or declared: refused, the claim unchanged.
+    expect((await advance('vm-a', w.secret, c.claim_id, { reached: 'fixed', leg: 'review' })).json).toMatchObject({ code: 'not-eligible', rule: 8, rule_code: 'policy' });
+    expect(await rows('SELECT station, leg FROM claims WHERE id = ?', c.claim_id)).toEqual([{ station: 'reviewed', leg: 'fix' }]);
+    // A bar the holder declares meets it (one it does not carry itself: rule 8 still binds it).
+    expect((await advance('vm-a', w.secret, c.claim_id, { reached: 'fixed', leg: 'review', bars: ['family:glm'] })).json).toMatchObject({ ok: true, station: 'fixed' });
+    // The next snapshot posts review with no bars: bars-mismatch, naming the policy.
+    git.place('T-3', placed('fixed', [...REVIEWED, ['fix', 'fixed']], [['review', 'ready']], { bars: { review: [] } }));
+    expect(await git.post()).toMatchObject({ status: 200 });
+    const mismatch = await rows<{ detail_json: string }>(`SELECT detail_json FROM events WHERE kind = 'bars-mismatch' AND claim_id = ?`, c.claim_id);
+    expect(mismatch.map((m) => JSON.parse(m.detail_json))).toEqual([expect.objectContaining({ leg: 'review', declared_only: ['family:glm'], policy: ['family:'] })]);
+  });
+
+  it('a course file that no longer has a required bar’s named leg is held, the one in force staying', async () => {
+    expect((await own('/settings', { required_bars: [{ course: 'roadmap-pr', leg: 'fix', tag_prefix: 'family:' }] }, 'PUT')).status).toBe(200);
+    const { fix: _f, ...legs } = roadmapPr.legs;
+    const { fixed: _s, ...stations } = roadmapPr.stations;
+    const withoutFix = { ...roadmapPr, stations, legs: { ...legs, review: { ...legs.review, from: ['pr-open'] } } };
+    git.registry = [course(4, 3, { course: withoutFix }), course(1, 1, { id: 'chore', skill: 'chore', course: chore, step_kinds: ['other'] })];
+    const posted = await git.post();
+    expect(posted).toMatchObject({ status: 200 });
+    expect(await rows(`SELECT version FROM courses WHERE repository_id = 'docs' AND id = 'roadmap-pr'`)).toEqual([{ version: 3 }]);
+    const refused = await rows<{ violations: string }>(`SELECT violations FROM course_refusals WHERE course_id = 'roadmap-pr'`);
+    expect(JSON.parse(refused[0].violations)).toEqual([expect.objectContaining({ rule: 'required-bar', path: 'legs.fix' })]);
+  });
+
+  it('the heartbeat carries the bars of the worker’s repositories only', async () => {
+    const opsOwner = await makeKey('ssh-ed25519', 'ops-owner');
+    expect((await keyCall(admin, '/v1/admin/repositories', { id: 'ops', github: 'immediately-run/ops', default_branch: 'main', sync_workflow: '.github/workflows/baton-sync.yml', owner_keys: [opsOwner.publicKey] })).status).toBe(200);
+    expect((await keyCall(opsOwner, '/v1/owner/ops/bars', { course: '*', tag: 'account:x', applies: 'claim', reason: 'ops-only' })).status).toBe(200);
+    expect((await own('/bars', { course: '*', tag: 'account:y', applies: 'claim', reason: 'docs-only' })).status).toBe(200);
+    const k = await makeKey('ssh-ed25519', 'k');
+    await own('/grants', { public_key: k.publicKey, hostname: 'k-host', capabilities: ['agent-venue'] });
+    const hb = await workerAs(k, '/v1/runner/heartbeat', hbBody('vm-a', { hostname: 'k-host', session_name: 'k', secret_hash: await sha256('s') }));
+    expect(hb.json.bars).toEqual([expect.objectContaining({ repository: 'docs', tag: 'account:y' })]);
   });
 });

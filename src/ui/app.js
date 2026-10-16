@@ -447,6 +447,8 @@ function renderLimits() {
     parts.push(retry ? `retry after ${retry.backoff_ms.map((ms) => `${Math.round(ms / 60_000)} min`).join(', ')}; held at failure ${retry.max_failed}` : 'retry: the default');
     const transcripts = parsed(s.transcript_repos, null);
     if (transcripts) parts.push(`transcripts: ${transcripts.join(', ')}`);
+    const trigger = parsed(s.unblocked_trigger, null);
+    if (trigger) parts.push(`unblocked trigger: ${trigger.kind}${trigger.workflow ? ` ${trigger.workflow}` : ''}${trigger.ref ? ` @${trigger.ref}` : ''}`);
     return `${s.repository_id}: ${parts.join(' · ')}`;
   }), 'No repository is registered.');
 }
@@ -500,7 +502,9 @@ async function login() {
 }
 
 if (location.pathname === '/login') {
-  login();
+  login().catch((e) => {
+    document.getElementById('status').textContent = `Could not log in: ${e.message}. Run \`baton admin open\` for a new link.`;
+  });
 } else {
   document.getElementById('tier').addEventListener('change', () => state && renderReady());
   poll();

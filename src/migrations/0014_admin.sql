@@ -11,6 +11,7 @@ CREATE TABLE repository_owners (                 -- R-BTN-58: owner keys per rep
   added_by      TEXT NOT NULL,                   -- 'admin:<fingerprint>' or 'owner:<fingerprint>'
   added_at      INTEGER NOT NULL,
   removed_at    INTEGER,
+  revoked_at    INTEGER,                         -- an administrator's revoke (spec-silent): never re-added
   PRIMARY KEY (repository_id, public_key)
 );
 CREATE INDEX owners_by_fingerprint ON repository_owners (fingerprint) WHERE removed_at IS NULL;
