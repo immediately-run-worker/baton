@@ -3,7 +3,7 @@
 // re-issued; the dead session can no longer act on it (its heartbeat is worker-reaped, and the
 // holder query its pre-push hook asks names another holder). The client half is R3-1213's.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { beat, claimItem, claimRow, cutover, payload, register, rows, setClock, syncCall, workerCall , tick } from '../helpers';
+import { beat, claimItem, claimRow, cutover, payload, refresh, register, rows, setClock, syncCall, tick, workerCall } from '../helpers';
 
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');
@@ -40,9 +40,10 @@ describe('S-BTN-2 silent worker reaped (server half)', () => {
     expect((await claimItem('vm-b', live.secret, { ticket_id: 'docs:R3-9001' })).json).toMatchObject({ code: 'backing-off', rule: 10 });
     await setClock(T0 + 1_020_000 + 3_600_000);
     await beat('vm-b', live.secret);
+    await refresh(); // §6.7: a reading after the end
     const reissued = await claimItem('vm-b', live.secret, { ticket_id: 'docs:R3-9001' });
     expect(reissued.status).toBe(200);
-    expect(reissued.json.previous_attempts).toEqual([{ claim_id: c.claim_id, status: 'reaped', end_reason: 'reaped:silent', ended_at: T0 + 1_020_000,
+    expect(reissued.json.previous_attempts).toEqual([{ claim_id: c.claim_id, status: 'reaped', end_reason: 'reaped:silent', detail: null, ended_at: T0 + 1_020_000, legs: [],
       resume: expect.objectContaining({ end_reason: 'reaped:silent', ended_at: T0 + 1_020_000, last_activity: null }) }]);
 
     // The dead session, resumed: its heartbeat is refused, and its pre-push hook's holder query

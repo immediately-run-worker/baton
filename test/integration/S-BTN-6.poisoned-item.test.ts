@@ -2,7 +2,7 @@
 // lease-lost, cannot-finish:transient. Must hold: held attempts-exhausted (the mirror's note and
 // the owner-inbox report are R3-1218's and the witness's); lifting the hold resets the count.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { beat, claimItem, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, tick } from '../helpers';
+import { beat, claimItem, cutover, endClaim, ORIGIN, ownerCall, payload, refresh, register, rows, setClock, syncCall, tick } from '../helpers';
 
 const board = inject('board');
 const T0 = Date.parse('2026-10-13T12:00:00Z');
@@ -26,11 +26,13 @@ describe('S-BTN-6 poisoned item', () => {
     // 2. lease-lost, after the 1 h backoff.
     await setClock(T0 + 900_000 + H);
     const b = await register('vm-b');
+    await refresh(); // §6.7: a reading after the end
     const c2 = (await claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9001' })).json;
     await endClaim('vm-b', b.secret, c2.claim_id, { end_reason: 'released:lease-lost' });
     // 3. cannot-finish:transient, after the 4 h backoff.
     await setClock(T0 + 900_000 + 5 * H);
     await beat('vm-b', b.secret);
+    await refresh(); // §6.7: a reading after the end
     const c3 = (await claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9001' })).json;
     await endClaim('vm-b', b.secret, c3.claim_id, { end_reason: 'released:cannot-finish:transient' });
 
@@ -42,6 +44,7 @@ describe('S-BTN-6 poisoned item', () => {
 
     // The owner lifts it: the count starts again, so one more failure backs off, not holds.
     await owner('/v1/ui/overrides/docs:R3-9001', { hold: false });
+    await refresh(); // §6.7: a reading after the end
     const c4 = await claimItem('vm-b', b.secret, { ticket_id: 'docs:R3-9001' });
     expect(c4.status).toBe(200);
     await endClaim('vm-b', b.secret, c4.json.claim_id, { end_reason: 'released:cannot-finish:transient' });

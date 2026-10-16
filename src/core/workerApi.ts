@@ -41,6 +41,8 @@ export interface Ctx {
   now: () => number;
   /** R-BTN-19: a heartbeat's `fenced` report, handed to the claims (R3-1212). */
   fenced?: (workerId: number, incarnation: number, claimId: number) => boolean;
+  /** §11: where the claim is and what git shows of its ticket (R3-1232), from the claims. */
+  claimView?: (claimId: number) => Record<string, unknown>;
 }
 
 export class WorkerApi {
@@ -251,6 +253,7 @@ export class WorkerApi {
       tiers: Object.entries(hb.tier_ceilings).sort(),
       lease: hb.lease_timeout_s,
       courses: hb.courses.map((c) => `${c.repository}:${c.course}@${c.version}`).sort(),
+      tags: [...hb.tags].sort(),
     }));
     const answer = this.c.store.transaction(() => this.heartbeatTx(credentialId, presented, settingsHash, hb));
     return ignoredCeilings.length ? { ...answer, tier_ceilings_unregistered: ignoredCeilings } : answer;
@@ -339,7 +342,7 @@ export class WorkerApi {
       worker_id: w.id,
       incarnation: fresh.incarnation,
       lease_timeout_s: fresh.lease_timeout_ms / 1000,
-      claim: claim ? { ...claim, activity: this.currentActivity(w.id) } : null,
+      claim: claim ? { ...claim, ...this.c.claimView?.(claim.id), activity: this.currentActivity(w.id) } : null,
       messages: this.deliver(w.id, now),
       suspensions: this.suspensionsFor(now),
       // R-BTN-22: the declared courses below their min_worker_version — no new claim on them.
@@ -375,6 +378,9 @@ export class WorkerApi {
     for (const [prefix, account] of Object.entries(hb.billing)) {
       if (knownAccounts.has(account)) this.exec('INSERT INTO worker_providers (worker_id, prefix, provider_id) VALUES (?, ?, ?)', workerId, prefix, account);
     }
+    // R-BTN-60: the tags rule 8 matches, as declared.
+    this.exec('DELETE FROM worker_tags WHERE worker_id = ?', workerId);
+    for (const tag of hb.tags) this.exec('INSERT INTO worker_tags (worker_id, tag) VALUES (?, ?)', workerId, tag);
     // R-BTN-48: the courses its checkouts run, at their versions — rule 9 reads them.
     this.exec('DELETE FROM worker_courses WHERE worker_id = ?', workerId);
     for (const c of hb.courses) {
@@ -668,9 +674,11 @@ export class WorkerApi {
       if (mine) return conflict(`worker-holds:${mine.ticket_id}`);
       const head = this.rows<{ sha: string | null }>('SELECT sha FROM board_head WHERE repository_id = ?', repo)[0]?.sha ?? '';
       // R-BTN-62: as any claim, judged only by a reading numbered after it.
-      this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, claim_observation)
-                 VALUES (?, ?, ?, ?, ?, ?, 'active', COALESCE((SELECT last_handed_out FROM board_head WHERE repository_id = ?), 0))`,
-        r.ticket_id, workerId, `shadow:${workerId}:${r.ticket_id}:${r.nonce}`, r.nonce!, head, r.at, repo);
+      this.exec(`INSERT INTO claims (ticket_id, worker_id, request_id, nonce, snapshot_sha, claimed_at, status, claim_observation, station, start_path, course_id)
+                 VALUES (?, ?, ?, ?, ?, ?, 'active', COALESCE((SELECT last_handed_out FROM board_head WHERE repository_id = ?), 0),
+                         COALESCE((SELECT station FROM ticket_stations WHERE ticket_id = ?), ''), COALESCE((SELECT path FROM ticket_stations WHERE ticket_id = ?), '[]'),
+                         (SELECT course_id FROM tickets WHERE id = ?))`,
+        r.ticket_id, workerId, `shadow:${workerId}:${r.ticket_id}:${r.nonce}`, r.nonce!, head, r.at, repo, r.ticket_id, r.ticket_id, r.ticket_id);
       const id = this.rows<{ id: number }>('SELECT last_insert_rowid() AS id')[0].id;
       this.event('claimed', actor, { shadow: true, nonce: r.nonce }, r.ticket_id, id);
       return { ok: true, claim_id: id };

@@ -68,7 +68,7 @@ describe('the tickets cache', () => {
     }
     const cols = (await rows<{ name: string }>(`SELECT name FROM pragma_table_info('tickets')`)).map((c) => c.name);
     expect(cols).toEqual(['id', 'repository_id', 'local_id', 'path', 'title', 'project', 'status', 'node', 'queue', 'tags', 'tier', 'requires_clause', 'operator_only',
-      'depends_on', 'blocked_by', 'repos', 'ord', 'rank', 'snapshot_sha', 'row_hash', 'since', 'holder', 'course_id', 'tier_position']);
+      'depends_on', 'blocked_by', 'repos', 'ord', 'rank', 'snapshot_sha', 'row_hash', 'since', 'holder', 'course_id', 'tier_position', 'expedite', 'display']);
   });
 });
 

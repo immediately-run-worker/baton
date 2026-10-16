@@ -8,9 +8,7 @@
 // is refused while either is held. The recommendation clauses — each repository in its own
 // hook's or default order, the per-group limit with 60 ready docs legs — are R3-1232's.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import {
-  beat, captureDispatches, claimItem, claimRow, course, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, syncToken, withCore, workerCall,
-} from '../helpers';
+import { beat, captureDispatches, claimItem, claimRow, course, cutover, endClaim, ORIGIN, ownerCall, payload, recommended, register, rows, setClock, syncCall, syncToken, withCore, workerCall } from '../helpers';
 
 const board = inject('board');
 const sha = board.shas;
@@ -88,7 +86,7 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     expect((await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' })).json.code).toBe('not-cut-over');
     const c = await claimItem('vm-a', secret);
     expect(c.json).toMatchObject({ ticket_id: 'ops:R3-9001', snapshot_sha: OPS_SHA });
-    expect(sent).toEqual(['ops:mirror']);
+    expect(sent).toEqual(['ops:mirror', 'ops:sync']); // R-BTN-73: a claim dispatches the sync too
     const feed = (await (await opsCall('/v1/sync/events?after=0', undefined, 'baton-mirror.yml')).json()) as { events: { kind: string; ticket_id: string | null }[]; cutover_at: number };
     expect(feed.cutover_at).toBe(T0);
     expect(feed.events.map((e) => [e.kind, e.ticket_id])).toEqual(expect.arrayContaining([['claimed', 'ops:R3-9001']]));
@@ -101,10 +99,7 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     const { id } = await register('vm-a', BOTH);
     await cutover(1, 'docs');
     await cutover(1, 'ops');
-    const candidates = () => withCore((o) => {
-      const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
-      return c.candidates(c.worker(id), T0, 100);
-    });
+    const candidates = () => recommended(id);
     const got = await candidates();
     const firstOps = got.findIndex((t) => t.startsWith('ops:'));
     expect(firstOps).toBeGreaterThan(0);
@@ -187,10 +182,7 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     await cutover(1, 'docs');
     await cutover(1, 'ops');
     await rows(`UPDATE repositories SET weight = 100 WHERE id = 'ops'`);
-    const got = await withCore((o) => {
-      const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
-      return c.candidates(c.worker(id), T0, 100);
-    });
+    const got = await recommended(id);
     // Each repository's first candidate comes before either's second.
     expect(got.slice(0, 2).sort()).toEqual(['docs:R3-9001', 'ops:R3-9001']);
   });
@@ -216,17 +208,14 @@ describe('S-BTN-26 two repositories (registry half)', () => {
     await cutover(1, 'ops');
     const w1 = await register('vm-b'); // docs' roadmap-pr only
     const w2 = await register('vm-a', BOTH);
-    const candidates = (id: number) => withCore((o) => {
-      const c = o.claims as unknown as { candidates: (w: unknown, now: number, limit: number) => string[]; worker: (id: number) => unknown };
-      return c.candidates(c.worker(id), T0, 100);
-    });
+    const candidates = (id: number) => recommended(id);
     expect((await candidates(w1.id)).filter((t) => t.startsWith('ops:'))).toEqual([]);
     expect((await candidates(w2.id)).filter((t) => t.startsWith('ops:'))).toEqual(['ops:R3-9001', 'ops:T-1']);
     expect(await claimItem('vm-b', w1.secret, { ticket_id: 'ops:T-1' })).toMatchObject({ status: 409, json: { code: 'stale-skills', rule: 9 } });
     // With every docs ticket claimed, W1 is not told to restart for ops' course it never runs.
-    await rows(`UPDATE tickets SET node = 'blocked' WHERE repository_id = 'docs'`);
+    await rows(`UPDATE ticket_next_legs SET state = 'waiting' WHERE ticket_id LIKE 'docs:%'`);
     expect(await claimItem('vm-b', w1.secret)).toMatchObject({ status: 404, json: { code: 'no-eligible-ticket' } });
-    await rows(`UPDATE tickets SET node = 'ready-autonomous' WHERE repository_id = 'docs' AND rank IS NOT NULL`);
+    await rows(`UPDATE ticket_next_legs SET state = 'ready' WHERE ticket_id IN (SELECT id FROM tickets WHERE repository_id = 'docs' AND rank IS NOT NULL)`);
     // A runbook change older workers would misbehave under.
     await opsCall('/v1/sync/board', payload('e'.repeat(40), OPS_SHA, { ...opsBoard, registry: [runbook(2)] }));
     expect((await beat('vm-a', w2.secret, BOTH)).json.stale_courses).toEqual([{ repository: 'ops', course: 'runbook', version: 1, min_worker_version: 2 }]);

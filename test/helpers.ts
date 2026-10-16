@@ -59,6 +59,21 @@ export async function syncCall(path: string, body?: unknown, token?: string) {
   return send(path, body);
 }
 
+/** The ticket ids a worker is recommended, in order (R-BTN-45, R-BTN-61): what a claim without
+ *  an id would take first. */
+export function recommended(workerId: number, limit = 100): Promise<string[]> {
+  return withCore((o) => (o.claims as unknown as { recommendations: (id: number, limit: number) => { recommendations: { ticket_id: string }[] } })
+    .recommendations(workerId, limit).recommendations.map((r) => r.ticket_id));
+}
+
+/** A refresh (§7.1 step 4): docs' head re-posted with a fresh observation, so a reading follows
+ *  every end — a ticket is claimable again only after one (§6.7). Returns the post's JSON. */
+export async function refresh(extra: Record<string, unknown> = {}) {
+  const { sha } = (await (await syncCall('/v1/sync/head')).json()) as { sha: string };
+  const res = await syncCall('/v1/sync/board', { sha, parent_sha: sha, state: { items: [] }, ready: [], ...extra });
+  return (await res.json()) as Record<string, any>;
+}
+
 /** `POST /v1/sync/observation` as a repository's sync (R-BTN-62): its JSON and status. */
 export async function observe(token?: string) {
   const res = await call('/v1/sync/observation', { method: 'POST', headers: { Authorization: `Bearer ${token ?? (await syncToken())}`, 'Content-Type': 'application/json' }, body: '{}' });

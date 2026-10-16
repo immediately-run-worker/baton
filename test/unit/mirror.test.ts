@@ -111,7 +111,7 @@ describe('§12: foreign claims', () => {
 });
 
 describe('§10.3: Baton dispatches the workflows after a transition', () => {
-  it('nothing before cutover; after it, a claim and an end dispatch the mirror, a completion the sync too', async () => {
+  it('nothing before cutover; after it, a claim and an end dispatch the mirror and the sync (R-BTN-73)', async () => {
     const sent = await captureDispatches();
     const { secret } = await register('vm-a');
     await workerCall('/v1/runner/shadow-report', { secret, body: { transition: 'claim', ticket_id: 'docs:R3-9001', status: 'in-progress', nonce: 'aaaaaa', at: T0 } });
@@ -120,12 +120,12 @@ describe('§10.3: Baton dispatches the workflows after a transition', () => {
     expect(sent).toEqual([]);
     await cutover(T0);
     const { json: c } = await claimItem('vm-a', secret);
-    expect(sent).toEqual(['docs:mirror']);
+    expect(sent).toEqual(['docs:mirror', 'docs:sync']);
     await endClaim('vm-a', secret, c.claim_id, { end_reason: 'done', ended_at_sha: sha.A });
-    expect(sent).toEqual(['docs:mirror', 'docs:mirror', 'docs:sync']);
+    expect(sent).toEqual(['docs:mirror', 'docs:sync', 'docs:mirror', 'docs:sync']);
   });
 
-  it('a refused call dispatches nothing; the alarm’s reap and the owner’s hold and expedite do', async () => {
+  it('a refused call dispatches nothing; the alarm’s reap (the mirror and a sync, R-BTN-73) and the owner’s hold and expedite do', async () => {
     await cutover(T0);
     const sent = await captureDispatches();
     const { secret } = await register('vm-a');
@@ -135,7 +135,7 @@ describe('§10.3: Baton dispatches the workflows after a transition', () => {
     sent.length = 0;
     await setClock(T0 + 900_000);
     await tick();
-    expect(sent).toEqual(['docs:mirror']);
+    expect(sent).toEqual(['docs:mirror', 'docs:sync']);
     sent.length = 0;
     await owner('/v1/ui/overrides/docs:R3-9002', { expedite: true });
     await owner('/v1/ui/overrides/docs:R3-9003', { hold: true });

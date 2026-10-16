@@ -3,9 +3,10 @@
 // or a non-retryable class, holds the item. The policy is pure (src/core/attempts.ts) and is tested
 // both alone and through the server.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
-import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord, reviewCapacityRun } from '../../src/core/attempts';
+import { afterFailure, countsAsFailed, nonRetryableClass, resumeRecord } from '../../src/core/attempts';
 import {
   beat, claimItem, claimRow, cutover, endClaim, ORIGIN, ownerCall, payload, register, rows, setClock, syncCall, tick, workerCall,
+  refresh,
 } from '../helpers';
 
 const board = inject('board');
@@ -24,7 +25,7 @@ describe('the policy, pure', () => {
     }
     expect(countsAsFailed('released:lease-lost', true)).toBe(false);
     for (const r of ['reaped:owner', 'reaped:release-unacknowledged', 'reaped:legacy', 'released:stale-board', 'released:requested',
-      'released:owner-cancel', 'released:provider-suspended', 'released:awaiting-review-capacity', 'done', 'handed-off:awaiting-ci', 'remainder:R3-1']) {
+      'released:owner-cancel', 'released:provider-suspended', 'released:provider-exhausted', 'released:course-changed', 'done', 'suspended:pr-open']) {
       expect([r, countsAsFailed(r)]).toEqual([r, false]);
     }
   });
@@ -34,13 +35,6 @@ describe('the policy, pure', () => {
       null, { retryAfterMs: H }, { retryAfterMs: 4 * H }, { hold: 'attempts-exhausted' }, { hold: 'attempts-exhausted' }]);
     expect([nonRetryableClass('released:cannot-finish:capability'), nonRetryableClass('released:cannot-finish:spec'), nonRetryableClass('released:cannot-finish:transient')])
       .toEqual(['capability', 'spec', null]);
-  });
-
-  it('a review-capacity run is consecutive: another end breaks it', () => {
-    const a = 'released:awaiting-review-capacity';
-    expect(reviewCapacityRun([a, a, a])).toBe(3);
-    expect(reviewCapacityRun([a, 'released:requested', a, a])).toBe(1);
-    expect(reviewCapacityRun([])).toBe(0);
   });
 
   it('a resume record takes branches, PRs, rounds and the last activity from activities only', () => {
@@ -72,6 +66,7 @@ describe('G-BTN-31 through the server', () => {
     const one = await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9001' });
     await owner(`/v1/ui/claims/${one.json.claim_id}/reap`, { confirm: true });
     await beat('vm-a', a.secret, { lease_timeout_s: 43_200, fenced: { claim_id: one.json.claim_id, terminated: true } });
+    await refresh(); // §6.7: claimable again only after a reading since the end
     const two = await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9001' });
     await owner('/v1/ui/messages', { to_worker_id: a.id, kind: 'release', payload: { ticket_id: 'docs:R3-9001', reason: 'requested' } });
     await beat('vm-a', a.secret, { lease_timeout_s: 43_200 });
@@ -79,6 +74,7 @@ describe('G-BTN-31 through the server', () => {
     await tick();
     expect((await claimRow(two.json.claim_id)).end_reason).toBe('reaped:release-unacknowledged');
     await beat('vm-a', a.secret, { lease_timeout_s: 43_200, fenced: { claim_id: two.json.claim_id, terminated: true } });
+    await refresh();
     const three = await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9001' });
     await endClaim('vm-a', a.secret, three.json.claim_id, { end_reason: 'released:provider-suspended' });
     expect(await failed('docs:R3-9001')).toBe(0);
@@ -95,6 +91,7 @@ describe('G-BTN-31 through the server', () => {
       t += 5 * H; // past any backoff
       await setClock(t);
       await beat(cred, secret);
+      await refresh();
       const c = await claimItem(cred, secret, { ticket_id: 'docs:R3-9001' });
       expect(c.status).toBe(200);
       await endClaim(cred, secret, c.json.claim_id, { end_reason: 'released:lease-lost' });
@@ -109,6 +106,7 @@ describe('G-BTN-31 through the server', () => {
   it('backoff is 1 h after the first failure and 4 h after the second; the third holds attempts-exhausted', async () => {
     const a = await register('vm-a');
     const fail = async () => {
+      await refresh();
       const c = await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9001' });
       expect(c.status).toBe(200);
       await endClaim('vm-a', a.secret, c.json.claim_id, { end_reason: 'released:cannot-finish:transient' });
@@ -132,32 +130,12 @@ describe('G-BTN-31 through the server', () => {
     expect((await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9001' })).json).toMatchObject({ code: 'not-eligible', rule: 3 });
   });
 
-  it('three consecutive awaiting-review-capacity releases hold the item review-capacity; another end breaks the run', async () => {
-    // A matrix rule 8 can seat (deepseek and qwen, billed on opencode-go), posted by a snapshot.
-    const matrix = {
-      families: { glm: ['glm'], deepseek: ['deepseek'], qwen: ['qwen'] },
-      agents: {
-        'review-pr-deepseek': { reviews_on: 'opencode-go/deepseek-v4', bills: ['opencode-go'], cost: 1 },
-        'review-pr-qwen': { reviews_on: 'opencode-go/qwen3', bills: ['opencode-go'], cost: 2 },
-      },
-      rows: [{ author: 'default', a: [{ agent: 'review-pr-deepseek' }], b: [{ agent: 'review-pr-qwen' }] }],
-    };
-    await syncCall('/v1/sync/board', payload('e'.repeat(40), board.shas.A, board.states.A, { matrix, reviewers: matrix.agents }));
+  it('awaiting-review-capacity is retired (§6.5): a review with no capacity is not ready, so no release names it', async () => {
     const a = await register('vm-a');
-    const release = async (item: string, reason: string) => {
-      const c = await claimItem('vm-a', a.secret, { ticket_id: item });
-      expect([item, reason, c.status]).toEqual([item, reason, 200]);
-      await endClaim('vm-a', a.secret, c.json.claim_id, { end_reason: reason });
-    };
-    // R3-9002: two, then another end, then two — never three in a row.
-    for (const r of ['awaiting-review-capacity', 'awaiting-review-capacity', 'requested', 'awaiting-review-capacity', 'awaiting-review-capacity']) {
-      await release('docs:R3-9002', `released:${r}`);
-    }
-    expect(await override('docs:R3-9002')).toBeNull();
-    // R3-9001: three in a row hold it.
-    for (let i = 0; i < 3; i++) await release('docs:R3-9001', 'released:awaiting-review-capacity');
-    expect(await override('docs:R3-9001')).toMatchObject({ hold: 1, hold_reason: 'review-capacity' });
-    expect(await failed('docs:R3-9001')).toBe(0); // never a failed attempt
+    const c = await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9002' });
+    const res = await endClaim('vm-a', a.secret, c.json.claim_id, { end_reason: 'released:awaiting-review-capacity' });
+    expect([res.status, res.json.code]).toEqual([400, 'invalid-params']);
+    expect((await claimRow(c.json.claim_id)).status).toBe('active');
   });
 
   it('lifting a hold resets the count, clears the backoff, and is the only way back', async () => {
@@ -165,6 +143,7 @@ describe('G-BTN-31 through the server', () => {
     for (let i = 0; i < 3; i++) {
       await setClock(T0 + i * 5 * H);
       await beat('vm-a', a.secret);
+      await refresh();
       const c = await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9001' });
       await endClaim('vm-a', a.secret, c.json.claim_id, { end_reason: 'released:cannot-finish:transient' });
     }
@@ -176,6 +155,7 @@ describe('G-BTN-31 through the server', () => {
     expect((await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9001' })).json.rule).toBe(3);
     expect((await owner('/v1/ui/overrides/docs:R3-9001', { hold: false })).status).toBe(200);
     expect(await override('docs:R3-9001')).toEqual({ hold: 0, hold_reason: null, retry_after: null });
+    await refresh();
     const c = await claimItem('vm-a', a.secret, { ticket_id: 'docs:R3-9001' });
     expect(c.status).toBe(200);
     // One more failure after the lift is the first again: 1 h, not a hold.
