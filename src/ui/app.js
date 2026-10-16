@@ -438,6 +438,7 @@ function renderLimits() {
   };
   list('Owners', l.owners.map((o) => `${o.repository_id}: ${o.fingerprint} (added by ${o.added_by}, ${fmtTime(o.added_at)})`), 'No repository has an owner key yet.');
   list('Grants', l.grants.map((g) => `${g.repository_id}: ${g.hostname}${g.label ? ` (${g.label})` : ''} — ${parsed(g.capabilities, []).join(', ') || 'no capabilities'}${g.max_tier != null ? ` · up to ${g.max_tier}` : ''} · by ${g.granted_by}`), 'No key is granted.');
+  list('Probes', (l.probes ?? []).map((p) => `${p.label}: ${p.fingerprint} — ${parsed(p.allowed_instances, []).join(', ') || 'no instances'} · by ${p.created_by}`), 'No probe key.');
   list('Owner bars', l.bars.map((b) => `#${b.id} ${b.repository_id}: ${b.tag} barred from ${b.course === '*' ? 'every course' : b.course}${b.legs.length ? ` (${b.legs.join(', ')})` : ''} at ${b.applies === 'claim' ? 'claims' : 'claims and advances'}, ${fmtTime(b.starts_at)} to ${b.ends_at == null ? 'lifted' : fmtTime(b.ends_at)}${b.release_holders ? ', releasing holders' : ''} — ${b.reason}`), 'No owner bar is in force or scheduled.');
   list('Settings', l.settings.map((s) => {
     const parts = [];

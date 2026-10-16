@@ -25,7 +25,7 @@ describe('plan: one request per command', () => {
       .toEqual({ repository: 'docs', public_key: PUB, hostname: 'h', capabilities: ['human-operator'] });
     expect(plan('admin', ['revoke', 'SHA256:a/b'], key).path).toBe('/v1/admin/keys/SHA256%3Aa%2Fb/revoke');
     expect(plan('admin', ['open'], key)).toEqual({ method: 'POST', path: '/v1/admin/login-links', body: {} });
-    expect(() => plan('admin', ['repo', 'add', 'x/y'], key)).toThrow('--id is required');
+    expect(() => plan('admin', ['repo', 'add', 'x/y'], key)).toThrow('--owner-key is required');
   });
 
   it('owner commands, the required bars in their groups', () => {
@@ -48,6 +48,25 @@ describe('plan: one request per command', () => {
     expect(() => plan('owner', ['settings', 'docs', '--no-required-bars', '--required-bar', '*', '--course', 'c', '--tag-prefix', 'p'], key)).toThrow('clears them');
     expect(() => plan('owner', ['settings', 'docs'], key)).toThrow('at least one setting');
     expect(() => plan('owner', ['bar', 'docs', '--course', '*', '--tag', 't', '--applies', 'claim', '--starts-at', 'soon', '--reason', 'r'], key)).toThrow('not a date');
+  });
+
+  it('repo add and set take §11’s whole forms; an unknown or misspelled flag is refused (round 3)', () => {
+    expect(plan('admin', ['repo', 'add', 'immediately-run/Docs', '--owner-key', `${PUB},${PUB}2`], key).body).toMatchObject({ id: 'docs', github: 'immediately-run/Docs', owner_keys: [PUB, `${PUB}2`] });
+    expect(plan('admin', ['repo', 'add', 'group/sub/proj', '--forge', 'gitlab', '--web-base', 'https://gitlab.example.com/group/sub/proj', '--remote', 'https://gitlab.example.com/group/sub/proj.git',
+      '--ci-identity', 'gitlab:https://gitlab.example.com', '--mirror-key', PUB, '--owner-key', PUB], key).body).toEqual({
+      id: 'proj', github: 'group/sub/proj', default_branch: 'main', forge: 'gitlab', remote: 'https://gitlab.example.com/group/sub/proj.git', web_base: 'https://gitlab.example.com/group/sub/proj',
+      ci_identity: { kind: 'gitlab-ci', issuer: 'https://gitlab.example.com', mirror: false }, sync_keys: [{ public_key: PUB, role: 'mirror' }], owner_keys: [PUB],
+    });
+    expect(plan('admin', ['repo', 'add', 'o/r', '--sync-key', PUB, '--owner-key', PUB], key).body.sync_keys).toEqual([{ public_key: PUB, role: 'sync' }]);
+    expect(plan('admin', ['repo', 'set', 'docs', '--remote', 'git@github.com:o/r.git', '--sync-workflow', 'none', '--ci-identity', 'none', '--add-owner-key', PUB,
+      '--add-sync-key', PUB, '--remove-sync-key', 'SHA256:x'], key).body).toEqual({
+      id: 'docs', remote: 'git@github.com:o/r.git', sync_workflow: null, ci_identity: null, owner_keys_add: [PUB], sync_keys_add: [{ public_key: PUB, role: 'sync' }], sync_keys_remove: ['SHA256:x'],
+    });
+    expect(() => plan('admin', ['repo', 'set', 'docs'], key)).toThrow('at least one change');
+    expect(() => plan('admin', ['repo', 'set', 'docs', '--remot', 'x'], key)).toThrow('--remot: not a flag');
+    expect(() => plan('owner', ['grant', 'docs', '--key', PUB, '--capabilites', 'agent-venue'], key)).toThrow('--capabilites: not a flag');
+    expect(() => plan('admin', ['open', '--force', 'yes'], key)).toThrow('not a flag');
+    expect(() => plan('admin', ['repo', 'add', 'o/r', '--owner-key', PUB, '--ci-identity', 'circle'], key)).toThrow('--ci-identity');
   });
 
   it('parseArgs and duration', () => {

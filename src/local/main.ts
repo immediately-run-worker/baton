@@ -91,18 +91,33 @@ export async function main(argv: string[]) {
   if (parsed !== origin) throw new Error(`--origin ${origin}: must be an origin, such as https://baton.example.com or http://127.0.0.1:8787, with no path`);
   const file = values.config ? JSON.parse(readFileSync(values.config, 'utf8')) : {};
   if (!file || typeof file !== 'object' || Array.isArray(file)) throw new Error('--config must hold a JSON object');
-  const keys = parseAdminKeys(values['admin-keys'] ? readFileSync(values['admin-keys'], 'utf8') : '');
 
   const { store } = openStore(values.db);
   const config = localConfig(file, origin);
   // R-BTN-55: the GitHub App's webhook secret, from the file `--github-webhook-secret` names
   // (a file, so the secret is in no process list); it wins over a --config value.
   if (values['github-webhook-secret']) config.BATON_GITHUB_WEBHOOK_SECRET = readFileSync(values['github-webhook-secret'], 'utf8').trim();
-  const host = new LocalHost({ store, config, adminKeys: { list: () => keys } });
+  const host = new LocalHost({ store, config, adminKeys: adminKeysFrom(values['admin-keys']) });
   await host.start();
   const server = serve(host, origin);
   server.listen(port, values.host, () => console.log(`baton: serving ${origin} from ${values.db}`));
   const stop = () => server.close(() => host.stop().then(() => process.exit(0)));
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+}
+
+/** The administrators' keys from the file `--admin-keys` names (R-BTN-57), read on every call as
+ *  BATON_ADMIN_KEYS is on Cloudflare: a key taken out of the file ends its sessions at their next
+ *  request (round 3, 3-A-4). A file that cannot be read lists no administrator — fail closed. */
+export function adminKeysFrom(path: string | undefined): { list: () => string[] } {
+  return {
+    list: () => {
+      if (!path) return [];
+      try {
+        return parseAdminKeys(readFileSync(path, 'utf8'));
+      } catch {
+        return [];
+      }
+    },
+  };
 }

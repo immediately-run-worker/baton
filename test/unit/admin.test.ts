@@ -7,7 +7,7 @@ import roadmapPr from '../fixtures/courses/roadmap-pr/course.json';
 import chore from '../fixtures/courses/chore/course.json';
 import { requiredBarCovers, isOwnerBarReason, checkRetry } from '../../src/core/admin';
 import { graphOf } from '../../src/core/graph';
-import { adminSession, ownerCall, workerCall, call, captureDispatches, claimItem, hbBody, ORIGIN, sessionCall, sha256, tick, withCore, course, cutover, Git, keyCall, placed, recommended, register, rows, setAdminKeys, setClock } from '../helpers';
+import { accessToken as accessTokenFor, adminSession, ownerCall, workerCall, call, captureDispatches, claimItem, hbBody, ORIGIN, sessionCall, sha256, tick, withCore, course, cutover, Git, keyCall, placed, recommended, register, rows, setAdminKeys, setClock } from '../helpers';
 import { makeKey, signedRequest, type TestKey } from '../lib/sshKeys';
 import { call as hostCall } from '#host';
 
@@ -322,5 +322,25 @@ describe('round 2', () => {
       courses: [{ repository: 'docs', course: 'roadmap-pr', version: 3 }, { repository: 'ops', course: 'roadmap-pr', version: 3 }] });
     const res = await hostCall(await signedRequest(worker, `${ORIGIN}/v1/runner/heartbeat`, { created, body: JSON.stringify(body) }));
     expect(res.status).toBe(403);
+  });
+});
+
+describe('round 3', () => {
+  it('a session stands whatever Access assertion comes with it (3-A-0)', async () => {
+    const cookie = await adminSession(admin);
+    const stranger = await accessTokenFor('stranger@example.com');
+    const res = await hostCall(new Request(`${ORIGIN}/v1/ui/state`, { headers: { Cookie: cookie, 'Cf-Access-Jwt-Assertion': stranger } }));
+    expect(res.status).toBe(200);
+  });
+
+  it('a repository change names something to change (3-A-1)', async () => {
+    expect(await code(adm('/repositories', { id: 'docs' }))).toBe('invalid-params');
+  });
+
+  it('the dashboard lists the probe keys (3-A-3)', async () => {
+    const probe = await makeKey('ssh-ed25519', 'probe');
+    expect(await code(adm('/probes', { public_key: probe.publicKey, label: 'neon probe', instances: ['neon:main'] }))).toBe(200);
+    const state = (await (await sessionCall(await adminSession(admin), '/v1/ui/state')).json()) as Record<string, any>;
+    expect(state.limits.probes).toEqual([expect.objectContaining({ fingerprint: probe.fingerprint, label: 'neon probe', allowed_instances: '["neon:main"]' })]);
   });
 });

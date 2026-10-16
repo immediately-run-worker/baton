@@ -37,9 +37,18 @@ function cookie(req: Request, name: string): string | null {
  *  the operator put it in front — verified here, and enough on its own only while no
  *  administrator key is configured (the core decides; round 1, 1-A-6). */
 async function dashboardPrincipal(req: Request, env: Config): Promise<Record<string, string>> {
-  const out: Record<string, string> = {};
-  if (req.headers.has('Cf-Access-Jwt-Assertion')) out['X-Baton-Owner'] = await verifyOwner(req, env);
+  // A session is Baton's own principal: Access in front of it is the operator's hardening, never
+  // a second check Baton's settings could fail (R-BTN-16; round 3, 3-A-0).
+  // Beside a session, an assertion Baton's settings refuse is simply no Access principal.
   const session = cookie(req, SESSION_COOKIE);
+  const out: Record<string, string> = {};
+  if (req.headers.has('Cf-Access-Jwt-Assertion')) {
+    if (!session) out['X-Baton-Owner'] = await verifyOwner(req, env);
+    else {
+      const owner = await verifyOwner(req, env).catch(() => null);
+      if (owner) out['X-Baton-Owner'] = owner;
+    }
+  }
   if (session) out['X-Baton-Session'] = session;
   if (!Object.keys(out).length) throw new BatonError('unauthenticated', 'a dashboard session is required: `baton admin open` mints a link');
   return out;

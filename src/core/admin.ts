@@ -220,6 +220,8 @@ export class Admin {
    *  seed; spec-silent, recorded on R3-1240) — owner keys. Everything else is its registration's. */
   private async changeRepository(actor: string, id: string, b: Record<string, unknown>) {
     only(b, ['id', 'weight', 'tiers', 'sync_keys_add', 'sync_keys_remove', 'owner_keys_add', ...LINK_FIELDS], 'body');
+    // A change names something to change; an empty one is a caller's mistake (round 3, 3-A-1).
+    if (Object.keys(b).length === 1) bad('body', 'a change names at least one field besides id');
     const newOwners = b.owner_keys_add === undefined ? [] : await this.ownerKeys(b.owner_keys_add, 'owner_keys_add');
     const weight = b.weight === undefined ? undefined
       : Number.isInteger(b.weight) && (b.weight as number) >= 0 && (b.weight as number) <= 10_000 ? (b.weight as number) : bad('weight', 'must be an integer from 0 to 10000');
@@ -621,6 +623,8 @@ export class Admin {
       grants: this.rows<{ repository_id: string; max_tier: number | null }>(`SELECT g.credential_id, c.hostname, c.label, g.repository_id, g.capabilities, g.max_tier, g.granted_by, g.granted_at
                          FROM worker_grants g JOIN credentials c ON c.id = g.credential_id WHERE g.revoked_at IS NULL ORDER BY g.repository_id, c.hostname`)
         .map((g) => ({ ...g, max_tier: g.max_tier == null ? null : this.c.registry.get(g.repository_id)?.tiers[g.max_tier] ?? null })),
+      // §14: probes too, with the instances each may report on (round 3, 3-A-3).
+      probes: this.rows(`SELECT id AS fingerprint, label, allowed_instances, created_by FROM credentials WHERE kind = 'probe' AND revoked_at IS NULL ORDER BY label`),
       bars: this.bars(null, now, true),
       settings: this.rows('SELECT id AS repository_id, required_bars, retry, transcript_repos, unblocked_trigger FROM repositories WHERE retired_at IS NULL ORDER BY id'),
     };
