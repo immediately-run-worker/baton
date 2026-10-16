@@ -19,6 +19,10 @@ export const MODEL_COURSE = 'roadmap-pr';
 
 export interface TicketView {
   present: boolean;
+  /** Scope evidence, not model state: what R-BTN-35's other "taken away" (a re-tier) and docs'
+   *  interim status read, so the checker can tell those apart from a withdrawal. */
+  tier: string | null;
+  status: string | null;
   path: string[];                  // ticket_stations.path, as leg names
   closed: 'done' | 'withdrawn' | null;
   bars: Record<string, string[]>;  // ticket_bars, per leg
@@ -52,6 +56,9 @@ export interface Projection {
   required: { course: string; leg: string; except?: string[]; tag_prefix: string }[];
   /** Courses of the model's repository whose file is not the model's (R-BTN-64: not modelled). */
   courseFile: string | null;
+  /** Each worker's last call and lease, by the core's clock: the checker's evidence that an
+   *  alarm reap or fence timeout came after the lease ran out. Not a reason to record a step. */
+  liveness: Record<string, { lastSeen: number; lease: number }>;
 }
 
 const legsOf = (json: string | null): string[] => (json ? (JSON.parse(json) as { leg: string }[]).map((s) => s.leg) : []);
@@ -63,10 +70,10 @@ export function projectState(store: Store, now: number): Projection {
     'SELECT observation, last_handed_out, handed_out_at FROM board_head WHERE repository_id = ?', MODEL_REPOSITORY)[0];
   const tickets: Record<string, TicketView> = {};
   const inScope = (id: string) => id.startsWith(`${MODEL_REPOSITORY}:`);
-  for (const t of rows<{ id: string; course_id: string | null; path: string | null }>(
-    `SELECT t.id, t.course_id, s.path FROM tickets t LEFT JOIN ticket_stations s ON s.ticket_id = t.id WHERE t.repository_id = ?`, MODEL_REPOSITORY)) {
+  for (const t of rows<{ id: string; course_id: string | null; path: string | null; tier: string | null; status: string | null }>(
+    `SELECT t.id, t.course_id, s.path, t.tier, t.status FROM tickets t LEFT JOIN ticket_stations s ON s.ticket_id = t.id WHERE t.repository_id = ?`, MODEL_REPOSITORY)) {
     if ((t.course_id ?? MODEL_COURSE) !== MODEL_COURSE) continue;
-    tickets[t.id] = { present: true, path: legsOf(t.path), closed: null, bars: {} };
+    tickets[t.id] = { present: true, path: legsOf(t.path), closed: null, bars: {}, tier: t.tier, status: t.status };
   }
   for (const b of rows<{ ticket_id: string; leg: string; tag: string }>('SELECT ticket_id, leg, tag FROM ticket_bars ORDER BY ticket_id, leg, tag')) {
     const t = tickets[b.ticket_id];
@@ -74,7 +81,7 @@ export function projectState(store: Store, now: number): Projection {
   }
   for (const c of rows<{ ticket_id: string; closed_as: 'done' | 'withdrawn' }>('SELECT ticket_id, closed_as FROM closed_tickets')) {
     if (!inScope(c.ticket_id) || tickets[c.ticket_id]?.present) continue;
-    tickets[c.ticket_id] = { present: false, path: [], closed: c.closed_as, bars: {} };
+    tickets[c.ticket_id] = { present: false, path: [], closed: c.closed_as, bars: {}, tier: null, status: null };
   }
   const claims: Record<string, ClaimView> = {};
   for (const c of rows<{ id: number; ticket_id: string; worker_id: number; status: string; end_reason: string | null; station: string | null; leg: string | null;
@@ -100,7 +107,11 @@ export function projectState(store: Store, now: number): Projection {
        AND (course = '*' OR course = ?) ORDER BY id`, MODEL_REPOSITORY, now, now, MODEL_COURSE)
     .map((b) => ({ tag: b.tag, applies: b.applies, course: b.course, legs: JSON.parse(b.legs) as string[] }));
   const workers: Record<string, string[]> = {};
-  for (const w of rows<{ id: number }>('SELECT id FROM workers ORDER BY id')) workers[String(w.id)] = [];
+  const liveness: Projection['liveness'] = {};
+  for (const w of rows<{ id: number; last_seen_at: number; lease_timeout_ms: number }>('SELECT id, last_seen_at, lease_timeout_ms FROM workers ORDER BY id')) {
+    workers[String(w.id)] = [];
+    liveness[String(w.id)] = { lastSeen: w.last_seen_at, lease: w.lease_timeout_ms };
+  }
   for (const t of rows<{ worker_id: number; tag: string }>('SELECT worker_id, tag FROM worker_tags ORDER BY worker_id, tag')) (workers[String(t.worker_id)] ??= []).push(t.tag);
   const repo = rows<{ required_bars: string | null }>('SELECT required_bars FROM repositories WHERE id = ?', MODEL_REPOSITORY)[0];
   const course = rows<{ course_json: string }>('SELECT course_json FROM courses WHERE repository_id = ? AND id = ?', MODEL_REPOSITORY, MODEL_COURSE)[0];
@@ -111,6 +122,7 @@ export function projectState(store: Store, now: number): Projection {
     tickets, claims, held, ownerBars, workers,
     required: repo?.required_bars ? JSON.parse(repo.required_bars) : [],
     courseFile: course?.course_json ?? null,
+    liveness,
   };
 }
 
@@ -136,12 +148,17 @@ export interface Step {
   state: Projection;
 }
 
+/** The projection a step is taken on: liveness moves at every call and never makes a step. */
+const key = (p: Projection) => JSON.stringify({ ...p, liveness: undefined });
+
 let steps: Step[] = [];
-let last = JSON.stringify(empty());
+let last = key(empty());
+/** A projection that failed after the migrations: the test's trace is void, and says so. */
+let failure: string | null = null;
 
 /** The projection after a commit: a step when it moved. */
 export function committed(state: Projection, origin: Origin | null, now: number): void {
-  const s = JSON.stringify(state);
+  const s = key(state);
   if (s === last) return;
   last = s;
   // One request is one action: its consecutive commits (a board post uses its number, then
@@ -158,14 +175,19 @@ export function committed(state: Projection, origin: Origin | null, now: number)
 /** A new Baton has started: its state is the trace's start, whatever the start seeded. */
 export function beginTrace(store: Store, now: number): void {
   steps = [];
-  last = JSON.stringify(projectState(store, now));
+  failure = null;
+  last = key(projectState(store, now));
 }
 
 /** The steps so far, and a fresh start (each test begins from an empty Baton). */
 export function takeSteps(): Step[] {
   const out = steps;
+  const f = failure;
   steps = [];
-  last = JSON.stringify(empty());
+  failure = null;
+  last = key(empty());
+  // round 1, 1-A-7: a projection that failed is never a quietly shorter trace
+  if (f) throw new Error(`the trace could not be recorded: ${f}`);
   return out;
 }
 
@@ -178,8 +200,10 @@ export function recordingStore(inner: Store, origin: () => Origin | null, now: (
     projecting = true;
     try {
       committed(projectState(inner, now()), origin(), now());
-    } catch {
-      // Before the migrations have run there is no state to project: nothing to record.
+    } catch (e) {
+      // Before the migrations have run there is no state to project; any other error voids the
+      // test's trace (round 1, 1-A-7).
+      if (!/no such table/.test(String(e))) failure ??= String(e);
     } finally {
       projecting = false;
     }
@@ -205,7 +229,7 @@ export function recordingStore(inner: Store, origin: () => Origin | null, now: (
 }
 
 function empty(): Projection {
-  return { counter: 0, lastAccepted: 0, outstanding: false, tickets: {}, claims: {}, held: {}, ownerBars: [], workers: {}, required: [], courseFile: null };
+  return { counter: 0, lastAccepted: 0, outstanding: false, tickets: {}, claims: {}, held: {}, ownerBars: [], workers: {}, required: [], courseFile: null, liveness: {} };
 }
 
 // ── ITF (https://apalache-mc.org/docs/adr/015adr-trace.html) ─────────────────────────────

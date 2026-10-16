@@ -499,8 +499,11 @@ module baton {
       else if (c.regressed and extendsPath(expected(c), snap)) c.with("regressed", false)
       else c
     } else if (c.status == "completed" and not(c.confirmed) and obs > c.endObs) {
-      val ok = if (c.kind == "done") atEnd(snap)
-               else c.endedRegressed or extendsPath(expected(c), snap)
+      // a done by an end station, or by the ticket's absence from a later snapshot (G-BTN-44); a
+      // withdrawn ticket posts no path, so it confirms no suspension (R3-1244's model-based
+      // tests found the model reading a withdrawn ticket's last path)
+      val ok = if (c.kind == "done") atEnd(snap) or gone
+               else not(gone) and (c.endedRegressed or extendsPath(expected(c), snap))
       if (ok) c.with("confirmed", true).with("confirmObs", obs) else c
     } else if (c.status == "completed" and not(c.confirmed) and c.kind == "done"
                and obs > c.claimObs and atEnd(snap)) {

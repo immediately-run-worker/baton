@@ -29,6 +29,8 @@ export const LEGS = ['implement', 'review', 'fix', 'adjudicate', 'merge'];
 export const FROM = { implement: ['filed'], review: ['pr-open', 'fixed'], fix: ['reviewed'], adjudicate: ['reviewed'], merge: ['reviewed', 'adjudicated'] };
 export const TO = { implement: 'pr-open', review: 'reviewed', fix: 'fixed', adjudicate: 'adjudicated', merge: 'merged' };
 const TIMEOUT = 4;
+/** R-BTN-62: Baton voids an outstanding observation number at this age (src/core/observations.ts). */
+const OBSERVATION_TTL_MS = 10 * 60_000;
 const stationOf = (path) => path.reduce((_, l) => TO[l], START);
 const COURSE = JSON.parse(readFileSync(join(ROOT, 'test', 'fixtures', 'courses', 'roadmap-pr', 'course.json'), 'utf8'));
 
@@ -155,7 +157,7 @@ export function translate(trace) {
     gone: Object.fromEntries(T.map((t) => [t, false])),
     bars: Object.fromEntries(T.map((t) => [t, []])),
     seen: Object.fromEntries(T.map((t) => [t, false])),
-    slots: { 1: { phase: 'idle', obs: 0, voided: false }, 2: { phase: 'idle', obs: 0, voided: false } },
+    slots: { 1: { phase: 'idle', obs: 0, voided: false, at: 0 }, 2: { phase: 'idle', obs: 0, voided: false, at: 0 } },
     ids: {},
     nextId: 1,
   };
@@ -164,6 +166,7 @@ export function translate(trace) {
   for (let i = 0; i < trace.steps.length; i++) {
     const step = trace.steps[i];
     const r = translateStep(step, prev, env, { W, tags, required, REQUIRED });
+    if (r.reject) return { consts, steps: out, end: null, reject: { index: i, label: label(step), reason: r.reject }, total: trace.steps.length };
     if (r.end) return { consts, steps: out, end: { index: i, reason: r.end }, total: trace.steps.length };
     out.push({ index: i, label: label(step), actions: r.actions, expect: expectations(step.state, env, T, W) });
     prev = step.state;
@@ -186,12 +189,25 @@ function translateStep(step, P, env, k) {
   const sameTags = (worker) => JSON.stringify(Q.workers[String(worker)] ?? []) === JSON.stringify(k.tags[String(worker)] ?? []);
   for (const b of Q.ownerBars) if (b.legs.length) return { end: 'an owner bar on named legs (the model’s owner bars bar every leg)' };
   if (step.kind === 'harness' && JSON.stringify(P.claims) !== JSON.stringify(Q.claims)) return { end: 'the harness wrote a claim (a state Baton did not reach)' };
+  const silent = (worker) => {
+    const l = Q.liveness?.[String(worker)];
+    return !!l && step.now - l.lastSeen >= l.lease;
+  };
   for (const [id, d] of Object.entries(Q.claims)) {
     const c = P.claims[id];
+    // R-BTN-35's other "taken away": a re-tier above the holder's ceiling, or docs' interim
+    // status — only when the post shows one (round 1, 1-A-3)
     if (c?.status === 'active' && d.endReason === 'released:stale-board' && Q.tickets[d.ticket]?.present) {
-      return { end: `claim ${id} released stale with its ticket still posted — taken away by a re-tier or an interim status (R-BTN-35; tiers are not modelled)` };
+      const before = P.tickets[d.ticket];
+      const after = Q.tickets[d.ticket];
+      if (before && (before.tier !== after.tier || before.status !== after.status)) {
+        return { end: `claim ${id} released stale on its ticket's re-tier or interim status (R-BTN-35; tiers are not modelled)` };
+      }
+      return { reject: `claim ${id} released stale with its ticket still posted, neither withdrawn nor re-tiered` };
     }
-    if (c && !c.confirmed && d.confirmed && step.body?.confirmations?.length) {
+    // docs' interim confirmation by the post's own list, naming this claim (round 1, 1-A-3)
+    if (c && !c.confirmed && d.confirmed && origin === '/v1/sync/board' && step.body?.state
+      && (step.body.confirmations ?? []).some((x) => String(x?.claim_id) === id)) {
       return { end: `claim ${id} confirmed by the interim post's confirmations (docs' interim shape, not modelled)` };
     }
   }
@@ -208,11 +224,17 @@ function translateStep(step, P, env, k) {
     for (const b of qb) { const [tag, applies] = b.split('|'); acts.push(`setOwnerBar(${q(tag)}, ${q(applies)})`); }
   }
 
-  // The sync: numbers handed out (R-BTN-62).
+  // The sync: numbers handed out (R-BTN-62). One outstanding at a time: an earlier number is
+  // voided only once it is 10 minutes old by Baton's clock (round 1, 1-A-1).
   for (let n = P.counter + 1; n <= Q.counter; n++) {
+    if (origin !== '/v1/sync/observation') return { reject: `observation ${n} handed out by ${origin}` };
     for (const s of [1, 2]) {
       const sl = env.slots[s];
-      if ((sl.phase === 'numbered' || sl.phase === 'read') && !sl.voided) { acts.push(`syncVoid(${s})`); sl.voided = true; }
+      if ((sl.phase === 'numbered' || sl.phase === 'read') && !sl.voided) {
+        if (step.now - sl.at < OBSERVATION_TTL_MS) return { reject: `observation ${n} handed out while ${sl.obs} is outstanding and under 10 minutes old (R-BTN-62: sync-busy)` };
+        acts.push(`syncVoid(${s})`);
+        sl.voided = true;
+      }
     }
     let s = [1, 2].find((x) => env.slots[x].phase === 'idle');
     if (!s) {
@@ -222,7 +244,7 @@ function translateStep(step, P, env, k) {
       acts.push('syncPost(1)');
     }
     acts.push(`syncNumber(${s})`);
-    env.slots[s] = { phase: 'numbered', obs: n, voided: false };
+    env.slots[s] = { phase: 'numbered', obs: n, voided: false, at: step.now };
   }
 
   // A board post: accepted whole, or refused (R-BTN-62, §7.1).
@@ -232,19 +254,20 @@ function translateStep(step, P, env, k) {
     if (s) {
       if (Q.lastAccepted === n && n > P.lastAccepted) {
         const r = applyPost(Q, env, k);
-        if (r.end) return r;
+        if (r.end || r.reject) return r;
         acts.push(...r.acts, `syncRead(${s}, ${barsMap(env)})`, `syncPost(${s})`);
       } else {
         if (env.slots[s].phase === 'numbered') acts.push(`syncRead(${s}, ${barsMap(env)})`);
         if (!env.slots[s].voided) acts.push(`syncVoid(${s})`);
         acts.push(`syncPost(${s})`);
       }
-      env.slots[s] = { phase: 'idle', obs: 0, voided: false };
-    } else if (Q.lastAccepted !== P.lastAccepted) {
-      return { end: `a post accepted with observation ${n}, which no sync run holds` };
+      env.slots[s] = { phase: 'idle', obs: 0, voided: false, at: 0 };
+    } else if (Q.lastAccepted !== P.lastAccepted || JSON.stringify(Q.tickets) !== JSON.stringify(P.tickets)) {
+      return { reject: `a post with observation ${n}, which no sync run holds, changed the board` };
     }
   } else if (Q.lastAccepted !== P.lastAccepted || JSON.stringify(Q.tickets) !== JSON.stringify(P.tickets)) {
-    return { end: `the board changed outside a board post (${step.kind})` };
+    if (step.kind === 'harness') return { end: 'the harness wrote the board (a state Baton did not reach)' };
+    return { reject: `the board changed outside a board post (${origin})` };
   }
 
   // Claims (R-BTN-4, R-BTN-63, R-BTN-71, §6.6).
@@ -255,17 +278,18 @@ function translateStep(step, P, env, k) {
     const c = P.claims[id];
     const w = q(k.W(d.worker));
     if (!c) {
-      if (step.kind !== 'request' || origin !== '/v1/runner/claim') return { end: `claim ${id} made by ${step.kind === 'harness' ? 'the harness' : origin} (only a worker's claim is a model action)` };
+      if (origin === '/v1/ui/cutover') return { end: `claim ${id} imported at cutover (a legacy claim; §13 step 3, not modelled)` };
+      if (step.kind !== 'request' || origin !== '/v1/runner/claim') return { reject: `claim ${id} made by ${origin}, which is no worker's claim` };
       if (!sameTags(d.worker)) return { end: `worker ${d.worker} claims with other tags than at its first claim (the model’s TAGS are constant)` };
+      if (d.leg !== '' || d.finished.length || d.status !== 'active') return { reject: `claim ${id} created already advanced or ended` };
       env.ids[id] = env.nextId++;
       acts.push(`heartbeat(${w})`, `claimStart(${w}, ${q(d.ticket)})`, `claimFinish(${w}, "order")`);
-      // its first commit is the claim; a request that also advanced it in one step is the next case
-      if (d.leg === '' && d.finished.length === 0 && d.status === 'active') continue;
-      return { end: `claim ${id} created already advanced` };
+      continue;
     }
     const m = env.ids[id];
+    if (m == null) continue; // a claim from before the checked part (none: claims are made in it)
     if (c.status === 'active' && d.status === 'active' && (d.leg !== c.leg || d.finished.length !== c.finished.length)) {
-      if (!/\/advance$/.test(origin)) return { end: `claim ${id}'s legs changed by ${origin}` };
+      if (!/\/advance$/.test(origin)) return { reject: `claim ${id}'s legs changed by ${origin}` };
       if (!sameTags(d.worker)) return { end: `worker ${d.worker} advances with other tags than at its first claim (the model’s TAGS are constant)` };
       acts.push(`heartbeat(${w})`);
       if (c.leg !== '') acts.push(`pushEvidence(${w}, false)`);
@@ -276,22 +300,36 @@ function translateStep(step, P, env, k) {
       if (reached) acts.push(`pushEvidence(${w}, false)`);
       acts.push(`endClaim(${w}, ${q(kindOf(d.endReason))}, ${reached})`);
     } else if (c.status === 'active' && d.status === 'reaped') {
-      if (origin === 'alarm') { tick(); acts.push(`alarmReap(${m})`); }
-      else if (/\/reap$/.test(origin)) acts.push(`forceReap(${w})`);
-      else return { end: `claim ${id} reaped by ${origin}` };
+      if (origin === 'alarm' && d.endReason === 'reaped:release-unacknowledged') return { end: `claim ${id} reaped on an unacknowledged release (§9; messages are not modelled)` };
+      if (origin === 'alarm') {
+        // the lease ran out by Baton's clock (round 1, 1-A-0)
+        if (!silent(d.worker)) return { reject: `claim ${id} reaped by the alarm before worker ${d.worker}'s lease ran out` };
+        tick();
+        acts.push(`alarmReap(${m})`);
+      } else if (/\/reap$/.test(origin)) {
+        if (d.fencePending) acts.push(`forceReap(${w})`);
+        // R-BTN-19: a worker already silent past its lease is not fenced — the fence, timed out
+        else if (silent(d.worker)) { acts.push(`forceReap(${w})`); tick(); acts.push(`fenceTimeout(${m})`); }
+        else return { reject: `claim ${id} force-reaped without a fence while worker ${d.worker} was alive (R-BTN-19)` };
+      } else return { reject: `claim ${id} reaped by ${origin}` };
     } else if (c.status === 'active' && d.status === 'released' && d.endReason === 'released:stale-board') {
-      if (origin !== '/v1/sync/board') return { end: `claim ${id} released stale by ${origin}` };
+      if (origin !== '/v1/sync/board') return { reject: `claim ${id} released stale by ${origin}` };
+    } else if (c.status === 'completed' && d.status === 'released' && /\/resolve$/.test(origin)) {
+      return { end: `the owner released claim ${id}'s unconfirmed completion (§6.7; the model's owner only confirms)` };
     } else if (c.status !== d.status && !(c.status === 'active' && origin === '/v1/sync/board')) {
-      return { end: `claim ${id} went ${c.status} → ${d.status} by ${origin} (no model action)` };
+      return { reject: `claim ${id} went ${c.status} → ${d.status} by ${origin}, which no model action does` };
     }
     if (c.fencePending && !d.fencePending) {
       if (origin === '/v1/runner/heartbeat') acts.push(`fenceCleared(${w})`);
-      else if (origin === 'alarm') { tick(); acts.push(`fenceTimeout(${m})`); }
-      else return { end: `claim ${id}'s fence cleared by ${origin}` };
+      else if (origin === 'alarm') {
+        if (!silent(d.worker)) return { reject: `claim ${id}'s fence timed out while worker ${d.worker} was heard from` };
+        tick();
+        acts.push(`fenceTimeout(${m})`);
+      } else return { reject: `claim ${id}'s fence cleared by ${origin}` };
     }
     if (!c.confirmed && d.confirmed && /\/resolve$/.test(origin)) acts.push(`ownerResolve(${m})`);
   }
-  for (const id of Object.keys(P.claims)) if (!Q.claims[id]) return { end: `claim ${id} vanished` };
+  for (const id of Object.keys(P.claims)) if (!Q.claims[id]) return { reject: `claim ${id} vanished` };
   return { actions: dedupeHeartbeats(acts) };
 }
 
@@ -313,7 +351,7 @@ function applyPost(Q, env, k) {
     if (v?.present) target = v.path;
     else if (v?.closed === 'done') {
       target = toEnd(env.posted[t]);
-      if (!target) return { end: `${t} closed done from a station with no route to an end` };
+      if (!target) return { reject: `${t} closed done from a station with no route to an end` };
     } else if (v?.closed === 'withdrawn' || env.seen[t]) gone = true;
     // regress to the common prefix, then push the rest (any pusher may, R-BTN-66)
     let g = env.git[t];
@@ -322,17 +360,17 @@ function applyPost(Q, env, k) {
     for (let x = g.length; x > common; x--) acts.push(`regress(${q(t)})`);
     g = g.slice(0, common);
     for (const l of target.slice(common)) {
-      if (!FROM[l]?.includes(stationOf(g))) return { end: `${t}'s posted path ${target.join(',')} is not a path of the model's course` };
+      if (!FROM[l]?.includes(stationOf(g))) return { reject: `${t}'s posted path ${target.join(',')} is not a path of the course` };
       acts.push(`foreignPush(${q(t)}, ${q(l)})`);
       g = [...g, l];
     }
     env.git[t] = g;
     if (gone && !env.withdrawn[t]) {
-      if (COURSE.end.includes(stationOf(g))) return { end: `${t} withdrawn at an end station` };
+      if (COURSE.end.includes(stationOf(g))) return { reject: `${t} withdrawn at an end station` };
       acts.push(`withdraw(${q(t)})`);
       env.withdrawn[t] = true;
     }
-    if (!gone && env.withdrawn[t]) return { end: `${t} returned after it was withdrawn` };
+    if (!gone && env.withdrawn[t]) return { end: `${t} returned after it was withdrawn (a closure undone; the model's withdrawal is final)` };
     // the model's one bar set per ticket stands for its covered legs' (R-BTN-67)
     let bars = [];
     if (v?.present && k.REQUIRED.length) {
@@ -439,6 +477,11 @@ function quintTest(file) {
 export async function checkTrace(file, tag = basename(file).replace(/\W+/g, '_').slice(0, 60)) {
   const trace = readTrace(file);
   const t = translate(trace);
+  // a step no model action explains rejects the trace whatever the run before it (round 1, 1-A-2)
+  if (t.reject) {
+    return { file, scenario: trace.scenario, test: trace.test, checked: t.steps.length, total: t.total, end: null, ok: false,
+      failure: { step: t.reject.index, label: t.reject.label, actions: [], actionRefused: true, fields: [], reason: t.reject.reason } };
+  }
   mkdirSync(OUT, { recursive: true });
   const qnt = join(OUT, `${tag}.qnt`);
   writeFileSync(qnt, quintModule(t));
@@ -515,7 +558,7 @@ async function main(args) {
       bad++;
       const f = r.failure;
       if (f?.label) {
-        console.log(`✗ ${where}\n    step ${f.step} (${f.label}): ${f.actionRefused ? `the model refuses ${f.actions.join(' → ')}` : `after ${f.actions.join(' → ') || 'no action'}, the model's state differs: ${f.fields.join(', ')}`}`);
+        console.log(`✗ ${where}\n    step ${f.step} (${f.label}): ${f.reason ? `no model action does this: ${f.reason}` : f.actionRefused ? `the model refuses ${f.actions.join(' → ')}` : `after ${f.actions.join(' → ') || 'no action'}, the model's state differs: ${f.fields.join(', ')}`}`);
       } else console.log(`✗ ${where}\n${f?.error ?? ''}`);
       return;
     }

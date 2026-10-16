@@ -51,6 +51,23 @@ describe('S-BTN-36 (observation half)', () => {
     expect((await claimRow(c.claim_id)).confirmed_at).toBe(T0);
   });
 
+  it('a regression is judged only by a reading numbered after the claim’s latest advance (R3-1244: found by the model-based tests)', async () => {
+    const git = new Git().add('T-1', {}, placed('pr-open', [['implement', 'pr-open']], [['review', 'ready']]));
+    git.head = await head(); // over the fixture board beforeEach posted
+    expect(await git.post()).toMatchObject({ status: 200 });
+    const { secret } = await register('vm-a');
+    const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:T-1' });
+    const n = (await observe()).json.observation; // the sync starts reading…
+    expect((await advance('vm-a', secret, c.claim_id, { leg: 'review' })).status).toBe(200); // …the holder advances…
+    git.place('T-1', placed('filed', [], [['implement', 'ready']])); // …and git has gone back
+    expect(await git.post({ observation: n })).toMatchObject({ status: 200 });
+    // the reading began before the advance: it cannot judge the claim
+    expect((await rows<{ regressed_since: number | null }>('SELECT regressed_since FROM claims WHERE id = ?', c.claim_id))[0].regressed_since).toBeNull();
+    // a reading numbered after it can
+    await git.refresh();
+    expect((await rows<{ regressed_since: number | null }>('SELECT regressed_since FROM claims WHERE id = ?', c.claim_id))[0].regressed_since).not.toBeNull();
+  });
+
   it('a claim is made stale only by a reading numbered after it', async () => {
     const { secret } = await register('vm-a');
     const n = (await observe()).json.observation; // the sync reads git before the claim…

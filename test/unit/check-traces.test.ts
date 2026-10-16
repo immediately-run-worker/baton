@@ -8,12 +8,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { toItf, type ClaimView, type Projection, type Step } from '../integration/trace';
 import { checkTrace } from '../../scripts/check-traces.mjs';
+import { closureText, declarations, hashOf } from '../../scripts/check-model-links.mjs';
+import { readFileSync } from 'node:fs';
 
 const dir = mkdtempSync(join(tmpdir(), 'baton-check-traces-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const T = 'docs:T-1';
-const base = (): Projection => ({ counter: 0, lastAccepted: 0, outstanding: false, tickets: {}, claims: {}, held: {}, ownerBars: [], workers: { 1: [] }, required: [], courseFile: null });
+const base = (): Projection => ({ counter: 0, lastAccepted: 0, outstanding: false, tickets: {}, claims: {}, held: {}, ownerBars: [], workers: { 1: [] }, required: [], courseFile: null, liveness: { 1: { lastSeen: 0, lease: 900_000 } } });
 const claim = (over: Partial<ClaimView> = {}): ClaimView => ({
   ticket: T, worker: 1, status: 'active', endReason: null, station: 'filed', leg: '', finished: [], legBars: [], startPath: [], claimObs: 1, endObs: -1,
   regressed: false, endedRegressed: false, confirmed: false, fencePending: false, ...over,
@@ -29,7 +31,7 @@ function trace(rest: [Step['origin'], (p: Projection) => Projection][]): Step[] 
   };
   push({ kind: 'request', method: 'POST', path: '/v1/sync/observation', status: 200 }, (p) => ({ ...p, counter: 1, outstanding: true }));
   push({ kind: 'request', method: 'POST', path: '/v1/sync/board', body: { observation: 1 }, status: 200 },
-    (p) => ({ ...p, outstanding: false, lastAccepted: 1, tickets: { [T]: { present: true, path: [], closed: null, bars: {} } } }));
+    (p) => ({ ...p, outstanding: false, lastAccepted: 1, tickets: { [T]: { present: true, path: [], closed: null, bars: {}, tier: 'routine', status: 'ready' } } }));
   for (const [o, f] of rest) push(o, f);
   return steps;
 }
@@ -66,8 +68,8 @@ describe('check-traces rejects what the model forbids, naming the step', () => {
       { kind: 'request', origin: req('POST', '/v1/sync/observation'), now: 0, state: { ...steps.at(-1)!.state, counter: 2, outstanding: true } },
     ] as Step[];
     confirmed.push({ kind: 'request', origin: req('POST', '/v1/sync/board', { observation: 2 }), now: 0, state: {
-      ...confirmed.at(-1)!.state, outstanding: false, lastAccepted: 2, tickets: { [T]: { present: true, path: ['implement'], closed: null, bars: {} } },
-      claims: { 1: { ...confirmed.at(-1)!.state.claims[1], confirmed: true } } } } as Step);
+      ...confirmed.at(-1)!.state, outstanding: false, lastAccepted: 2, tickets: { [T]: { present: true, path: ['implement'], closed: null, bars: {}, tier: 'routine', status: 'ready' } },
+      claims: { 1: { ...confirmed.at(-1)!.state.claims[1], confirmed: true } } } } as unknown as Step);
     expect(await check('confirmed-by-newer', confirmed)).toMatchObject({ ok: true, end: null });
     // rejected: the same confirmation credited to a refused post of the end's own number (1)
     const stale = [...steps,
@@ -79,4 +81,19 @@ describe('check-traces rejects what the model forbids, naming the step', () => {
     expect(r.failure).toMatchObject({ step: 5 });
     expect(r.failure.fields).toContain('claim 1 confirmed');
   }, 120_000);
+});
+
+describe('model:links hashes what an action rests on (round 1, 1-A-6)', () => {
+  it('a change to a helper the action reaches — the claim gate, the judge — changes its hash', () => {
+    const src = readFileSync(join(import.meta.dirname, '../../model/baton.qnt'), 'utf8');
+    const hash = (text: string, action: string) => hashOf(closureText(action, declarations(text)));
+    const gate = src.replace('activeOf(t).size() == 0, fencedOf(t).size() == 0', 'activeOf(t).size() <= 1, fencedOf(t).size() == 0');
+    expect(gate).not.toBe(src);
+    expect(hash(gate, 'claimStart')).not.toBe(hash(src, 'claimStart'));
+    const judge = src.replace('if (ok) c.with("confirmed", true)', 'if (true) c.with("confirmed", true)');
+    expect(judge).not.toBe(src);
+    expect(hash(judge, 'syncPost')).not.toBe(hash(src, 'syncPost'));
+    // and an unrelated action keeps its hash
+    expect(hash(judge, 'setHold')).toBe(hash(src, 'setHold'));
+  });
 });

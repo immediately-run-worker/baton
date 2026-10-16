@@ -26,19 +26,24 @@ const TAGS = { w1: ['family:a'], w2: ['family:b'], w3: ['family:a'] } as const;
 const TICKET = (t: string) => `T-${t.slice(1)}`;
 const MAX_RUNS: Record<string, number> = { implement: 99, review: 3, fix: 2, adjudicate: 99, merge: 99 };
 const REQUIRED = ['fix', 'merge'];
+/** rlegs' holder bars: the other family, so the required bar is met and the holder not barred. */
+const FAMILY_BARS = { w1: ['family:b'], w2: ['family:a'], w3: ['family:b'] } as const;
 
-/** The traces, drawn once per run: half from every actor's step (rstep), half from the happy
- *  path's (rprogress), so legs, ends, confirmations and reaps are reached too. */
+/** The traces, drawn once per run from model/replay.qnt's four relations: every actor's step
+ *  (rstep), the happy path's (rprogress), whole tickets (rlegs) and fences (rfence) — so legs to
+ *  fix and merge, ends, confirmations, reaps and fence timeouts are all reached (round 1, 1-A-5,
+ *  1-B-3; the coverage test below holds the draw to it). */
+const RELATIONS = ['rstep', 'rprogress', 'rlegs', 'rfence'];
 function draw(): { file: string; states: any[] }[] {
-  const half = Math.ceil(COUNT / 2);
-  return [...drawFrom('rstep', half), ...drawFrom('rprogress', COUNT - half)];
+  const per = Math.ceil(COUNT / RELATIONS.length);
+  return RELATIONS.flatMap((r, k) => drawFrom(r, Math.min(per, COUNT - k * per)));
 }
 
 function drawFrom(step: string, n: number): { file: string; states: any[] }[] {
   if (n <= 0) return [];
   const dir = mkdtempSync(join(tmpdir(), 'baton-replay-'));
   const r = spawnSync('npx', ['quint', 'run', 'model/replay.qnt', '--main=replay', '--init=rinit', `--step=${step}`, '--backend=typescript',
-    '--max-steps=30', `--max-samples=${n}`, `--n-traces=${n}`, '--mbt', `--seed=${SEED}`, `--out-itf=${join(dir, `${step}_{seq}.itf.json`)}`], { cwd: ROOT, encoding: 'utf8' });
+    '--max-steps=40', `--max-samples=${n}`, `--n-traces=${n}`, '--mbt', `--seed=${SEED}`, `--out-itf=${join(dir, `${step}_{seq}.itf.json`)}`], { cwd: ROOT, encoding: 'utf8' });
   if (r.status !== 0) throw new Error(`quint run failed: ${r.stdout}${r.stderr}`);
   const out = readdirSync(dir).filter((f) => f.endsWith('.itf.json')).sort((a, b) => Number(a.match(/\d+/)![0]) - Number(b.match(/\d+/)![0]))
     .map((f) => ({ file: f, states: (JSON.parse(readFileSync(join(dir, f), 'utf8')).states as any[]).map((s) => ({
@@ -70,6 +75,8 @@ interface Run {
   session: string;
   /** the last board post's answer, for a failure's message */
   last?: string;
+  /** the bars the last advance sent: the core must store them as the leg's (round 1, 1-B-2) */
+  sentBars?: { claim: number; bars: string[] };
 }
 
 const stationOf = (path: string[]) => path.reduce((_, l) => TO[l as keyof typeof TO], 'filed');
@@ -127,13 +134,15 @@ async function drive(r: Run, before: any, after: any, action: string, p: Record<
       const [id, c] = active(b, w)!;
       const body = { leg: p.leg, bars: p.holderBars, ...(c.leg !== '' ? { reached: TO[c.leg as keyof typeof TO] } : {}) };
       await worker(w, `/v1/runner/claims/${r.claims.get(Number(id))}/advance`, body, r.secrets[w]);
+      r.sentBars = { claim: r.claims.get(Number(id))!, bars: [...p.holderBars].sort() };
       return;
     }
+    case 'endDoneAtEnd':
     case 'endClaim': {
       const [id, c] = active(b, w)!;
       const reach = p.b && c.leg !== '' && b.pushed[w];
       const station = reach ? TO[c.leg as keyof typeof TO] : c.station;
-      const end_reason = p.kind === 'done' ? 'done' : p.kind === 'suspended' ? `suspended:${station}` : 'released:requested';
+      const end_reason = p.kind === 'done' || action === 'endDoneAtEnd' ? 'done' : p.kind === 'suspended' ? `suspended:${station}` : 'released:requested';
       await worker(w, `/v1/runner/claims/${r.claims.get(Number(id))}/end`, { end_reason, reached: station }, r.secrets[w]);
       return;
     }
@@ -226,11 +235,21 @@ function differences(m: any, core: Projection, r: Run): string[] {
     const id = `docs:${TICKET(t)}`;
     const v = core.tickets[id];
     if (m.postedGone[t]) eq(`${t} withdrawn`, true, v?.closed === 'withdrawn');
-    else eq(`${t} posted`, m.posted[t], v?.path ?? null);
+    else {
+      eq(`${t} posted`, m.posted[t], v?.path ?? null);
+      // the model's one bar set stands for the covered legs' (round 1, 1-A-4)
+      const bars = [...(m.postedBars[t] as string[])].sort();
+      eq(`${t} postedBars`, REQUIRED.map(() => bars), REQUIRED.map((l) => [...(v?.bars[l] ?? [])].sort()));
+    }
     eq(`${t} held`, m.held[t], core.held[id] ?? false);
   }
   eq('ownerBars', [...new Set((m.ownerBars as { tag: string; applies: string }[]).map((b) => `${b.tag}|${b.applies}`))].sort(),
     [...new Set(core.ownerBars.map((b) => `${b.tag}|${b.applies}`))].sort());
+  if (r.sentBars) {
+    const k = core.claims[String(r.sentBars.claim)];
+    if (k?.status === 'active') eq('the advance\'s bars', r.sentBars.bars, [...k.legBars].sort());
+    r.sentBars = undefined;
+  }
   const ids = Object.keys(m.claims).map(Number).sort((a, b) => a - b);
   eq('claims', ids.map((i) => r.claims.get(i) ?? null), Object.keys(core.claims).map(Number).sort((a, b) => a - b));
   for (const i of ids) {
@@ -257,6 +276,29 @@ function differences(m: any, core: Projection, r: Run): string[] {
   return d;
 }
 
+describe('the draw reaches what it is for (round 1, 1-A-5, 1-B-3)', () => {
+  it('legs to fix and merge, multi-leg claims, a confirmed done, reaps and fence timeouts', () => {
+    if (process.env.REPLAY_ONLY) return;
+    const count = { fix: 0, merge: 0, multi: 0, confirmedDone: 0, alarmReap: 0, fenceTimeout: 0, fenceCleared: 0, regressed: 0 };
+    for (const t of traces) {
+      for (const s of t.states) if (s.action in count) count[s.action as keyof typeof count]++;
+      for (const c of Object.values(t.states.at(-1)!.st.claims) as any[]) {
+        const legs = [...c.finished, ...(c.leg ? [c.leg] : [])];
+        if (legs.includes('fix')) count.fix++;
+        if (legs.includes('merge')) count.merge++;
+        if (legs.length >= 2) count.multi++;
+        if (c.kind === 'done' && c.confirmed) count.confirmedDone++;
+      }
+      if (t.states.some((s) => Object.values(s.st.claims as Record<string, any>).some((c) => c.regressed))) count.regressed++;
+    }
+    const floor = Math.max(1, Math.floor(COUNT / 200));
+    expect(count).toMatchObject({ fix: expect.toSatisfy((n: number) => n >= floor), merge: expect.toSatisfy((n: number) => n >= floor),
+      multi: expect.toSatisfy((n: number) => n >= 10 * floor), confirmedDone: expect.toSatisfy((n: number) => n >= floor),
+      alarmReap: expect.toSatisfy((n: number) => n >= floor), fenceTimeout: expect.toSatisfy((n: number) => n >= floor),
+      fenceCleared: expect.toSatisfy((n: number) => n >= floor) });
+  });
+});
+
 describe(`model-based tests: ${traces.length} traces drawn from model/replay.qnt drive the core`, () => {
   beforeEach(async () => {
     await setClock(T0);
@@ -269,7 +311,13 @@ describe(`model-based tests: ${traces.length} traces drawn from model/replay.qnt
       const after = trace.states[i];
       lastAnswer = 'no request';
       // rprogress passes its literals (`endClaim(w, kind, true)`, `syncNumber(1)`): no nondet pick
-      const picks = trace.file.startsWith('rprogress') ? { b: true, s: 1, ...after.picks } : after.picks;
+      // rprogress, rlegs and rfence pass literals (`endClaim(w, kind, true)`, `syncNumber(1)`, the
+      // holder's bars): no nondet pick for them
+      const literal: Record<string, unknown> = { b: true, s: 1 };
+      if (trace.file.startsWith('rlegs')) literal.holderBars = FAMILY_BARS[after.picks.w as keyof typeof FAMILY_BARS];
+      if (trace.file.startsWith('rfence')) literal.holderBars = [];
+      if (after.action === 'endDoneAtEnd') literal.kind = 'done';
+      const picks = trace.file.startsWith('rstep') ? after.picks : { ...literal, ...after.picks };
       await drive(r, before, after, after.action, picks);
       const core = await withCore((c) => projectState(c.store, c.now()));
       const d = differences(after.st, core, r);

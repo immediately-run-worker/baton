@@ -42,6 +42,36 @@ export function modelActions(src) {
 
 export const hashOf = (text) => createHash('sha256').update(text).digest('hex').slice(0, 12);
 
+/** Every top-level declaration of the module: name → text (round 1, 1-A-6). */
+export function declarations(src) {
+  const lines = src.split('\n');
+  const top = /^ {2}(\/\/|action |pure |def |val |type |var |const |run |temporal |\})/;
+  const decls = new Map();
+  for (let i = 0; i < lines.length; i++) {
+    const m = /^ {2}(?:pure def|def|pure val|val|action|type|var|const) (\w+)/.exec(lines[i]);
+    if (!m) continue;
+    let j = i + 1;
+    while (j < lines.length && !top.test(lines[j]) && !/^\}/.test(lines[j])) j++;
+    const body = lines.slice(i, j).map((l) => l.replace(/\s+$/, ''));
+    while (body.length && body.at(-1) === '') body.pop();
+    decls.set(m[1], body.join('\n'));
+  }
+  return decls;
+}
+
+/** The text an action's meaning rests on: its own, and every declaration it reaches — the helpers,
+ *  the gates, the judge, the course and the state's type — each once, in name order. A change to
+ *  any of them changes the hash, so the functions that implement the action are re-checked. */
+export function closureText(name, decls) {
+  const seen = new Set([name]);
+  const queue = [name];
+  while (queue.length) {
+    const text = decls.get(queue.shift()) ?? '';
+    for (const id of text.match(/[A-Za-z_]\w*/g) ?? []) if (decls.has(id) && !seen.has(id)) { seen.add(id); queue.push(id); }
+  }
+  return [decls.get(name), ...[...seen].filter((n) => n !== name).sort().map((n) => decls.get(n))].join('\n\n');
+}
+
 /** The leading comment of `fn` in `src` (a method or function), or null when it is not there. */
 export function leadingComment(src, fn) {
   const lines = src.split('\n');
@@ -55,7 +85,10 @@ export function leadingComment(src, fn) {
 
 export function check(root = ROOT) {
   const errors = [];
-  const actions = modelActions(readFileSync(join(root, MODEL), 'utf8'));
+  const src = readFileSync(join(root, MODEL), 'utf8');
+  const actions = modelActions(src);
+  const decls = declarations(src);
+  for (const [name, a] of actions) a.text = closureText(name, decls);
   const files = new Map();
   const read = (f) => {
     if (!files.has(f)) files.set(f, existsSync(join(root, f)) ? readFileSync(join(root, f), 'utf8') : null);
