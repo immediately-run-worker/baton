@@ -207,3 +207,8 @@ on the account, plus Zone: Read and Workers Routes: Edit on the `immediately.run
 
 With a sibling docs checkout present, the suite also fails when `src/shared/` or the board
 fixtures have drifted from docs.
+
+## License
+
+Copyright 2026 Peter Neumark. Baton is licensed under the [Apache License, Version 2.0](LICENSE);
+see [NOTICE](NOTICE).

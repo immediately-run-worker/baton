@@ -1,6 +1,7 @@
 {
   "name": "@immediately-run/baton",
   "private": true,
+  "license": "Apache-2.0",
   "type": "module",
   "description": "Baton — work-item leases, workers and the factory dashboard, on a Cloudflare Durable Object or as a local Node process (BATON_SPEC §3a).",
   "engines": {
