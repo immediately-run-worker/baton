@@ -3,12 +3,12 @@
 // greater than its own. Each starts from a trace the model accepts, so the rejection is the
 // mutation's. Node only: it runs Quint.
 import { describe, it, expect, afterAll } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { toItf, type ClaimView, type Projection, type Step } from '../integration/trace';
 import { checkTrace, scopeErrors } from '../../scripts/check-traces.mjs';
-import { closureText, declarations, hashOf } from '../../scripts/check-model-links.mjs';
+import { check as checkLinks, closureText, declarations, hashOf } from '../../scripts/check-model-links.mjs';
 import { readFileSync } from 'node:fs';
 
 const dir = mkdtempSync(join(tmpdir(), 'baton-check-traces-'));
@@ -83,6 +83,40 @@ describe('check-traces rejects what the model forbids, naming the step', () => {
   }, 120_000);
 });
 
+describe('check-traces rejects each step round 1 found accepted (round 2, 2-r2-1)', () => {
+  const claimed = (over: Partial<ClaimView> = {}) => (p: Projection) => ({ ...p, claims: { 1: claim(over) } });
+  const rejected = async (name: string, rest: [Step['origin'], (p: Projection) => Projection][], reason: string) => {
+    const r = await check(name, trace(rest));
+    expect(r.ok).toBe(false);
+    expect(r.failure.reason).toContain(reason);
+    return r;
+  };
+  const claimReq = req('POST', '/v1/runner/claim');
+  it('the base claim is accepted', async () => {
+    expect(await check('claim-base', trace([[claimReq, claimed()]]))).toMatchObject({ ok: true, end: null });
+  });
+  it('a second observation number under ten minutes after the first (R-BTN-62 sync-busy)', async () => {
+    await rejected('sync-busy', [[req('POST', '/v1/sync/observation'), (p) => ({ ...p, counter: 2, outstanding: true })],
+      [req('POST', '/v1/sync/observation'), (p) => ({ ...p, counter: 3, outstanding: true })]], 'sync-busy');
+  });
+  it('an alarm reap before the lease ran out by the recorded clock', async () => {
+    await rejected('early-reap', [[claimReq, claimed()], [{ kind: 'alarm' }, claimed({ status: 'reaped', endReason: 'reaped:silent' })]], 'before worker 1\'s lease ran out');
+  });
+  it('a claim\'s legs moved by anything but its advance', async () => {
+    await rejected('legs-by-heartbeat', [[claimReq, claimed()], [req('POST', '/v1/runner/heartbeat'), claimed({ leg: 'implement' })]], 'legs changed by /v1/runner/heartbeat');
+  });
+  it('an advance whose stored bars are not the ones the holder sent', async () => {
+    await rejected('bars-not-sent', [[claimReq, claimed()],
+      [req('POST', '/v1/runner/claims/1/advance', { leg: 'implement', bars: ['family:a'] }), claimed({ leg: 'implement', legBars: ['family:b'] })]], 'not the ["family:a"] the holder sent');
+  });
+  it('the board changed outside a board post', async () => {
+    await rejected('board-outside-post', [[req('POST', '/v1/runner/heartbeat'), (p) => ({ ...p, tickets: { [T]: { ...p.tickets[T], path: ['implement'] } } })]], 'outside a board post');
+  });
+  it('a claim that vanished', async () => {
+    await rejected('vanished', [[claimReq, claimed()], [req('POST', '/v1/runner/heartbeat'), (p) => ({ ...p, claims: {} })]], 'claim 1 vanished');
+  });
+});
+
 describe('model:links hashes what an action rests on (round 1, 1-A-6)', () => {
   it('a change to a helper the action reaches — the claim gate, the judge — changes its hash', () => {
     const src = readFileSync(join(import.meta.dirname, '../../model/baton.qnt'), 'utf8');
@@ -112,5 +146,25 @@ describe('every truncated trace is pinned in trace-scope.json (round 1, 1-B-5)',
     expect(scopeErrors([], { 'S › gone': { at: 3, reason: why } })).toEqual([expect.stringContaining('no accepted trace')]);
     expect(scopeErrors([], { 'S › gone': { at: 3, reason: why } }, false)).toEqual([]);
     expect(scopeErrors([r('cut', 0, { index: 0, reason: why })], { 'S › cut': { at: 0, reason: why } })).toEqual([expect.stringContaining('no step checked')]);
+  });
+});
+
+describe('model:links matches a stamp to its function, not its file (round 2, 2-r2-2)', () => {
+  it('a stamp above a function the action does not name, or a stale one there, fails', () => {
+    const root = mkdtempSync(join(tmpdir(), 'baton-links-'));
+    const repo = join(import.meta.dirname, '../..');
+    cpSync(join(repo, 'model'), join(root, 'model'), { recursive: true });
+    cpSync(join(repo, 'src'), join(root, 'src'), { recursive: true });
+    expect(checkLinks(root).errors).toEqual([]);
+    const file = join(root, 'src/core/claims.ts');
+    const src = readFileSync(file, 'utf8');
+    const advance = /@model advance sha256:([0-9a-f]{12})/.exec(src)![1];
+    // the current hash, above a function the action does not name
+    writeFileSync(file, src.replace('  handedOut(repo: string): number {', `  // @model advance sha256:${advance}\n  handedOut(repo: string): number {`));
+    expect(checkLinks(root).errors).toEqual([expect.stringContaining('src/core/claims.ts#handedOut: @model advance, but the action does not name')]);
+    // a second, stale stamp in a function the action does name
+    writeFileSync(file, src.replace(`@model advance sha256:${advance}`, `@model advance sha256:${advance}\n  // @model advance sha256:000000000000`));
+    expect(checkLinks(root).errors.some((e: string) => e.includes('stamped 000000000000'))).toBe(true);
+    rmSync(root, { recursive: true, force: true });
   });
 });

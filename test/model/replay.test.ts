@@ -314,7 +314,6 @@ describe(`model-based tests: ${traces.length} traces drawn from model/replay.qnt
       const before = trace.states[i - 1];
       const after = trace.states[i];
       lastAnswer = 'no request';
-      // rprogress passes its literals (`endClaim(w, kind, true)`, `syncNumber(1)`): no nondet pick
       // rprogress, rlegs and rfence pass literals (`endClaim(w, kind, true)`, `syncNumber(1)`, the
       // holder's bars): no nondet pick for them
       const literal: Record<string, unknown> = { b: true, s: 1 };

@@ -47,7 +47,7 @@
     "at": 7,
     "reason": "claim 1 released stale on its ticket's re-tier or interim status (R-BTN-35; tiers are not modelled)"
   },
-  "S-BTN-36.observations › S-BTN-36 (observation half) > an end is confirmed only by a reading numbered after it": {
+  "S-BTN-36.observations › S-BTN-36 (observation half) > an end is confirmed by the interim post’s confirmations only in a reading numbered after it": {
     "at": 8,
     "reason": "claim 1 confirmed by the interim post's confirmations (docs' interim shape, not modelled)"
   },

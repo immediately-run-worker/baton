@@ -2,7 +2,9 @@
 // R3-1231 part 3 delivers: a reading is judged by the number Baton handed out before the sync read
 // anything. Must hold: an older reading arriving after a newer one is refused stale-observation
 // and changes nothing; an end is confirmed, and a claim made stale, only by a reading numbered
-// above the counter's value when that end or claim happened. The station half (R3-1232): a
+// above the counter's value when that end or claim happened — except that a `done` is also
+// confirmed by a closure or an end station in a reading numbered above the claim's latest claim
+// or advance, even one read before the end (R-BTN-10 as amended 2026-10-16; S-BTN-40). The station half (R3-1232): a
 // suspension is confirmed by the path the first snapshot observed after it places the ticket on,
 // never by ancestry, and the next claimant starts at git's station.
 import { describe, it, expect, inject, beforeEach } from 'vitest';
@@ -38,7 +40,7 @@ describe('S-BTN-36 (observation half)', () => {
     expect(await rows('SELECT id, row_hash FROM tickets ORDER BY id')).toEqual(before);
   });
 
-  it('an end is confirmed only by a reading numbered after it', async () => {
+  it('an end is confirmed by the interim post’s confirmations only in a reading numbered after it', async () => {
     const { secret } = await register('vm-a');
     const { json: c } = await claimItem('vm-a', secret, { ticket_id: 'docs:R3-9001' });
     const n = (await observe()).json.observation; // the sync's run starts reading…

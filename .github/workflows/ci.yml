@@ -55,7 +55,7 @@ jobs:
           files=$(git diff --name-only "$BASE...HEAD")
           printf '%s\n' "$files"
           hit() { printf '%s\n' "$files" | grep -q -E "$1" && echo true || echo false; }
-          echo "model=$(hit '^(model/|src/core/|test/model/|package(-lock)?\.json$|\.github/workflows/ci\.yml$)')" >> "$GITHUB_OUTPUT"
+          echo "model=$(hit '^(model/|src/core/|test/model/|test/hosts/|test/integration/trace\.ts$|scripts/check-traces\.mjs$|package(-lock)?\.json$|\.github/workflows/ci\.yml$)')" >> "$GITHUB_OUTPUT"
           verify=$(hit '^(model/|\.github/workflows/ci\.yml$)')
           # A Quint upgrade can change the proof's outcome; any other dependency bump cannot.
           quint() { git show "$1:package-lock.json" 2>/dev/null | jq -r '.packages["node_modules/@informalsystems/quint"].version // ""'; }

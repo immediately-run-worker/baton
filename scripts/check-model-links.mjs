@@ -83,6 +83,17 @@ export function leadingComment(src, fn) {
   return out.join('\n');
 }
 
+/** The function whose leading comment holds the text at `offset`, or null: the first line after
+ *  the comment block, when it declares a function or method. */
+export function stampedFunction(src, offset) {
+  const lines = src.split('\n');
+  let k = src.slice(0, offset).split('\n').length - 1;
+  if (!/^\s*(\/\/|\/\*\*|\*|\*\/)/.test(lines[k])) return null;
+  while (k < lines.length && /^\s*(\/\/|\/\*\*|\*|\*\/)/.test(lines[k])) k++;
+  const m = /^\s*(?:export\s+)?(?:async\s+)?(?:function\s+)?(?:private\s+|public\s+)?(?:async\s+)?(\w+)\s*(?:<[^>]*>)?\(/.exec(lines[k] ?? '');
+  return m && !['if', 'for', 'while', 'switch', 'return'].includes(m[1]) ? m[1] : null;
+}
+
 export function check(root = ROOT) {
   const errors = [];
   const src = readFileSync(join(root, MODEL), 'utf8');
@@ -111,10 +122,14 @@ export function check(root = ROOT) {
   // and every back-link names an action that names it
   for (const [f, src] of [...listSources(root)].map((f) => [f, read(f)])) {
     if (!src) continue;
-    for (const m of src.matchAll(/@model (\w+) sha256:[0-9a-f]{12}/g)) {
+    for (const m of src.matchAll(/@model (\w+) sha256:([0-9a-f]{12})/g)) {
       const a = actions.get(m[1]);
       if (!a) { errors.push(`${f}: @model ${m[1]} names no action of ${MODEL}`); continue; }
-      if (!a.impls.some((im) => im.file === f)) errors.push(`${f}: @model ${m[1]}, but the action does not name ${f}`);
+      // the function the stamp sits above, which the action must name (round 2, 2-r2-2)
+      const fn = stampedFunction(src, m.index);
+      if (!fn) { errors.push(`${f}: @model ${m[1]} is not in the leading comment of a function`); continue; }
+      if (!a.impls.some((im) => im.file === f && im.fn === fn)) errors.push(`${f}#${fn}: @model ${m[1]}, but the action does not name ${f}#${fn}`);
+      else if (m[2] !== hashOf(a.text)) errors.push(`${f}#${fn}: action ${m[1]} changed (now sha256:${hashOf(a.text)}, stamped ${m[2]}) — re-check the function against it, then re-stamp`);
     }
   }
   return { errors, actions };
