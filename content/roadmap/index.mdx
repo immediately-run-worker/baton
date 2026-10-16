@@ -1,0 +1,23 @@
+---
+title: Roadmap
+description: Every live Baton ticket, grouped by status — a query over this folder, never a hand-kept list.
+nav: Roadmap
+order: 10
+tags: [roadmap]
+---
+
+<Lede>Every live ticket, grouped by status. This page is a query: a ticket added under
+`roadmap/` appears here without anyone editing this page.</Lede>
+
+## Next available
+
+The first ticket that can be claimed, in execution order: the lowest `order` among available
+tickets whose dependencies are all done.
+
+<NextAvailable />
+
+## The board
+
+<RoadmapBoard groupBy="status" />
+
+Finished tickets are in [the archive](archive/index.mdx).

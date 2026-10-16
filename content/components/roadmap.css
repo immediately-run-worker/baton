@@ -1,0 +1,274 @@
+/* Corpus furniture styling (R3-174) — travels with the components, not with the engine.
+   `grove/docs/ENGINE_BOUNDARY.md` §3 measured this block as a PURE APPEND to the fork's
+   stylesheet: nothing about the engine's own rendering depended on it, which is what made
+   the split cheap to state. It is imported by `RoadmapBoard.tsx`, so it loads exactly when
+   a page uses the furniture and not otherwise.
+
+   Why an ordinary CSS import rather than the content-carried-theme mechanism (R3-316):
+   that path is a token GRAMMAR — declarations only, no selectors — because it must be safe
+   for a corpus whose author is not the viewer's, including under the interpreter where no
+   code runs. This block is 200 lines of selectors, and it ships beside a component that is
+   already author JavaScript, so an import here is strictly weaker than what the module can
+   already do. The two mechanisms answer different questions and R3-316 does not replace
+   this one.
+
+   Status colour is CSS-ONLY: an element carries `data-status`, the rule below maps it to
+   `--rm-status`, and every `.rm-*` surface reads that one variable for its accent. Values
+   come from the engine's design tokens (`--accent`, `--ink-3`) where one fits, so a corpus
+   inherits whatever theme the viewer is wearing. */
+
+[data-status]                 { --rm-status: var(--ink-3); }
+[data-status="available"]     { --rm-status: var(--accent); }
+[data-status="in-progress"]   { --rm-status: #e0b341; }
+[data-status="in-review"]     { --rm-status: #6aa6ff; }
+[data-status="done"]          { --rm-status: #4fbf7f; }
+[data-status="deferred"],
+[data-status="deprioritized"],
+[data-status="superseded"]    { --rm-status: var(--ink-3); }
+/* Project lifecycle values share the scale. */
+[data-status="active"]        { --rm-status: var(--accent); }
+[data-status="proposed"]      { --rm-status: #6aa6ff; }
+[data-status="paused"]        { --rm-status: var(--ink-3); }
+[data-status="complete"]      { --rm-status: #4fbf7f; }
+
+/* — badges + chips — */
+.rm-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border: 1px solid color-mix(in oklab, var(--rm-status) 55%, transparent);
+  border-radius: var(--r-pill);
+  background: color-mix(in oklab, var(--rm-status) 14%, transparent);
+  color: var(--rm-status);
+  font: 700 10.5px/1.6 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+.rm-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  color: var(--ink-2);
+  font: 400 11px/1.7 var(--mono);
+  white-space: nowrap;
+}
+.rm-chip[data-kind="repo"]    { color: var(--ink); }
+.rm-chip[data-kind="project"] { border-color: color-mix(in oklab, var(--accent) 45%, var(--line)); color: var(--accent-pink); }
+.rm-chip[data-kind="pr"]      { color: var(--accent-violet); }
+.rm-chip[data-kind="rollup"]  { color: var(--rm-status); border-color: color-mix(in oklab, var(--rm-status) 40%, var(--line)); }
+/* R3-649 — a resource this item needs and a reader may not have. Dashed, because it reads
+   as a precondition rather than a property: a repo or tag chip says what the item IS, this
+   one says what it is WAITING on. */
+.rm-chip[data-kind="requires"] { border-style: dashed; border-color: color-mix(in oklab, var(--accent-violet) 40%, var(--line)); color: var(--ink-2); }
+a.rm-chip:hover               { border-color: var(--line-2); }
+/* Work queues (process-control/03) — `<QueueChips>`. Operator work carries the accent
+   (magenta) because it waits on a person; the autonomous line carries violet, the agent's
+   colour elsewhere on the board. Expedite reuses the accent at full strength; blocked is
+   dashed like `requires`, since it too says what the work is WAITING on. */
+.rm-chip[data-kind="queue"][data-queue="operator"]   { border-color: color-mix(in oklab, var(--accent) 45%, var(--line)); color: var(--accent-pink); }
+.rm-chip[data-kind="queue"][data-queue="autonomous"] { border-color: color-mix(in oklab, var(--accent-violet) 45%, var(--line)); color: var(--accent-violet); }
+.rm-chip[data-kind="queue"][data-queue="expedite"]   { border-color: var(--accent); color: var(--accent); font-weight: 700; }
+.rm-chip[data-kind="queue"][data-queue="blocked"]    { border-style: dashed; color: var(--ink-3); }
+.rm-chip[data-kind="queue"][data-queue="inFlight"]   { color: var(--ink-2); }
+.rm-unclustered > .rm-card__meta { margin-top: 8px; }
+
+/* — the item header (rendered by EntryHeader for every roadmap-item entry) — */
+.rm-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 0 2px;
+}
+.rm-prs { display: inline-flex; flex-wrap: wrap; gap: 6px; }
+
+/* — the board — */
+.rm-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+  gap: 16px;
+  margin: 22px 0;
+  align-items: start;
+}
+.rm-col {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  padding: 12px;
+  min-width: 0;
+}
+.rm-col__h {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px 10px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 10px;
+}
+.rm-col__t {
+  font: 700 11px/1.4 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--rm-status, var(--ink-2));
+}
+.rm-col__n { font: 400 11px/1.4 var(--mono); color: var(--ink-3); }
+.rm-col__body { display: grid; gap: 8px; }
+.rm-col__empty { color: var(--ink-3); font-size: 13px; margin: 2px; }
+
+/* — one item card — */
+.rm-card {
+  display: block;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--rm-status);
+  border-radius: var(--r-md);
+  background: var(--panel-2);
+  padding: 10px 12px;
+  transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+}
+.rm-card:hover {
+  border-color: var(--line-2);
+  transform: translate(-2px, -2px);
+  box-shadow: 4px 4px 0 color-mix(in oklab, var(--rm-status) 55%, transparent);
+}
+.rm-card__top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.rm-card__id { font: 700 11.5px/1.6 var(--mono); color: var(--rm-status); }
+.rm-card__t { margin: 3px 0 7px; font-size: 14px; line-height: 1.35; color: var(--ink); }
+.rm-card__meta { display: flex; flex-wrap: wrap; gap: 5px; }
+
+/* — next available — */
+.rm-next {
+  border: 1px solid var(--line-2);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  padding: 14px;
+  margin: 22px 0;
+  box-shadow: var(--glow);
+}
+.rm-next__h {
+  display: block;
+  font: 700 10.5px/1.4 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--ink-3);
+  margin-bottom: 10px;
+}
+
+/* — dependency graph — */
+.rm-deps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 18px;
+  margin: 26px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+.rm-deps__group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.rm-deps__h {
+  font: 700 10.5px/1.4 var(--mono);
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--ink-3);
+}
+.rm-dep {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--panel-2);
+}
+.rm-dep:hover { border-color: var(--line-2); }
+.rm-dep__id { font: 700 11.5px/1.6 var(--mono); color: var(--ink); }
+
+/* — projects — */
+/* `<ProjectMembers>` — the members section `projects/_layout.mdx` puts under every
+   Project page. It renders OUTSIDE `.grove-prose` (a layout wraps the page, it is not
+   part of the body), so the headings carry their look here instead of inheriting the
+   prose rules — the same reason `.rm-meta` styles itself. */
+.rm-members { margin-top: 1.8em; }
+.rm-members__h {
+  font-family: var(--disp);
+  font-weight: var(--disp-weight);
+  font-size: 1.75em;
+  letter-spacing: -.02em;
+  line-height: 1.1;
+  color: var(--ink);
+}
+.rm-members__h[data-level="3"] {
+  font-weight: 600;
+  font-size: 1.32em;
+  letter-spacing: -.01em;
+  margin-top: 1.5em;
+}
+
+.rm-projectmeta { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 12px 0 2px; }
+.rm-projectmeta__rollup {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font: 400 11px/1.7 var(--mono);
+  color: var(--ink-3);
+}
+.rm-projects {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+  margin: 22px 0;
+}
+.rm-project {
+  display: block;
+  border: 1px solid var(--line);
+  border-top: 3px solid var(--rm-status);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  padding: 14px;
+  transition: transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+}
+.rm-project:hover {
+  border-color: var(--line-2);
+  transform: translate(-2px, -2px);
+  box-shadow: var(--shadow-card);
+}
+.rm-project__top { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.rm-project__t { font: 600 15px/1.25 var(--disp); color: var(--ink); }
+.rm-project__d { margin: 8px 0 10px; font-size: 13px; line-height: 1.45; color: var(--ink-2); }
+/* A code span inside a card title or a project description. `InlineProse` renders
+   frontmatter prose, so `title:` and `description:` carry `<code>` (R3-531); the fork's
+   stylesheet styles the same shape for its OWN list surfaces, and these three selectors
+   are the corpus's half of that rule. */
+.rm-card__t code,
+.rm-project__t code,
+.rm-project__d code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  color: var(--accent-3);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  padding: 1px 6px;
+}
+.rm-unclustered { margin: 28px 0; }
+.rm-unclustered .rm-col__body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(255px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* — mobile: the board is one column and the cards stay full-width and tappable — */
+.grove-root[data-vw="mobile"] .rm-board,
+.grove-root[data-vw="mobile"] .rm-projects,
+.grove-root[data-vw="mobile"] .rm-unclustered .rm-col__body {
+  grid-template-columns: 1fr;
+}
+.grove-root[data-vw="mobile"] .rm-card { padding: 12px; }
+.grove-root[data-vw="mobile"] .rm-card:hover,
+.grove-root[data-vw="mobile"] .rm-project:hover { transform: none; box-shadow: none; }
+.grove-root[data-vw="mobile"] .rm-deps { gap: 12px; }

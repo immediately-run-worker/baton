@@ -1,0 +1,35 @@
+---
+title: Baton
+description: Baton coordinates AI coding agents working one repository's tickets — what it is, what is being built, and where to read more.
+nav: Home
+order: 0
+tags: [home]
+---
+
+<Lede>Baton hands out tickets to AI coding agents one at a time, keeps each claim alive with a
+lease, and moves each ticket along its course from claim to merge.</Lede>
+
+This wiki is part of the [Baton repository](https://github.com/immediately-run/baton). It holds
+Baton's own tickets: what is planned, what is in progress, and what was done and why.
+
+## Where to start
+
+- [The roadmap](roadmap/index.mdx): every live ticket, grouped by status, with the next one to
+  work on.
+- [The archive](roadmap/archive/index.mdx): finished tickets.
+- The code, the tests and the formal model are in the repository:
+  [`src/`](https://github.com/immediately-run/baton/tree/main/src),
+  [`test/`](https://github.com/immediately-run/baton/tree/main/test) and
+  [`model/`](https://github.com/immediately-run/baton/tree/main/model). Its
+  [README](https://github.com/immediately-run/baton#readme) explains the layout.
+
+## Tickets
+
+A ticket is one `.mdx` file under `roadmap/`, named after its id. Its frontmatter is what Baton
+reads: `status`, `depends_on`, `order`, `tags`, `prs` and `repos`. The body is for people and
+agents; Baton never stores it. `roadmap/item.schema.json` is the frontmatter's shape, and
+`npm run check:wiki` checks every page against it.
+
+- New tickets are numbered `B-1`, `B-2`, and so on.
+- Tickets that moved here from the immediately.run docs roadmap keep their `R3-NNNN` ids.
+- A finished ticket moves to `roadmap/archive/` with `status: done`.

@@ -1,0 +1,117 @@
+{
+  "opensWith": {
+    "task": "open-wiki",
+    "version": "1.0"
+  },
+  "kind": "wiki",
+  "views": [
+    {
+      "name": "Roadmap board",
+      "opensWith": {
+        "app": "github:immediately-run/kanban-board",
+        "version": "1.0"
+      },
+      "subtree": "/roadmap",
+      "projection": {
+        "source": {
+          "recordSet": "roadmap-items"
+        },
+        "map": {
+          "id": {
+            "from": "frontmatter.id"
+          },
+          "title": {
+            "from": "frontmatter.title"
+          },
+          "column": {
+            "from": "frontmatter.status",
+            "values": [
+              "available",
+              "in-progress",
+              "in-review",
+              "deferred",
+              "deprioritized",
+              "superseded"
+            ]
+          },
+          "order": {
+            "from": "frontmatter.order"
+          },
+          "labels": {
+            "from": "frontmatter.tags"
+          },
+          "body": {
+            "from": "content"
+          },
+          "updated": {
+            "from": "frontmatter.updated"
+          }
+        },
+        "writable": []
+      }
+    }
+  ],
+  "components": {
+    "RoadmapBoard": "./components/RoadmapBoard.tsx",
+    "RoadmapMeta": "./components/RoadmapMeta.tsx",
+    "NextAvailable": "./components/NextAvailable.tsx",
+    "Dependencies": "./components/Dependencies.tsx",
+    "ProjectIndex": "./components/ProjectIndex.tsx",
+    "ProjectItems": "./components/ProjectItems.tsx",
+    "ProjectMembers": "./components/ProjectMembers.tsx",
+    "ProjectMeta": "./components/ProjectMeta.tsx",
+    "StatusBadge": "./components/StatusBadge.tsx",
+    "TopicIndex": "./components/TopicIndex.tsx"
+  },
+  "layout": {
+    "version": 1,
+    "recordSets": {
+      "roadmap-items": {
+        "dir": "/roadmap",
+        "select": "*-*.mdx",
+        "record": "mdx-frontmatter",
+        "schema": "/roadmap/item.schema.json",
+        "id": {
+          "from": "filename"
+        },
+        "unique": [
+          "roadmap-archive"
+        ],
+        "wellKnown": {
+          "title": "frontmatter.title",
+          "status": {
+            "from": "frontmatter.status",
+            "values": [
+              "available",
+              "in-progress",
+              "in-review",
+              "deferred",
+              "deprioritized",
+              "superseded"
+            ],
+            "terminal": {
+              "value": "done",
+              "movesTo": "roadmap-archive"
+            }
+          },
+          "order": {
+            "from": "frontmatter.order",
+            "meaning": "execution"
+          },
+          "body": "content"
+        },
+        "writable": []
+      },
+      "roadmap-archive": {
+        "dir": "/roadmap/archive",
+        "select": "*-*.mdx",
+        "record": "mdx-frontmatter",
+        "schema": "/roadmap/item.schema.json",
+        "id": {
+          "from": "filename"
+        },
+        "frozen": true
+      }
+    }
+  }
+}

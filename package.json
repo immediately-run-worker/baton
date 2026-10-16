@@ -2,6 +2,9 @@
   "name": "@immediately-run/baton",
   "private": true,
   "license": "Apache-2.0",
+  "immediately.run": {
+    "content": "content"
+  },
   "type": "module",
   "description": "Baton — work-item leases, workers and the factory dashboard, on a Cloudflare Durable Object or as a local Node process (BATON_SPEC §3a).",
   "engines": {
@@ -19,7 +22,8 @@
     "dev": "wrangler dev",
     "start:local": "node scripts/start-local.mjs",
     "model": "node model/check.mjs",
-    "model:verify": "quint verify model/instances.qnt --main=small --init=pinit --step=pstep --invariant=safety --max-steps=5"
+    "model:verify": "quint verify model/instances.qnt --main=small --init=pinit --step=pstep --invariant=safety --max-steps=5",
+    "check:wiki": "node scripts/check-wiki.mjs"
   },
   "dependencies": {
     "jose": "^6.2.12"
@@ -28,10 +32,12 @@
     "@cloudflare/vitest-plugin": "^1.4.1",
     "@cloudflare/workers-types": "^5.20261013.1",
     "@informalsystems/quint": "0.33.0",
+    "@mdx-js/mdx": "3.1.1",
     "@types/node": "^22.20.5",
     "esbuild": "0.28.2",
     "typescript": "^5.9.3",
     "vitest": "4.1.11",
-    "wrangler": "^4.150.0"
+    "wrangler": "^4.150.0",
+    "yaml": "2.9.1"
   }
 }

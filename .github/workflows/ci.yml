@@ -30,6 +30,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npm run check:wiki   # content/, the tickets' wiki
 
   # Which of the model's jobs this change needs. The model reads only model/ (and quint, from
   # package.json); every other change still runs npm test's 1,000-sample model check above.

@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/immediately-run/baton/content/roadmap/item.schema.json",
+  "title": "Baton ticket \u2014 entry frontmatter",
+  "description": "A Baton ticket's frontmatter: the work-item keys Baton's ticket source reads (status, depends_on, order, tags, prs, repos). `status: done` is legal only in the archive. Tickets moved from the immediately.run docs roadmap keep their R3-NNNN ids; new tickets are B-n.",
+  "type": "object",
+  "definitions": {
+    "itemId": {
+      "type": "string",
+      "pattern": "^(R3-\\d+[a-z]?\\d*|B-\\d+)$",
+      "description": "A ticket id: B-n for tickets filed here, or the R3-NNN id a ticket kept when it moved from the immediately.run docs roadmap (with an optional split suffix, R3-51a, R3-274e1)."
+    }
+  },
+  "required": [
+    "title",
+    "id",
+    "status",
+    "tags",
+    "topics",
+    "owns",
+    "prs",
+    "depends_on"
+  ],
+  "properties": {
+    "id": {
+      "$ref": "#/definitions/itemId"
+    },
+    "status": {
+      "enum": [
+        "available",
+        "in-progress",
+        "in-review",
+        "deferred",
+        "deprioritized",
+        "superseded",
+        "done"
+      ]
+    }
+  },
+  "propertyNames": {
+    "enum": [
+      "title",
+      "id",
+      "project",
+      "status",
+      "updated",
+      "repos",
+      "description",
+      "topics",
+      "owns",
+      "prs",
+      "depends_on",
+      "tier",
+      "cost",
+      "section",
+      "site",
+      "layout",
+      "view",
+      "frame",
+      "render",
+      "nav",
+      "order",
+      "tags"
+    ]
+  }
+}

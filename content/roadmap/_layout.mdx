@@ -1,0 +1,16 @@
+---
+layoutRole: section
+description: Ticket chrome — the header line above each ticket, the dependency rail below it.
+---
+
+{/*
+  Wraps every entry under roadmap/, the archive included. Both components gate themselves:
+  <RoadmapMeta> renders only for an entry tagged `roadmap-item`, and <Dependencies> only for
+  a ticket with a dependency edge in either direction, so index pages pass through untouched.
+*/}
+
+<RoadmapMeta />
+
+<Outlet />
+
+<Dependencies />
