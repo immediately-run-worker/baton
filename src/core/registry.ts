@@ -91,7 +91,7 @@ export function checkRegistration(v: unknown, at = 'repository'): Registration {
   // No credential ever reaches SQLite (R-BTN-94): an https remote has no userinfo, an ssh one a user
   // name at most (round 1, 1-A-5, 1-B-2).
   if (typeof remote !== 'string' || remote.length > 500
-    || !/^(https:\/\/[A-Za-z0-9.-]+(:\d+)?\/|ssh:\/\/([A-Za-z0-9._-]+@)?[A-Za-z0-9.-]+(:\d+)?\/|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:)[^\s\\@]+$/.test(remote)) {
+    || !/^(https:\/\/[A-Za-z0-9.-]+(:\d+)?\/|ssh:\/\/([A-Za-z0-9._-]+@)?[A-Za-z0-9.-]+(:\d+)?\/|[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:)[^\s\\@?#]+$/.test(remote)) {
     bad(`${at}.remote`, 'must be an https:// URL with no userinfo, an ssh:// URL, or user@host:path — never a credential');
   }
   const syncWorkflow = r.sync_workflow == null ? '' : str('sync_workflow', WORKFLOW);
@@ -99,6 +99,9 @@ export function checkRegistration(v: unknown, at = 'repository'): Registration {
   // GitHub Enterprise host, has none (round 1, 1-A-0, 1-A-6, 1-B-0).
   const onGithubCom = forge === 'github' && typeof webBase === 'string' && webBase.toLowerCase() === `https://github.com/${github.toLowerCase()}`;
   if ((syncWorkflow || r.mirror_workflow != null) && !onGithubCom) bad(`${at}.sync_workflow`, 'workflows are GitHub Actions on github.com only');
+  // A mirror workflow posts with the Actions identity; a repository of sync keys has its mirror key
+  // instead (round 2, 2-A-0).
+  if (r.mirror_workflow != null && !syncWorkflow) bad(`${at}.mirror_workflow`, 'needs the github-actions identity (a sync_workflow); a repository of sync keys uses a mirror key');
   const ci = checkCiIdentity(r.ci_identity, forge, syncWorkflow, `${at}.ci_identity`);
   // A GitLab token's issuer is the repository's own instance (round 1, 1-A-3).
   if (ci?.kind === 'gitlab-ci' && typeof webBase === 'string' && new URL(ci.issuer).origin !== new URL(webBase).origin) bad(`${at}.ci_identity.issuer`, "must be the web_base's GitLab instance");
@@ -211,7 +214,9 @@ export class Registry {
     this.c.store.exec(
       `INSERT INTO repositories (id, github, forge, remote, web_base, ci_identity, dispatch, default_branch, sync_workflow, mirror_workflow, weight, transcript_repos, tiers, cutover_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      r.id, r.github, r.forge, r.remote, r.web_base, r.ci_identity ? JSON.stringify(r.ci_identity) : null, r.forge === 'github' ? '{"kind":"github-app"}' : null,
+      r.id, r.github, r.forge, r.remote, r.web_base, r.ci_identity ? JSON.stringify(r.ci_identity) : null,
+      // The App serves github.com alone (round 2, 2-A-4).
+      r.forge === 'github' && r.web_base?.toLowerCase() === `https://github.com/${r.github.toLowerCase()}` ? '{"kind":"github-app"}' : null,
       r.default_branch, r.sync_workflow, r.mirror_workflow, r.weight, JSON.stringify(r.transcript_repos), JSON.stringify(r.tiers),
       r.cut_over ? this.c.now() : null);
     this.c.store.exec('INSERT INTO board_head (repository_id, sha) VALUES (?, NULL) ON CONFLICT (repository_id) DO NOTHING', r.id);
@@ -244,31 +249,47 @@ export class Registry {
    *  role (R-BTN-57): one that is already a sync key, a worker, probe or courier credential, or an
    *  administrator's key is refused `conflict`. `adminKeys` are BATON_ADMIN_KEYS' lines. */
   async addSyncKey(repository: string, publicKey: string, role: 'sync' | 'mirror', addedBy: string, adminKeys: string[]): Promise<string> {
+    const key = await this.prepareSyncKey(publicKey, adminKeys);
+    this.c.store.transaction(() => this.insertSyncKey(repository, key, role, addedBy));
+    return key.fingerprint;
+  }
+
+  /** The awaited half of adding a sync key: its fingerprint, its stored line, and the
+   *  administrators' check (WebCrypto). */
+  private async prepareSyncKey(publicKey: string, adminKeys: string[]): Promise<{ fingerprint: string; line: string }> {
     const key = await parseSshKey(publicKey);
     const admins = await Promise.all(adminKeys.map((k) => parseSshKey(k).then((p) => p.fingerprint, () => null)));
     if (admins.includes(key.fingerprint)) throw new BatonError('conflict', 'an administrator key holds no other role (R-BTN-57)');
-    const line = `${key.type} ${publicKey.trim().split(/\s+/)[1]}`;
-    this.c.store.transaction(() => {
+    return { fingerprint: key.fingerprint, line: `${key.type} ${publicKey.trim().split(/\s+/)[1]}` };
+  }
+
+  /** The synchronous half: the one-role checks and the insert, in the caller's transaction. */
+  private insertSyncKey(repository: string, key: { fingerprint: string; line: string }, role: 'sync' | 'mirror', addedBy: string): void {
+    {
       if (!this.rows('SELECT 1 FROM repositories WHERE id = ? AND retired_at IS NULL', repository).length) bad('repository', `${repository} is not registered`);
-      if (this.rows('SELECT 1 FROM credentials WHERE id = ? OR public_key = ?', key.fingerprint, line).length) {
+      if (this.rows('SELECT 1 FROM credentials WHERE id = ? OR public_key = ?', key.fingerprint, key.line).length) {
         throw new BatonError('conflict', 'this key is already a worker, probe or courier key (R-BTN-57: one role per key)');
       }
       if (this.rows('SELECT 1 FROM sync_keys WHERE fingerprint = ?', key.fingerprint).length) {
         throw new BatonError('conflict', 'this key is already a sync key: a sync key serves one repository in one role (R-BTN-93)');
       }
       this.c.store.exec('INSERT INTO sync_keys (fingerprint, repository_id, role, public_key, added_by, added_at) VALUES (?, ?, ?, ?, ?, ?)',
-        key.fingerprint, repository, role, line, addedBy, this.c.now());
-    });
-    return key.fingerprint;
+        key.fingerprint, repository, role, key.line, addedBy, this.c.now());
+    }
   }
 
   /** Register a repository and add its `sync_keys` (R-BTN-93), as `POST /v1/admin/repositories`
    *  will (R3-1240). */
   async registerWithKeys(input: unknown, addedBy: string, adminKeys: string[]): Promise<Repository> {
     const r = checkRegistration(input);
-    const repo = this.register(input, { keysAddedLater: true });
-    for (const k of r.sync_keys) await this.addSyncKey(r.id, k.public_key, k.role, addedBy, adminKeys);
-    return repo;
+    // Every key is read first; then the repository and its keys go in one transaction, so a key
+    // that conflicts leaves nothing behind (round 2, 2-A-3).
+    const keys = await Promise.all(r.sync_keys.map(async (k) => ({ ...(await this.prepareSyncKey(k.public_key, adminKeys)), role: k.role })));
+    return this.c.store.transaction(() => {
+      const repo = this.register(input, { keysAddedLater: true });
+      for (const k of keys) this.insertSyncKey(r.id, k, k.role, addedBy);
+      return repo;
+    });
   }
 
   /** BATON_REPOSITORIES' `sync_keys` at start, until R3-1240's routes: each key not yet known is

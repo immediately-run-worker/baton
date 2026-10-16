@@ -143,6 +143,10 @@ describe('G-BTN-13: free text and identifiers are validated before any write', (
     expect(await refusedOf(await postOn(withRepos, 'https://github.com/immediately-run/baton/pull/1'))).toBe(0);
     expect(await refusedOf(await postOn(withRepos, 'https://github.com/immediately-run/sandbox/pull/2'))).toBe(0);
     expect(await refusedOf(await postOn(withRepos, 'https://github.com/someone/baton/pull/3'))).toBe(1);
+    // An `orient` activity has no claim (round 2, 2-A-5): any registered repository's PR, and no other.
+    const orient = (pr: string) => workerCall('/v1/runner/activities', { secret, body: { activities: [{ id: `o${Math.random()}`, claim_id: null, kind: 'orient', source: 'hook', started_at: T0, detail: { pr } }] } });
+    expect(await refusedOf(await orient('https://github.com/immediately-run/docs/pull/4'))).toBe(0);
+    expect(await refusedOf(await orient('https://github.com/someone/docs/pull/4'))).toBe(1);
     expect(await refusedOf(await post({ note: 'x'.repeat(2100) }))).toBe(1);
   });
 });

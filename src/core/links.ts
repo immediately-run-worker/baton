@@ -20,6 +20,9 @@ export function isForgePath(forge: Forge, path: string): boolean {
 /** A parsed `https` URL with no userinfo, query or fragment, whose path segments are clean; or null. */
 function cleanUrl(text: string, allowQuery: boolean): URL | null {
   if (text.length > 1000 || /[\\\s]/.test(text)) return null;
+  // As written: `https://` itself (the parser also takes `https:host` and `https:/host`), no
+  // fragment marker, and no query marker where none is allowed — not even an empty one (round 2, 2-A-1).
+  if (!text.startsWith('https://') || text.includes('#') || (!allowQuery && text.includes('?'))) return null;
   let u: URL;
   try {
     u = new URL(text);

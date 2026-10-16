@@ -36,6 +36,11 @@ describe('the forge path and web_base (R-BTN-92)', () => {
       expect([bad, underWebBase(bad, base)]).toEqual([bad, false]);
     }
     expect(isWebBase('github', 'https://github.com/x/../immediately-run/docs', 'immediately-run/docs')).toBe(false);
+    // As written (round 2, 2-A-1): no `https:host` or `https:/host` forms, no empty query or fragment.
+    for (const bad of ['https:lab.example/o/x/../n', 'https:/lab.example/o/n', 'https://github.com/o/n?', 'https://github.com/o/n#']) {
+      expect([bad, isWebBase('gitlab', bad, 'o/n') || isWebBase('github', bad, 'o/n')]).toEqual([bad, false]);
+    }
+    expect(underWebBase('https:github.com/immediately-run/docs/pull/1', base)).toBe(false);
     for (const bad of ['https://github.com/immediately-run/docs-evil/pull/1', 'https://github.com:444/immediately-run/docs/pull/1', 'https://u@github.com/immediately-run/docs',
       'http://github.com/immediately-run/docs', 'https://github.com/immediately-run/docs/%2e%2e/x', 'https://github.com/immediately-run/docs/a%2Fb', 'javascript:alert(1)', 'https://github.com/immediately-run/docs#x']) {
       expect([bad, underWebBase(bad, base)]).toEqual([bad, false]);
@@ -77,6 +82,9 @@ describe('registrations off GitHub (R-BTN-92, R-BTN-93)', () => {
       expect(() => checkRegistration({ id: 'ops', github: 'o/r', remote, default_branch: 'main', sync_workflow: '.github/workflows/s.yml' })).toThrow(/credential/);
     }
     expect(checkRegistration({ id: 'ops', github: 'o/r', remote: 'git@github.com:o/r.git', default_branch: 'main', sync_workflow: '.github/workflows/s.yml' }).remote).toBe('git@github.com:o/r.git');
+    // Round 2: no credential in a query either (2-A-2); a mirror workflow needs the Actions identity (2-A-0).
+    expect(() => checkRegistration({ id: 'ops', github: 'o/r', remote: 'https://github.com/o/r.git?private_token=glpat-x', default_branch: 'main', sync_workflow: '.github/workflows/s.yml' })).toThrow(/credential/);
+    expect(() => checkRegistration({ id: 'ops', github: 'o/r', default_branch: 'main', mirror_workflow: '.github/workflows/m.yml', sync_keys: [{ public_key: key, role: 'sync' }] })).toThrow(/mirror_workflow/);
     expect(() => checkRegistration({ id: 'lab', github: 'group/lab', forge: 'gitlab', remote: 'https://gitlab.test/group/lab.git', web_base: 'https://gitlab.test/group/lab', default_branch: 'main', ci_identity: { kind: 'gitlab-ci', issuer: 'https://gitlab.other' } })).toThrow(/GitLab instance/);
   });
 
@@ -95,6 +103,13 @@ describe('registrations off GitHub (R-BTN-92, R-BTN-93)', () => {
       const both = { BATON_REPOSITORIES: JSON.stringify([entry, other]) } as never;
       c.registry.seed(both);
       await expect(c.registry.seedSyncKeys(both, [])).rejects.toMatchObject({ code: 'conflict' });
+      // registerWithKeys is all or nothing (round 2, 2-A-3): a conflicting key leaves no repository.
+      await expect(c.registry.registerWithKeys({ ...entry, id: 'plain3', github: 'server/plain3' }, 'admin:t', [])).rejects.toMatchObject({ code: 'conflict' });
+      expect(c.registry.get('plain3')).toBeNull();
+      // The App serves github.com alone (2-A-4): a GitHub Enterprise repository gets no App dispatch.
+      await c.registry.registerWithKeys({ id: 'ghe', github: 'o/r', web_base: 'https://ghe.corp/o/r', remote: 'https://ghe.corp/o/r.git', default_branch: 'main',
+        sync_keys: [{ public_key: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIA1v5bHXgqVbvHLuGOJbbm0d5N8dYHZEQFUpVbsjDPUz', role: 'sync' }] }, 'admin:t', []);
+      expect(c.store.exec(`SELECT dispatch FROM repositories WHERE id = 'ghe'`).one()).toEqual({ dispatch: null });
     });
   });
 });
