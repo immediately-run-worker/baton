@@ -205,4 +205,5 @@ fixtures have drifted from docs.
 
 ## License
 
-Baton is licensed under the [Apache License, Version 2.0](LICENSE).
+Copyright 2026 Peter Neumark. Baton is licensed under the [Apache License, Version 2.0](LICENSE);
+see [NOTICE](NOTICE).
